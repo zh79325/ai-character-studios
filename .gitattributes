@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# Git LFS —— 二进制素材
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.glb filter=lfs diff=lfs merge=lfs -text
+*.fbx filter=lfs diff=lfs merge=lfs -text
+*.usdz filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+
+# 配置库为 SQLite 二进制，按二进制处理但不进 LFS（体积小、便于 clone）
+*.db binary

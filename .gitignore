@@ -1,2 +1,40 @@
+# 系统
 .DS_Store
 .idea/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node
+node_modules/
+app/dist/
+app/out/
+.vite/
+
+# 日志库：含 provider 配置与 api_key，一律不进 Git（共享靠直接复制文件）
+db/runtime.db
+db/runtime.db-shm
+db/runtime.db-wal
+
+# 环境变量与 provider 导入导出 JSON
+.env
+.env.*
+provider_agents*.json
+
+# 中间产物：只保留占位文件
+**/tmp/*
+!**/tmp/.gitkeep
+
+# Unity
+unity/**/Library/
+unity/**/Temp/
+unity/**/Obj/
+unity/**/Logs/
+unity/**/UserSettings/
+unity/Builds/

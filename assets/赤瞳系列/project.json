@@ -1,0 +1,21 @@
+{
+  "code": "chitong",
+  "name": "赤瞳系列",
+  "style": {
+    "art_style": "史诗奇幻，电影级光影",
+    "mood": "凶猛、威严、压迫感",
+    "palette": "深灰黑主调，红色辉光点缀",
+    "quality": "高细节，3D建模参考用"
+  },
+  "defaults": {
+    "image_size": 2048,
+    "texture_resolution": "2k",
+    "enable_pbr": true,
+    "target_polycount": 30000,
+    "pose_mode": "t-pose",
+    "height_meters": 1.7
+  },
+  "pose_template": "templates/人物姿势模版.jpg",
+  "art_bible": "art-bible.md",
+  "review_mode": "lean"
+}
