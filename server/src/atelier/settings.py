@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     circuit_breaker_seconds: int = 300
     provider_retry_attempts: int = 2
 
+    # 远程用量服务（api-useage-server）：多工具、多机共享同一份额度，避免各记一套把额度打穿。
+    # 置空即不启用，完全回退本地 usage_counters 记账。
+    usage_server_url: str = "http://127.0.0.1:2697"
+    usage_server_timeout: float = 2.0
+    usage_server_retry_interval: float = 60.0
+    usage_warn_ratio: float = Field(default=0.9, description="用到这个比例就在日志里提醒")
+
     # 服务
     host: str = "127.0.0.1"
     port: int = Field(default=0, description="0 表示由系统分配空闲端口")

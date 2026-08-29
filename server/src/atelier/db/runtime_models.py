@@ -88,6 +88,9 @@ class ProviderModel(RuntimeBase):
     api_path: Mapped[str | None] = mapped_column(String(255), default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_no: Mapped[int] = mapped_column(Integer, default=0)
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    """调用参数与积分单价。约定键 `credit_costs`：{操作名: 消耗积分}，
+    如 Meshy 的 {"image_to_3d": 5, "animate": 10}——消耗调用前已知，可预扣。"""
     remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
@@ -113,6 +116,16 @@ class ProviderModel(RuntimeBase):
             return base
         return f"{base}/{self.api_path.lstrip('/')}"
 
+    def credit_cost(self, operation: str) -> int:
+        """该操作要预扣多少积分，未配置返回 0（不扣、不拦）。"""
+        costs = self.params.get("credit_costs") or {}
+        if not isinstance(costs, dict):
+            return 0
+        try:
+            return max(int(costs.get(operation, 0)), 0)
+        except (TypeError, ValueError):
+            return 0
+
 
 class ProviderAgentModel(RuntimeBase):
     """Agent → provider 模型 的绑定，同一 Agent 可挂多个候选。"""
@@ -135,7 +148,11 @@ class ProviderAgentModel(RuntimeBase):
 
 
 class ModelLimit(RuntimeBase):
-    """额度：未配置视为无限额，作同层兜底候选。"""
+    """额度上限与窗口口径，未配置视为无限额。
+
+    max_value 与 period_expr 是**本地配置为准**的真相：远程用量服务返回的 limit 只是
+    上一次记账时的快照，上限调大后它还是旧值，照抄会把新额度按回旧上限。
+    """
 
     __tablename__ = "model_limits"
     __table_args__ = (UniqueConstraint("provider_model_id", "limit_kind", name="uq_model_limit"),)
@@ -153,11 +170,15 @@ class ModelLimit(RuntimeBase):
 
 
 class UsageCounter(RuntimeBase):
-    """按 period_expr 解析出的窗口分桶计量，跨窗口自动归零。"""
+    """按窗口分桶的用量镜像，跨窗口自动归零。
+
+    真相在远程用量服务（多机共享同一份额度，不会各记一套），本表是它的本地镜像：
+    远程返回即整条覆写，远程挂掉时本表接着拦。source 记下这一行的口径来源。
+    """
 
     __tablename__ = "usage_counters"
     __table_args__ = (
-        UniqueConstraint("provider_model_id", "limit_kind", "window_start", name="uq_usage_window"),
+        UniqueConstraint("provider_model_id", "limit_kind", "window_key", name="uq_usage_window"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -165,8 +186,15 @@ class UsageCounter(RuntimeBase):
         ForeignKey("provider_models.id", ondelete="CASCADE"), index=True
     )
     limit_kind: Mapped[str] = mapped_column(String(16))
-    window_start: Mapped[datetime] = mapped_column(DateTime)
+    window_key: Mapped[str] = mapped_column(String(32))
+    """窗口标签，与远程用量服务的 limitKey 同名同算法，换窗口即换行、旧行自然作废。"""
     used_value: Mapped[int] = mapped_column(Integer, default=0)
+    remaining_value: Mapped[int | None] = mapped_column(Integer, default=None)
+    """供应商或用量服务报告的剩余额度，拿不到就是 None（视为无限额）。"""
+    exhausted_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    """本窗口判定用尽的时刻，非空即在窗口内跳过该候选。"""
+    source: Mapped[str] = mapped_column(String(16), default="local")
+    """remote / local / header，排查用量对不上时看这里。"""
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 

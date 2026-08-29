@@ -39,6 +39,7 @@ db/config.db-wal
 # 环境变量与 provider 导入导出 JSON
 .env
 .env.*
+!.env.example
 provider_agents*.json
 
 # 中间产物：只保留占位文件
