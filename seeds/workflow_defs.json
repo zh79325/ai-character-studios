@@ -1,0 +1,97 @@
+[
+  {
+    "code": "project_shaping",
+    "target_kind": "project",
+    "name": "项目立项",
+    "states": ["P0_project_shaping", "P1_project_ready"],
+    "transitions": {
+      "P0_project_shaping": {
+        "next": "P1_project_ready",
+        "agent": "game_designer",
+        "requires_commit": true,
+        "artifacts": ["art-bible.md", "project.json"]
+      },
+      "P1_project_ready": {
+        "next": "P0_project_shaping",
+        "agent": "game_designer",
+        "requires_commit": true,
+        "remark": "改项目设定重新进入对焦会话，先读当前定稿"
+      }
+    },
+    "gates": {},
+    "remark": "项目未达 P1_project_ready 时不得建角色，接口返回 409"
+  },
+  {
+    "code": "character_v1",
+    "target_kind": "character",
+    "name": "人物工作流",
+    "states": [
+      "S0_spec_drafting",
+      "S1_spec_confirmed",
+      "S2_render_generated",
+      "S3_render_confirmed",
+      "S4_views_generated",
+      "S5_views_confirmed",
+      "S6_model_generated",
+      "S7_rigged",
+      "S8_animated",
+      "S9_archived"
+    ],
+    "transitions": {
+      "S0_spec_drafting": {
+        "next": "S1_spec_confirmed",
+        "agent": "spec_writer",
+        "reviewer": "spec_reviewer",
+        "verdict_token": "SPEC-CHECK",
+        "gate": "gate1_spec"
+      },
+      "S1_spec_confirmed": {
+        "next": "S2_render_generated",
+        "agent": "image_t2i",
+        "prompt_agent": "prompt_smith",
+        "allow_environment": true
+      },
+      "S2_render_generated": {
+        "next": "S3_render_confirmed",
+        "gate": "gate2_render"
+      },
+      "S3_render_confirmed": {
+        "next": "S4_views_generated",
+        "agent": "image_i2i",
+        "prompt_agent": "prompt_smith",
+        "reviewer": "vision_reviewer",
+        "verdict_token": "VIEW-CHECK",
+        "allow_environment": false,
+        "variants": ["正面", "右侧", "背面", "左侧"],
+        "required_references": ["pose_template", "final_render"]
+      },
+      "S4_views_generated": { "next": "S5_views_confirmed" },
+      "S5_views_confirmed": { "next": "S6_model_generated", "agent": "model3d" },
+      "S6_model_generated": { "next": "S7_rigged", "agent": "model3d" },
+      "S7_rigged": { "next": "S8_animated", "agent": "model3d" },
+      "S8_animated": { "next": "S9_archived" },
+      "S9_archived": { "next": null }
+    },
+    "gates": {
+      "gate1_spec": {
+        "at_state": "S0_spec_drafting",
+        "kind": "human",
+        "prompt": "确认角色设定与硬性约束清单",
+        "options": ["采用定稿", "改某一项重生", "换方向重生", "停在这里"],
+        "blocks_states": [
+          "S2_render_generated",
+          "S3_render_confirmed",
+          "S4_views_generated"
+        ]
+      },
+      "gate2_render": {
+        "at_state": "S2_render_generated",
+        "kind": "human",
+        "prompt": "定稿最终渲染图",
+        "options": ["采用定稿", "改某一项重生", "换方向重生", "停在这里"],
+        "blocks_states": ["S4_views_generated", "S5_views_confirmed"]
+      }
+    },
+    "remark": "两道人工门禁不可绕过；自动裁决只能拦不能放行，REJECT 自动重生上限 3 次后转人工"
+  }
+]

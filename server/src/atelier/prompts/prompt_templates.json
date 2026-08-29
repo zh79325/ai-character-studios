@@ -1,0 +1,130 @@
+[
+  {
+    "code": "layer_pose",
+    "category": "character",
+    "slot": "pose",
+    "sort_no": 10,
+    "content": "{pose_desc}, full body visible, {view_constraint}",
+    "remark": "姿态层"
+  },
+  {
+    "code": "layer_head",
+    "category": "character",
+    "slot": "head",
+    "sort_no": 20,
+    "content": "{head_desc}",
+    "remark": "头部层：角、眼、口、面部轮廓"
+  },
+  {
+    "code": "layer_torso",
+    "category": "character",
+    "slot": "torso",
+    "sort_no": 30,
+    "content": "{torso_desc}",
+    "remark": "躯干层：体表材质、肌肉体格"
+  },
+  {
+    "code": "layer_limbs",
+    "category": "character",
+    "slot": "limbs",
+    "sort_no": 40,
+    "content": "{limbs_desc}",
+    "remark": "四肢层：手指数、脚趾数、是否着装鞋袜"
+  },
+  {
+    "code": "layer_appendages",
+    "category": "character",
+    "slot": "appendages",
+    "sort_no": 50,
+    "content": "{count_word} distinct {appendage_name}, {appendage_desc}, clearly separated, not merged into one",
+    "remark": "附属结构层：必须写明数量与分离状态"
+  },
+  {
+    "code": "layer_color",
+    "category": "character",
+    "slot": "color",
+    "sort_no": 60,
+    "content": "{main_color} as dominant tone, {highlight_color} on lit surfaces, {glow_desc}",
+    "remark": "颜色层：按 art bible 第 4 节语义选色"
+  },
+  {
+    "code": "layer_material",
+    "category": "character",
+    "slot": "material",
+    "sort_no": 70,
+    "content": "{material_desc}",
+    "remark": "材质层：哑光/金属/半透明"
+  },
+  {
+    "code": "layer_env_render",
+    "category": "character",
+    "slot": "environment",
+    "sort_no": 80,
+    "content": "{habitat_desc}, {terrain}, {weather}, cinematic composition",
+    "remark": "环境层，仅 S2 渲染图使用"
+  },
+  {
+    "code": "layer_env_views",
+    "category": "character",
+    "slot": "environment",
+    "sort_no": 80,
+    "content": "Pure white background, no gradient, no floor, no shadow",
+    "remark": "环境层，S4 四视图使用，强制剥离环境"
+  },
+  {
+    "code": "layer_light",
+    "category": "character",
+    "slot": "lighting",
+    "sort_no": 90,
+    "content": "{light_direction}, {color_temperature}, {contrast_desc}",
+    "remark": "光照层：取 art bible 第 2 节"
+  },
+  {
+    "code": "layer_style",
+    "category": "character",
+    "slot": "style",
+    "sort_no": 100,
+    "content": "{art_style}, {mood}",
+    "remark": "风格层：art bible 第 1 节 + 项目 style"
+  },
+  {
+    "code": "layer_quality",
+    "category": "character",
+    "slot": "quality",
+    "sort_no": 110,
+    "content": "{quality_desc}, highly detailed, sharp focus",
+    "remark": "画质层"
+  },
+  {
+    "code": "view_front",
+    "category": "character",
+    "slot": "view_constraint",
+    "sort_no": 200,
+    "content": "front view, facing camera directly, arms hanging naturally at sides, face fully visible",
+    "remark": "正面视角约束"
+  },
+  {
+    "code": "view_right",
+    "category": "character",
+    "slot": "view_constraint",
+    "sort_no": 201,
+    "content": "three-quarter right view, body turned about 30 degrees to the right, right arm slightly forward, side silhouette clear",
+    "remark": "右侧视角约束"
+  },
+  {
+    "code": "view_back",
+    "category": "character",
+    "slot": "view_constraint",
+    "sort_no": 202,
+    "content": "back view, completely facing away from camera, back and appendages fully visible with correct count",
+    "remark": "背面视角约束"
+  },
+  {
+    "code": "view_left",
+    "category": "character",
+    "slot": "view_constraint",
+    "sort_no": 203,
+    "content": "three-quarter left view, body turned about 30 degrees to the left, mirrored from the right view",
+    "remark": "左侧视角约束"
+  }
+]

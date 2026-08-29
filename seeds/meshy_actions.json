@@ -1,0 +1,6 @@
+{
+  "_note": "Meshy 预置动作库（600+ 条）由 C1 阶段接入 meshy driver 后从 Meshy API 拉取并回写本文件，再重跑 seed 入库。本期不手写、不臆造 action_id，避免灌入不存在的 ID 导致 S8 调用失败。",
+  "source": "GET https://api.meshy.ai/openapi/v1/animations/actions",
+  "synced_at": null,
+  "actions": []
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "code": "neg_common",
+    "scene": "common",
+    "content": "lowres, blurry, jpeg artifacts, bad anatomy, extra limbs, missing limbs, fused fingers, deformed hands, mutated, disfigured, watermark, signature, text, logo",
+    "remark": "所有生图通用"
+  },
+  {
+    "code": "neg_render",
+    "scene": "render",
+    "content": "flat lighting, washed out colors, overexposed, cluttered composition, cropped subject, out of frame",
+    "remark": "S2 最终渲染图专用，允许环境背景"
+  },
+  {
+    "code": "neg_views",
+    "scene": "views",
+    "content": "background, grid, shadow on ground, text, watermark, environment, scenery, gradient background, gray background, floor, reflection, multiple characters, cropped body",
+    "remark": "S4 四视图专用，强制纯白底、剥离环境"
+  },
+  {
+    "code": "neg_views_back",
+    "scene": "views_back",
+    "content": "merged tails, fused appendages, single tail, wrong tail count, face visible from behind, body twisted toward camera",
+    "remark": "背面图专项，与 neg_views 叠加使用"
+  },
+  {
+    "code": "neg_model3d_input",
+    "scene": "model3d",
+    "content": "props in hand, cape covering body, loose flowing cloth, motion blur, dynamic pose, foreshortening",
+    "remark": "供 3D 建模的输入图应尽量规整，避免遮挡与透视压缩"
+  }
+]

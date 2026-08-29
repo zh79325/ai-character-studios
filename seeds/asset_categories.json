@@ -1,0 +1,30 @@
+[
+  {
+    "code": "character",
+    "name": "人物",
+    "dir_name": "characters",
+    "sort_no": 10,
+    "enabled": true
+  },
+  {
+    "code": "equipment",
+    "name": "装备",
+    "dir_name": "equipment",
+    "sort_no": 20,
+    "enabled": false
+  },
+  {
+    "code": "map",
+    "name": "地图",
+    "dir_name": "maps",
+    "sort_no": 30,
+    "enabled": false
+  },
+  {
+    "code": "scene",
+    "name": "场景",
+    "dir_name": "scenes",
+    "sort_no": 40,
+    "enabled": false
+  }
+]

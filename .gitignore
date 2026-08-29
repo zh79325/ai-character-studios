@@ -1,6 +1,10 @@
 # 系统
 .DS_Store
+._*
 .idea/
+.vscode/
+*.swp
+*.log
 
 # Python
 .venv/
@@ -10,17 +14,27 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
+build/
+server/dist/
+.coverage
+htmlcov/
 
 # Node
 node_modules/
 app/dist/
 app/out/
+app/release/
 .vite/
 
 # 日志库：含 provider 配置与 api_key，一律不进 Git（共享靠直接复制文件）
 db/runtime.db
 db/runtime.db-shm
 db/runtime.db-wal
+
+# 配置库本体进 Git，WAL 边文件不进
+db/config.db-shm
+db/config.db-wal
+*.db-journal
 
 # 环境变量与 provider 导入导出 JSON
 .env
@@ -38,3 +52,6 @@ unity/**/Obj/
 unity/**/Logs/
 unity/**/UserSettings/
 unity/Builds/
+unity/**/*.csproj
+unity/**/*.sln
+unity/**/*.userprefs
