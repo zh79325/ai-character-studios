@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parsePortLine, PORT_LINE_PREFIX } from './backend'
+import { externalPort, parsePortLine, PORT_LINE_PREFIX, stopBackend } from './backend'
 
 describe('parsePortLine', () => {
   it('认出端口行', () => {
@@ -21,5 +21,21 @@ describe('parsePortLine', () => {
     expect(parsePortLine(`${PORT_LINE_PREFIX}0`)).toBeNull()
     expect(parsePortLine(`${PORT_LINE_PREFIX}70000`)).toBeNull()
     expect(parsePortLine(`${PORT_LINE_PREFIX}62066.5`)).toBeNull()
+  })
+})
+
+describe('externalPort', () => {
+  it('配了就认，没配或不像端口就当没配', () => {
+    expect(externalPort({ ATELIER_BACKEND_PORT: '8765' })).toBe(8765)
+    expect(externalPort({})).toBeNull()
+    expect(externalPort({ ATELIER_BACKEND_PORT: '' })).toBeNull()
+    expect(externalPort({ ATELIER_BACKEND_PORT: 'abc' })).toBeNull()
+    expect(externalPort({ ATELIER_BACKEND_PORT: '0' })).toBeNull()
+  })
+})
+
+describe('stopBackend', () => {
+  it('外部后端（process 为 null）不去杀', () => {
+    expect(() => stopBackend({ port: 8765, process: null })).not.toThrow()
   })
 })

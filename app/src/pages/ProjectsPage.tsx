@@ -4,6 +4,9 @@
  * 这里管的是「本机认识哪些项目」，不是项目的内容。三个动作对应三种真实处境：新建（从零
  * 开一个）、导入（换机器、外置盘、同事拷来的目录）、扫默认根（用户直接把目录拖进
  * `assets/`）。移出只删本机索引，磁盘上的文件一个不动——那是用户的资产。
+ *
+ * 顶栏的「项目」菜单干的是同一批事，两边都留着：菜单是干活途中的快捷入口，这页才看得到
+ * 目录、最近打开时间这些对得上号的信息。
  */
 import { FolderOpenOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -27,7 +30,7 @@ export default function ProjectsPage() {
   const list = useQuery({ queryKey: ['projects'], queryFn: () => listProjects() })
 
   /**
-   * 换项目等于换一个库，缓存里所有项目相关的东西一律作废。
+   * 打开项目等于换一个库，缓存里所有项目相关的东西一律作废。
    *
    * 逐个点名 key 迟早会漏（后面还要加会话、素材、渲染图），而这个动作是用户主动做的、
    * 一秒钟一次都不到，全刷一遍的代价可以忽略。
@@ -51,14 +54,15 @@ export default function ProjectsPage() {
   const doImport = useMutation({
     mutationFn: (dir: string) => importProject(dir),
     onSuccess: (fresh) => {
-      message.success(`已导入并切到 ${fresh.current}`)
+      message.success(`已导入并打开 ${fresh.current}`)
       setImportDir(null)
       adopt(fresh)
+      navigate('/project')
     },
     onError: (err: Error) => message.error(err.message),
   })
 
-  const doSwitch = useMutation({
+  const open = useMutation({
     mutationFn: (code: string) => switchProject(code),
     onSuccess: (fresh) => {
       adopt(fresh)
@@ -84,7 +88,6 @@ export default function ProjectsPage() {
         <Space direction="vertical" size={0}>
           <Space size={6}>
             <Typography.Text strong>{name}</Typography.Text>
-            {row.is_current && <Tag color="blue">当前</Tag>}
             {row.missing && <Tag color="error">目录不在</Tag>}
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -119,12 +122,12 @@ export default function ProjectsPage() {
         <Space size={4}>
           <Button
             size="small"
-            type={row.is_current ? 'default' : 'primary'}
-            disabled={row.missing || row.is_current}
-            loading={doSwitch.isPending && doSwitch.variables === row.code}
-            onClick={() => doSwitch.mutate(row.code)}
+            type="primary"
+            disabled={row.missing}
+            loading={open.isPending && open.variables === row.code}
+            onClick={() => open.mutate(row.code)}
           >
-            {row.is_current ? '已在用' : '切过去'}
+            打开
           </Button>
           <Popconfirm
             title={`把 ${row.code} 移出本机？`}
@@ -192,8 +195,8 @@ export default function ProjectsPage() {
 
       <Modal
         open={importDir !== null}
-        title="导入已有项目"
-        okText="导入"
+        title="导入项目"
+        okText="导入并打开"
         confirmLoading={doImport.isPending}
         okButtonProps={{ disabled: !importDir?.trim() }}
         onCancel={() => setImportDir(null)}

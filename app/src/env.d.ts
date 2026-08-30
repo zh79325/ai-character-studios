@@ -9,7 +9,7 @@ declare global {
   }
 
   interface ImportMetaEnv {
-    /** 脱离 Electron 调试渲染层时手填后端端口。 */
+    /** 脱离 Electron 调渲染层时手填后端端口，不填按 8799。 */
     readonly VITE_API_PORT?: string
   }
 }

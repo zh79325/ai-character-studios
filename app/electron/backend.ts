@@ -3,6 +3,9 @@
  *
  * 端口不是前端定的，是后端绑完 socket 后从 stdout 第一行告诉我们的（`ATELIER_PORT=xxxxx`）。
  * 这样避免「前端挑个端口结果被占」和「打印出来的端口被别人抢走」两种空窗。
+ *
+ * 后端也可以自己单独跑（`uv run atelier-serve --port 8799`），这时给 Electron 设
+ * `ATELIER_BACKEND_PORT=8799`，它就只连不 spawn——两个进程同时开着会抢同一份 SQLite。
  */
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -19,16 +22,28 @@ type BackendProcess = ChildProcessByStdio<null, Readable, Readable>
 
 export interface Backend {
   port: number
-  process: BackendProcess
+  /** 连的是外部已经跑着的后端时为 null，退出时也就不该去杀它。 */
+  process: BackendProcess | null
+}
+
+/** 认一个端口数字，不像端口就返回 null。 */
+function parsePort(raw: string): number | null {
+  const port = Number(raw.trim())
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null
+  return port
 }
 
 /** 从一行输出里认端口；不是端口行返回 null。 */
 export function parsePortLine(line: string): number | null {
   const trimmed = line.trim()
   if (!trimmed.startsWith(PORT_LINE_PREFIX)) return null
-  const port = Number(trimmed.slice(PORT_LINE_PREFIX.length))
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null
-  return port
+  return parsePort(trimmed.slice(PORT_LINE_PREFIX.length))
+}
+
+/** 外部后端的端口，没配或配得不像端口就是 null（这时自己 spawn 一个）。 */
+export function externalPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.ATELIER_BACKEND_PORT
+  return raw ? parsePort(raw) : null
 }
 
 /** 打包后 server/ 被塞进 resources/，开发时它在仓库根的兄弟目录。 */
@@ -110,9 +125,9 @@ export function startBackend({ serverDir, onLog }: StartOptions): Promise<Backen
   })
 }
 
-/** 先温和地要它收摊，赖着不走再强杀。 */
+/** 先温和地要它收摊，赖着不走再强杀。外部后端不是我们起的，不碰。 */
 export function stopBackend(backend: Backend | null, graceMs = 3_000): void {
-  if (!backend || backend.process.exitCode !== null) return
+  if (!backend?.process || backend.process.exitCode !== null) return
   const child = backend.process
   child.kill('SIGTERM')
   const timer = setTimeout(() => {

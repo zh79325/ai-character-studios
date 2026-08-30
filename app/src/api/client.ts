@@ -1,9 +1,13 @@
 /**
  * 后端地址的唯一出处。
  *
- * 端口是运行时才知道的（主进程从后端 stdout 读来），所以这里缓存一次 Promise，
- * 后续所有请求共用；开发时若脱离 Electron 直接开浏览器，允许用 VITE_API_PORT 兜底。
+ * 在 Electron 里端口是运行时才知道的（主进程从后端 stdout 读来），所以这里缓存一次 Promise，
+ * 后续所有请求共用；脱离 Electron 直接开浏览器（`npm run dev:web`）时退到
+ * `VITE_API_PORT`，没配就按约定的 8799——单独起后端就是 `atelier-serve --port 8799`。
  */
+
+/** 单独跑后端时的约定端口。前端配置得能改，但默认值要跟后端文档里那条命令对上。 */
+export const DEFAULT_DEV_PORT = 8799
 
 let cached: Promise<string> | null = null
 
@@ -41,9 +45,8 @@ export function baseUrl(): Promise<string> {
 async function resolveBaseUrl(): Promise<string> {
   const bridge = window.atelier
   if (!bridge) {
-    const fallback = import.meta.env.VITE_API_PORT
-    if (fallback) return joinBase(Number(fallback))
-    throw new BackendUnavailable('不在 Electron 里跑，也没给 VITE_API_PORT')
+    const configured = import.meta.env.VITE_API_PORT
+    return joinBase(configured ? Number(configured) : DEFAULT_DEV_PORT)
   }
   const port = await bridge.port()
   if (port === null) {

@@ -1,7 +1,7 @@
 /**
- * 当前项目页：项目内容的入口。
+ * 项目页：项目内容的入口，展示的就是当下打开的那个项目。
  *
- * 一台新装的机器上没有项目，这里就是空的——但不能只显示「无数据」，得把用户送到能建项目
+ * 一台新装的机器上一个项目都没有，这里就是空的——但不能只显示「无数据」，得把用户送到能建项目
  * 的地方，否则整个应用看上去是坏的。
  */
 import { FolderOpenOutlined } from '@ant-design/icons'
@@ -29,15 +29,14 @@ export default function ProjectPage() {
   if (notChosen) {
     return (
       <Card>
-        <Empty description="还没有选择项目">
-          <Space>
-            <Button type="primary" onClick={() => navigate('/projects')}>
-              去新建一个
-            </Button>
-            <Button icon={<FolderOpenOutlined />} onClick={() => navigate('/projects')}>
-              导入已有目录
-            </Button>
-          </Space>
+        <Empty description="还没打开项目">
+          <Button
+            type="primary"
+            icon={<FolderOpenOutlined />}
+            onClick={() => navigate('/projects')}
+          >
+            去项目管理
+          </Button>
         </Empty>
       </Card>
     )

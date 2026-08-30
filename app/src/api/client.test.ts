@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BackendUnavailable,
   baseUrl,
+  DEFAULT_DEV_PORT,
   errorMessage,
   joinBase,
   resetBaseUrl,
@@ -66,6 +67,18 @@ describe('baseUrl', () => {
     await expect(baseUrl()).rejects.toThrow(BackendUnavailable)
     fakeBridge(5000)
     expect(await baseUrl()).toBe('http://127.0.0.1:5000')
+  })
+
+  it('没有 preload（浏览器里单跑前端）就连约定端口，不报错', async () => {
+    ;(globalThis as { window?: unknown }).window = {}
+    expect(await baseUrl()).toBe(joinBase(DEFAULT_DEV_PORT))
+  })
+
+  it('VITE_API_PORT 能盖掉默认端口', async () => {
+    ;(globalThis as { window?: unknown }).window = {}
+    vi.stubEnv('VITE_API_PORT', '9001')
+    expect(await baseUrl()).toBe('http://127.0.0.1:9001')
+    vi.unstubAllEnvs()
   })
 })
 
