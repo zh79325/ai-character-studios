@@ -23,6 +23,7 @@ import { useEffect } from 'react'
 
 import { agents as fetchAgents, options as fetchOptions } from '@/api/config'
 import { saveModel, updateModel } from '@/api/providers'
+import { kindLabel } from '@/lib/limits'
 import type { Model, ModelIn, Provider } from '@/types/api'
 
 const CAPABILITIES = ['text', 'vision', 'image', 'video', 'mesh']
@@ -192,11 +193,14 @@ export default function ModelDrawer({ open, provider, model, onClose, onSaved }:
                   <Form.Item
                     name={[field.name, 'limit_kind']}
                     rules={[{ required: true, message: '选口径' }]}
-                    style={{ marginBottom: 0, width: 110 }}
+                    style={{ marginBottom: 0, width: 170 }}
                   >
                     <Select
                       placeholder="口径"
-                      options={(opts.data?.limit_kinds ?? []).map((v) => ({ value: v, label: v }))}
+                      options={(opts.data?.limit_kinds ?? []).map((v) => ({
+                        value: v,
+                        label: kindLabel(v),
+                      }))}
                     />
                   </Form.Item>
                   <Form.Item

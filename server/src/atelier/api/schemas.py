@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from atelier.providers import period as period_mod
 from atelier.providers.base import LIMIT_KINDS
 
-LimitKind = Literal["tokens", "calls", "credits"]
+LimitKind = Literal["tokens", "calls", "credits", "images"]
 
 DRIVERS = (
     "openai_compat",

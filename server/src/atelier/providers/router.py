@@ -10,14 +10,16 @@
    priority 内按 sort_no、provider_code、model_id 稳定排序，第一个可用的就是它。
 
 额度口径分两种：tokens 只能「调用前查余量、调用后补记」（`report_success`），
-calls / credits 在调用前就知道消耗，选中即预扣（Meshy 的每种操作单价配在
-`provider_models.params.credit_costs`）。
+calls / credits / images 在调用前就知道消耗，选中即预扣（Meshy 的每种操作单价配在
+`provider_models.params.credit_costs`）。一次调用可以同时卡几种口径：生图既算接口次数（calls）
+也算出图张数（images），哪种先满那个候选就不能用了。
 
 这里不发一个业务 HTTP 请求：驱动实现随 A4、A9 落，只需把 `CallOutcome` 交回来记账。
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -48,7 +50,7 @@ from atelier.settings import get_settings
 _log = structlog.get_logger(__name__)
 
 # 预扣型口径：消耗在调用前已知，选中即扣
-PRE_DEDUCT_KINDS = ("calls", "credits")
+PRE_DEDUCT_KINDS = ("calls", "credits", "images")
 
 
 def _now() -> datetime:
@@ -111,6 +113,15 @@ def credit_need(candidate: Candidate, operation: str | None) -> int:
     return 1
 
 
+def need_of(candidate: Candidate, limit_kind: str, operation: str | None, units: int) -> int:
+    """这一次要扣多少：credits 看操作单价，images 看出几张，其余口径一次算一笔。"""
+    if limit_kind == "credits":
+        return credit_need(candidate, operation)
+    if limit_kind == "images":
+        return max(int(units or 1), 1)
+    return 1
+
+
 # --------------------------------------------------------------------------- #
 # 熔断
 # --------------------------------------------------------------------------- #
@@ -170,6 +181,8 @@ def select_candidate(
     binding: StickyBinding | None = None,
     conversation_id: str | None = None,
     limit_kind: str = "tokens",
+    also_kinds: Sequence[str] = (),
+    units: int = 1,
     operation: str | None = None,
     task_id: str | None = None,
     project_code: str | None = None,
@@ -179,7 +192,11 @@ def select_candidate(
     给了 binding（会话行）就走粘性：已绑且仍可用就直接复用，不动任何额度判定之外的状态。
     绑定的变更只写在传进来的对象上，**由调用方提交项目库**；`session` 是全局库，提交它
     落不了会话的改动。
+
+    limit_kind 是记账用的主口径（写进 route_log），also_kinds 是同一次调用还要一并卡的口径，
+    模型上没配那种限额就自然不生效。
     """
+    kinds = _kinds_of(limit_kind, also_kinds)
     conversation_id = conversation_id or (binding.id if binding is not None else None)
     candidates = candidates_for(session, agent_code)
     if not candidates:
@@ -208,7 +225,7 @@ def select_candidate(
                 (f"provider_model#{bound_id}", "已绑模型被删、被禁用或不再挂在该 Agent 下")
             )
         else:
-            blocked = _blocked_reason(session, bound, limit_kind, operation, reserve=False)
+            blocked = _blocked_reason(session, bound, kinds, operation, units, reserve=False)
             if blocked is None:
                 decision = Decision(
                     candidate=bound,
@@ -216,7 +233,7 @@ def select_candidate(
                     conversation_id=conversation_id,
                     skipped=(),
                 )
-                _reserve_if_needed(session, bound, limit_kind, operation)
+                _reserve_if_needed(session, bound, kinds, operation, units)
                 _log_decision(session, agent_code, decision, task_id, project_code, limit_kind)
                 return decision
             skipped.append((bound.label, blocked))
@@ -228,7 +245,7 @@ def select_candidate(
         pool = same_model + [c for c in pool if c.model_id != bound.model_id]
 
     for candidate in pool:
-        blocked = _blocked_reason(session, candidate, limit_kind, operation, reserve=True)
+        blocked = _blocked_reason(session, candidate, kinds, operation, units, reserve=True)
         if blocked is not None:
             skipped.append((candidate.label, blocked))
             continue
@@ -274,11 +291,22 @@ def select_candidate(
     raise NoCandidateError(f"Agent {agent_code} 全部候选不可用：{reason}")
 
 
+def _kinds_of(limit_kind: str, also_kinds: Sequence[str]) -> tuple[str, ...]:
+    """主口径排头一份去重名单，同一种口径不能扣两遍。"""
+    ordered = [limit_kind, *also_kinds]
+    seen: list[str] = []
+    for kind in ordered:
+        if kind and kind not in seen:
+            seen.append(kind)
+    return tuple(seen)
+
+
 def _blocked_reason(
     session: Session,
     candidate: Candidate,
-    limit_kind: str,
+    kinds: tuple[str, ...],
     operation: str | None,
+    units: int,
     *,
     reserve: bool,
 ) -> str | None:
@@ -295,25 +323,39 @@ def _blocked_reason(
     if provider_model is None:
         return "模型记录已删除"
 
-    need = credit_need(candidate, operation) if limit_kind in PRE_DEDUCT_KINDS else 1
-    if not usage.has_budget(session, provider_model, limit_kind, need=need):
-        return f"{limit_kind} 额度本窗口已用尽"
+    # 先把所有口径都查一遍，再动手扣：先扣后发现另一种不够，先那一笔就白扣了
+    for kind in kinds:
+        need = need_of(candidate, kind, operation, units)
+        if not usage.has_budget(session, provider_model, kind, need=need):
+            return f"{kind} 额度本窗口已用尽"
 
-    if reserve and limit_kind in PRE_DEDUCT_KINDS:
-        budget = usage.reserve(session, provider_model, limit_kind, delta=need)
-        if not budget.granted:
-            return f"{limit_kind} 预扣失败（{budget.line()}）"
+    if reserve:
+        for kind in kinds:
+            if kind not in PRE_DEDUCT_KINDS:
+                continue
+            need = need_of(candidate, kind, operation, units)
+            budget = usage.reserve(session, provider_model, kind, delta=need)
+            if not budget.granted:
+                return f"{kind} 预扣失败（{budget.line()}）"
     return None
 
 
 def _reserve_if_needed(
-    session: Session, candidate: Candidate, limit_kind: str, operation: str | None
+    session: Session,
+    candidate: Candidate,
+    kinds: tuple[str, ...],
+    operation: str | None,
+    units: int,
 ) -> None:
-    if limit_kind not in PRE_DEDUCT_KINDS:
-        return
     provider_model = session.get(ProviderModel, candidate.provider_model_id)
-    if provider_model is not None:
-        usage.reserve(session, provider_model, limit_kind, delta=credit_need(candidate, operation))
+    if provider_model is None:
+        return
+    for kind in kinds:
+        if kind not in PRE_DEDUCT_KINDS:
+            continue
+        usage.reserve(
+            session, provider_model, kind, delta=need_of(candidate, kind, operation, units)
+        )
 
 
 # --------------------------------------------------------------------------- #

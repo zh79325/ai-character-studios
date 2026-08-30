@@ -1,6 +1,6 @@
 /** 后端 `api/schemas.py` 与 `api/config.py` 响应模型的镜像。字段名一律与后端保持一致。 */
 
-export type LimitKind = 'tokens' | 'calls' | 'credits'
+export type LimitKind = 'tokens' | 'calls' | 'credits' | 'images'
 
 export interface LimitIn {
   limit_kind: string

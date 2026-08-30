@@ -37,6 +37,7 @@ import { useState } from 'react'
 
 import { agents as fetchAgents, options as fetchOptions } from '@/api/config'
 import { bindAgents, listProviders, updateModel } from '@/api/providers'
+import { kindLabel, limitText } from '@/lib/limits'
 import type { AgentDef, LimitIn, Model, Provider } from '@/types/api'
 
 /** 一个可指定的模型 + 它所属 provider 的排序信息，摊平了好排序、好选。 */
@@ -74,15 +75,6 @@ function flatten(providers: Provider[]): Choice[] {
   )
   rows.sort((a, b) => a.priority - b.priority || a.sortNo - b.sortNo)
   return rows
-}
-
-/** 限额摘要：`calls 200/day`，一条都没配就是不限量。 */
-function limitText(model: Model): string {
-  const live = model.limits.filter((limit) => limit.max_value > 0)
-  if (live.length === 0) return '不限量'
-  return live
-    .map((limit) => `${limit.limit_kind} ${limit.max_value}/${limit.period_expr}`)
-    .join('，')
 }
 
 export default function AgentsPage() {
@@ -451,7 +443,7 @@ export default function AgentsPage() {
         open={limitTarget !== null}
         title={limitTarget ? `${limitTarget.providerName} / ${limitTarget.modelId} 的限额` : ''}
         okText="保存限额"
-        width={720}
+        width={780}
         confirmLoading={saveLimits.isPending}
         onCancel={() => setLimitTarget(null)}
         onOk={submitLimits}
@@ -464,12 +456,12 @@ export default function AgentsPage() {
           {limitRows.map((row, index) => (
             <Space key={index} align="center" style={{ display: 'flex' }}>
               <Select
-                style={{ width: 110 }}
+                style={{ width: 170 }}
                 placeholder="口径"
                 value={row.limit_kind || undefined}
                 options={(opts.data?.limit_kinds ?? []).map((kind) => ({
                   value: kind,
-                  label: kind,
+                  label: kindLabel(kind),
                 }))}
                 onChange={(kind: string) => patchLimit(index, { limit_kind: kind })}
               />

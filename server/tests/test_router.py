@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from atelier.db.project_models import Conversation
-from atelier.db.runtime_models import CircuitBreaker, RouteLog
+from atelier.db.runtime_models import CircuitBreaker, ModelLimit, ProviderModel, RouteLog
 from atelier.providers import router, usage
 from atelier.providers.base import (
     CallOutcome,
@@ -397,6 +397,71 @@ def test_credits_run_out_after_configured_total(session: Session) -> None:
         router.select_candidate(session, "model3d", limit_kind="credits", operation="image_to_3d")
     with pytest.raises(NoCandidateError):
         router.select_candidate(session, "model3d", limit_kind="credits", operation="image_to_3d")
+
+
+# --------------------------------------------------------------------------- #
+# 出图张数
+# --------------------------------------------------------------------------- #
+
+
+def _picture_model(session: Session, *, calls: int, images: int) -> ProviderModel:
+    """一个既按接口次数、又按出图张数记账的图片模型。"""
+    provider = make_provider(session, "ark")
+    model = make_model(
+        session, provider, "seedream-5.0", agent_code=AGENT, limit=("calls", calls, "day")
+    )
+    session.add(
+        ModelLimit(
+            provider_model_id=model.id, limit_kind="images", max_value=images, period_expr="day"
+        )
+    )
+    session.commit()
+    return model
+
+
+def test_image_kind_is_deducted_alongside_calls(session: Session) -> None:
+    """生图的主口径还是 calls，images 是附加口径，两笔账各记各的。"""
+    model = _picture_model(session, calls=10, images=3)
+
+    router.select_candidate(session, AGENT, limit_kind="calls", also_kinds=("images",))
+
+    assert usage.peek(session, model, "calls").used == 1
+    assert usage.peek(session, model, "images").used == 1
+
+
+def test_units_decide_how_many_pictures_are_deducted(session: Session) -> None:
+    """一次出四张就扣四张：只按 calls 算的话，四倍的消耗会被记成一次。"""
+    model = _picture_model(session, calls=10, images=8)
+
+    router.select_candidate(session, AGENT, limit_kind="calls", also_kinds=("images",), units=4)
+
+    assert usage.peek(session, model, "calls").used == 1
+    assert usage.peek(session, model, "images").used == 4
+
+
+def test_pictures_run_out_before_calls_do(session: Session) -> None:
+    """张数先见底就该没候选了，哪怕接口次数还剩一大把。"""
+    model = _picture_model(session, calls=10, images=2)
+
+    for _ in range(2):
+        router.select_candidate(session, AGENT, limit_kind="calls", also_kinds=("images",))
+    with pytest.raises(NoCandidateError):
+        router.select_candidate(session, AGENT, limit_kind="calls", also_kinds=("images",))
+
+    assert "images" in (_logs(session)[-1].reason or "")
+    # 张数不够就一笔都别扣：次数被白扣掉的话，这个窗口内的账就永远对不上了
+    assert usage.peek(session, model, "calls").used == 2
+
+
+def test_model_without_an_image_limit_is_never_blocked(session: Session) -> None:
+    """没配张数限额就是不限张数，附加口径不能凭空拦人。"""
+    provider = make_provider(session, "ark")
+    model = make_model(session, provider, "seedream-5.0", agent_code=AGENT)
+
+    for _ in range(3):
+        router.select_candidate(session, AGENT, limit_kind="calls", also_kinds=("images",))
+
+    assert usage.peek(session, model, "images").unlimited
 
 
 def test_route_log_never_stores_the_api_key(session: Session) -> None:

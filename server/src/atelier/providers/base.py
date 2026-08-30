@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-# 计量口径：文本记 tokens，生图/视频记 calls，Meshy 记 credits
-LIMIT_KINDS = ("tokens", "calls", "credits")
+# 计量口径：文本记 tokens，生图/视频记 calls，Meshy 记 credits，图片还可以另记 images（出图张数）
+LIMIT_KINDS = ("tokens", "calls", "credits", "images")
 
 # OpenAI 兼容端点的事实标准头。方舟、百炼 compatible-mode 沿用这套命名；
 # 读不到就当无限额，不猜别的名字。Meshy 余额不在响应头里，只能靠调用报错发现。
@@ -23,6 +23,8 @@ REMAINING_HEADERS: dict[str, tuple[str, ...]] = {
     "tokens": ("x-ratelimit-remaining-tokens",),
     "calls": ("x-ratelimit-remaining-requests",),
     "credits": (),
+    # 张数没有对应的响应头，只能本地累加
+    "images": (),
 }
 
 # 错误体里出现这些词，才判定是额度用尽（要换候选）而不是限流（该退避重试）

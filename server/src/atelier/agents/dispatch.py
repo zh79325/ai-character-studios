@@ -40,6 +40,10 @@ MAX_CANDIDATE_SWITCHES = 3
 
 RETRY_BACKOFF_SECONDS = 1.5
 
+IMAGE_KINDS = ("images",)
+"""生图除了记接口次数，还按出图张数再卡一道：同样一次调用，出 1 张跟出 4 张对画
+额包的消耗差 4 倍，只看 `calls` 卡不住。模型上没配 images 限额就自然不生效。"""
+
 ChatFn = Callable[..., text_chat.ChatReply]
 """对话调用口。测试与离线冒烟用假实现替换，签名跟 `text_chat.complete` 一致。"""
 
@@ -175,6 +179,8 @@ def select(
     agent_code: str,
     *,
     limit_kind: str = "tokens",
+    also_kinds: Sequence[str] = (),
+    units: int = 1,
     project_code: str | None = None,
     task_id: str | None = None,
 ) -> Decision:
@@ -187,6 +193,8 @@ def select(
         runtime,
         agent_code,
         limit_kind=limit_kind,
+        also_kinds=also_kinds,
+        units=units,
         task_id=task_id,
         project_code=project_code,
     )
@@ -233,11 +241,16 @@ def draw(
 ) -> image_gen.ImageReply:
     """出一张图：选候选、调、失败换人再调。
 
-    额度口径是 `calls`，选中即按单价预扣——生图的消耗在调用前就知道，不像 token 要事后
-    读回来。
+    额度卡两种口径：`calls`（接口次数）跟 `images`（出图张数，一次一张），模型上配了哪种
+    那种就生效。两者都在调用前就知道消耗，选中即预扣，不像 token 要事后读回来。
     """
     picked = select(
-        runtime, agent_code, limit_kind="calls", project_code=project_code, task_id=task_id
+        runtime,
+        agent_code,
+        limit_kind="calls",
+        also_kinds=IMAGE_KINDS,
+        project_code=project_code,
+        task_id=task_id,
     )
     reply = _drive(
         runtime,
@@ -257,7 +270,12 @@ def draw(
         project_code=project_code,
         task_id=task_id,
         reselect=lambda _: select(
-            runtime, agent_code, limit_kind="calls", project_code=project_code, task_id=task_id
+            runtime,
+            agent_code,
+            limit_kind="calls",
+            also_kinds=IMAGE_KINDS,
+            project_code=project_code,
+            task_id=task_id,
         ),
     )
     _log.info(

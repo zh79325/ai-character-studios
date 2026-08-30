@@ -13,7 +13,7 @@ def test_options_cover_every_dropdown(client: TestClient) -> None:
     body = client.get("/api/config/options").json()
 
     assert "openai_compat" in body["drivers"] and "meshy" in body["drivers"]
-    assert body["limit_kinds"] == ["tokens", "calls", "credits"]
+    assert body["limit_kinds"] == ["tokens", "calls", "credits", "images"]
     assert body["auth_styles"] == ["bearer", "x-api-key"]
     assert {"day", "month", "hour", "week", "total"} <= set(body["period_units"])
     assert "11 点" in body["period_examples"]["day+11H"]

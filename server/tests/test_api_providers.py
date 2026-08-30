@@ -219,7 +219,7 @@ def test_usage_board_shows_the_current_window(client: TestClient, session: Sessi
     usage.record(session, model, "tokens", 250)
 
     board = client.get("/api/providers/usage").json()
-    assert board["limit_kinds"] == ["tokens", "calls", "credits"]
+    assert board["limit_kinds"] == ["tokens", "calls", "credits", "images"]
 
     item = board["items"][0]
     assert item["provider_code"] == "ark"
