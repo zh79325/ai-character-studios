@@ -13,6 +13,7 @@ import { ApiError } from '@/api/client'
 import { currentProject } from '@/api/projects'
 import ArtBibleEditor from '@/components/ArtBibleEditor'
 import CharacterTable from '@/components/CharacterTable'
+import ChatPanel from '@/components/ChatPanel'
 import ProjectConfigForm from '@/components/ProjectConfigForm'
 
 export default function ProjectPage() {
@@ -61,6 +62,11 @@ export default function ProjectPage() {
       <Tabs
         items={[
           { key: 'config', label: '项目配置', children: <ProjectConfigForm /> },
+          {
+            key: 'design',
+            label: '设计会话',
+            children: <ChatPanel agentCode="game_designer" targetKind="project" />,
+          },
           { key: 'art-bible', label: '视觉规范', children: <ArtBibleEditor /> },
           { key: 'characters', label: '人物素材', children: <CharacterTable /> },
         ]}

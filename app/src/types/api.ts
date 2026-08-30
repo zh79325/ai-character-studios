@@ -286,3 +286,115 @@ export interface Character {
   spec_path: string | null
   updated_at: string
 }
+
+// --------------------------------------------------------------------------- //
+// 会话与记忆
+// --------------------------------------------------------------------------- //
+
+export type TargetKind = 'project' | 'character'
+export type MemoryKind = 'preference' | 'taboo' | 'fact'
+
+export interface Conversation {
+  id: string
+  target_kind: string
+  target_ref: string | null
+  agent_code: string
+  title: string
+  /** `active` / `committed` / `discarded`，后两种不能再发消息。 */
+  status: string
+  /** 这场会话粘在哪个候选上——多轮对话不换 provider，前缀缓存才用得上。 */
+  bound_provider_label: string
+  rebind_count: number
+  rebind_reason: string | null
+  created_at: string
+  updated_at: string
+  message_count: number
+  pending_drafts: number
+}
+
+export interface Message {
+  id: number
+  turn_no: number
+  role: string
+  content: string
+  token_count: number
+  /** 已折进摘要。原文还在，面板默认收起、点开可看。 */
+  folded: boolean
+  created_at: string
+}
+
+export interface ConversationMemory {
+  summary: string
+  decisions: string[]
+  open_questions: string[]
+  folded_turns: number
+}
+
+export interface Draft {
+  id: string
+  target_path: string
+  content: string
+  based_on_hash: string
+  status: string
+  created_at: string
+  /** 基线已经变了：这份草稿写出来之后定稿被别处改过，此时沉淀会被拒。 */
+  stale: boolean
+}
+
+export interface ConversationDetail {
+  conversation: Conversation
+  messages: Message[]
+  memory: ConversationMemory
+  drafts: Draft[]
+  /** 这场会话在改哪个定稿文件，diff 面板拿它做标题。 */
+  artifact_path: string | null
+}
+
+export interface Turn {
+  conversation_id: string
+  turn_no: number
+  content: string
+  draft_ids: string[]
+  /** 本轮被压进摘要的轮次，原文仍在库里。 */
+  folded_turns: number[]
+  context_tokens: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  provider_label: string
+}
+
+export interface Archived {
+  target_path: string
+  content_hash: string
+  /** 旧定稿退位后的位置，都在同级 `tmp/` 下。 */
+  previous_path: string | null
+}
+
+export interface CommitResult {
+  conversation_id: string
+  archived: Archived[]
+  memories_added: string[]
+}
+
+export interface DiscardResult {
+  conversation_id: string
+  discarded: number
+}
+
+/** 两份全文，diff 怎么算、怎么显示都是前端的事。 */
+export interface Diff {
+  target_path: string
+  current: string
+  draft: string
+  stale: boolean
+}
+
+export interface ProjectMemoryItem {
+  id: string
+  kind: string
+  content: string
+  /** 停用是让它不再注入上下文，不是删掉。 */
+  enabled: boolean
+  source_conversation_id: string | null
+  created_at: string
+}
