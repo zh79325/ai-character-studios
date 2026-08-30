@@ -241,6 +241,74 @@ def test_没有命名块返回空() -> None:
     assert parsing.parse_naming("名称这个词出现在正文里也不算") == ()
 
 
+def test_待选项一次给好几组() -> None:
+    text = """这些是我的建议。
+
+[待选项]
+- 项: 写实到卡通的位置 / 选项: 3:7 偏卡通 | 5:5 折中 | 7:3 偏写实 / 推荐: 3:7 偏卡通
+- 项: 面数预算 / 选项: 8k | 15k | 30k / 推荐: 15k
+"""
+    groups = parsing.parse_choices(text)
+
+    assert [(g.item, g.options, g.recommended) for g in groups] == [
+        ("写实到卡通的位置", ("3:7 偏卡通", "5:5 折中", "7:3 偏写实"), "3:7 偏卡通"),
+        ("面数预算", ("8k", "15k", "30k"), "15k"),
+    ]
+
+
+def test_待选项分行写也收() -> None:
+    text = """[待选项]
+项：色彩基调
+选项：明亮白日｜霓虹夜景
+推荐：霓虹夜景
+"""
+    (group,) = parsing.parse_choices(text)
+
+    assert (group.item, group.options, group.recommended) == (
+        "色彩基调",
+        ("明亮白日", "霓虹夜景"),
+        "霓虹夜景",
+    )
+
+
+def test_选项文字里的斜杠不当分隔() -> None:
+    """选项之间只认 `|`：一行里的 `/` 是段分隔，切进选项就会把一个选项劈成两个。"""
+    (group,) = parsing.parse_choices("[待选项]\n- 项: 比例 / 选项: 写实/仿真 | 夸张/Q 版\n")
+
+    assert group.options == ("写实/仿真", "夸张/Q 版")
+
+
+def test_只有一个选项的组丢掉() -> None:
+    """摆成选择组件却只有一个能点的，等于逼用户按同意。"""
+    text = "[待选项]\n- 项: 只有一个 / 选项: 就这个\n- 项: 没选项 / 选项: <A | B>\n"
+
+    assert parsing.parse_choices(text) == ()
+
+
+def test_对不上号的推荐当没给() -> None:
+    """预选不中的推荐会让用户以为默认值丢了。"""
+    (group,) = parsing.parse_choices("[待选项]\n- 项: 光照 / 选项: 冷白 | 暖黄 / 推荐: 中性\n")
+
+    assert group.recommended == ""
+
+
+def test_待选项块到下一个标记就结束() -> None:
+    text = """[待选项]
+- 项: 色调 / 选项: 冷 | 暖
+
+[对焦进度]
+已定：项: 这行是进度不是选项
+下一步：等你点
+"""
+    groups = parsing.parse_choices(text)
+
+    assert [g.item for g in groups] == ["色调"]
+
+
+def test_没有待选项块返回空() -> None:
+    assert parsing.parse_choices("选项这个词出现在正文里也不算") == ()
+
+
 def test_整轮解析原文原样保留() -> None:
     text = """先说结论。
 

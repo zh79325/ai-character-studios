@@ -540,6 +540,14 @@ export interface NamingOption {
   reason: string
 }
 
+/** 一处要用户拍板的分歧。摆成选择组件，点完由平台拼成一句话发回去。 */
+export interface ChoiceGroup {
+  item: string
+  options: string[]
+  /** Agent 的推荐，拿它预选。空就是没给或给的不在选项里。 */
+  recommended: string
+}
+
 export interface ConversationDetail {
   conversation: Conversation
   messages: Message[]
@@ -549,6 +557,8 @@ export interface ConversationDetail {
   artifact_path: string | null
   /** 最近一轮给出的命名建议，没给过就是空。 */
   naming: NamingOption[]
+  /** 最近一轮要用户拍板的选项，摆在输入框上方。 */
+  choices: ChoiceGroup[]
   /** 开场提示：项目现在是什么样、接下来该说什么。后端现算，只项目会话有。 */
   briefing: string
   /** 真则这只是一句开场号召（项目还是白纸），居中铺大字，不当对话气泡。 */
@@ -567,6 +577,7 @@ export interface Turn {
   completion_tokens: number | null
   provider_label: string
   naming: NamingOption[]
+  choices: ChoiceGroup[]
 }
 
 export interface Archived {

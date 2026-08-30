@@ -38,6 +38,7 @@ import {
   startConversation,
   subscribeConversation,
 } from '@/api/conversations'
+import ChoicePicker from '@/components/ChoicePicker'
 import DraftDiffPanel from '@/components/DraftDiffPanel'
 import MarkdownText from '@/components/MarkdownText'
 import type { Conversation, ConversationDetail, Message, TargetKind } from '@/types/api'
@@ -221,13 +222,18 @@ export default function ChatPanel({
     if (handoff.fresh) open.mutate()
   }, [handoff, open])
 
-  const submit = () => {
-    const content = input.trim()
-    if (!content || send.isPending) return
+  /** 发一句话出去。选择组件拼出来的那句也走这里，跟手打的一样进气泡。 */
+  const dispatch = (content: string) => {
+    if (send.isPending) return
     // 先清输入框、先把话摆上去：点完发送还看见自己那段字蹲在输入框里，像没发出去
     setInput('')
     setPending(content)
     send.mutate(content)
+  }
+
+  const submit = () => {
+    const content = input.trim()
+    if (content) dispatch(content)
   }
 
   return (
@@ -342,6 +348,13 @@ export default function ChatPanel({
               briefingBlank={detail.data?.briefing_blank ?? false}
               height={draftsAside ? 560 : 420}
             />
+            {!frozen && (
+              <ChoicePicker
+                groups={detail.data?.choices ?? []}
+                disabled={send.isPending}
+                onSubmit={dispatch}
+              />
+            )}
             <Input.TextArea
               value={input}
               rows={3}

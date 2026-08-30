@@ -33,6 +33,12 @@ CHARACTER_MEMORY_MARKER = "[角色记忆]"
 模型选的标记决定。让模型自己挑作用域的话，它在角色会话里写一句 `[项目记忆]` 就把一条只对
 这个角色成立的要求塞给了全项目，而这条会一路跟到别的角色的提示词里。
 """
+CHOICE_MARKER = "[待选项]"
+"""还要用户拍板的那几处分歧。
+
+前端把它摆成选择组件，用户点完平台拼成一句话发回去。不让用户把选项文字手抄进输入框，
+也不靠模型自己认「选项 B」这种指代。
+"""
 
 VERDICTS = ("APPROVE", "CONCERNS", "REJECT")
 SPEC_CHECK = "SPEC-CHECK"
@@ -48,7 +54,7 @@ _DRAFT_RE = re.compile(
 
 # 一个块从它的标记行开始，到下一个标记行或文本结束为止
 _BLOCK_END_RE = re.compile(
-    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议)", re.MULTILINE
+    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议|待选项)", re.MULTILINE
 )
 
 _KEY_RE = re.compile(r"^(?P<key>已定|待定|下一步)\s*[:：]\s*(?P<value>.*)$")
@@ -56,6 +62,10 @@ _NAMING_KEY_RE = re.compile(
     r"^(?P<key>名称|名字|项目名|代号|code|理由|说明)\s*[:：]\s*(?P<value>.*)$", re.I
 )
 _NAMING_SPLIT_RE = re.compile(r"\s*[/｜|；;]\s*")
+_CHOICE_KEY_RE = re.compile(r"^(?P<key>项|选项|推荐)\s*[:：]\s*(?P<value>.*)$")
+_CHOICE_SEG_RE = re.compile(r"\s*([/；;])\s*")
+"""一行里各段的分隔。不含 `|`：那个留给选项之间用。"""
+_CHOICE_OPT_RE = re.compile(r"\s*[|｜、]\s*")
 _MEMORY_RE = re.compile(rf"^(?P<kind>{'|'.join(MEMORY_KINDS)})\s*[:：]\s*(?P<value>.*)$", re.I)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)、])\s*")
 _FENCE_RE = re.compile(r"^\s*(?:```+|~~~+)")
@@ -159,6 +169,19 @@ class NamingOption:
 
 
 @dataclass(frozen=True, slots=True)
+class ChoiceGroup:
+    """一处要用户拍板的分歧：一个项、几个可选值、Agent 的推荐。
+
+    `recommended` 只在它真的是 `options` 之一时才有值：前端拿它做默认选中，对不上号的
+    推荐宁可不默认选，也不能多出一个选不中的影子选项。
+    """
+
+    item: str
+    options: tuple[str, ...]
+    recommended: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TurnOutput:
     """一轮助手输出的解析结果，原文始终原样保留。"""
 
@@ -167,6 +190,7 @@ class TurnOutput:
     drafts: tuple[DraftBlock, ...] = ()
     memories: tuple[MemoryItem, ...] = ()
     naming: tuple[NamingOption, ...] = ()
+    choices: tuple[ChoiceGroup, ...] = ()
 
     @property
     def has_draft(self) -> bool:
@@ -343,6 +367,81 @@ def parse_naming(text: str) -> tuple[NamingOption, ...]:
     return tuple(options)
 
 
+MIN_CHOICE_OPTIONS = 2
+"""一组至少要两个选项。只给一个的话用户点它等于没做选择，那就不是分歧而是结论。"""
+
+
+def _choice_segments(line: str) -> list[str]:
+    """把一行切成「项 / 选项 / 推荐」几段。
+
+    只在分隔符后面真的跟着段名时才断开：选项文字里本来就常带斜杠（「写实/仿真」），无条件
+    切会把一个选项劈成两个。
+    """
+    pieces = _CHOICE_SEG_RE.split(line)
+    segments = pieces[:1]
+    for sep, part in zip(pieces[1::2], pieces[2::2], strict=False):
+        if _CHOICE_KEY_RE.match(part.strip()):
+            segments.append(part)
+        elif segments:
+            segments[-1] = f"{segments[-1]}{sep}{part}"
+    return segments
+
+
+def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
+    """解析 `[待选项]`。一次可以给好几组，用户在面板上一次点完。
+
+    以「项」为一组的开头，三段既可能写在同一行用 `/` 隔开，也可能分行写。选项之间用 `|`
+    而不是 `/`：选项文字里本来就常带斜杠（「3:7 写实/风格化」），两边用同一个分隔符就会把一个
+    选项切成两个。
+    """
+    body = _block_body(text, CHOICE_MARKER)
+    if body is None:
+        return ()
+
+    groups: list[ChoiceGroup] = []
+    current: dict[str, str] = {}
+
+    def close() -> None:
+        item = current.get("item", "").strip().strip("`").strip()
+        raw = current.get("options", "")
+        options = (
+            ()
+            if is_placeholder(raw)
+            else tuple(
+                one
+                for one in (part.strip().strip("`").strip() for part in _CHOICE_OPT_RE.split(raw))
+                if one and not is_placeholder(one)
+            )
+        )
+        recommended = current.get("recommended", "").strip().strip("`").strip()
+        current.clear()
+        if not item or is_placeholder(item) or len(options) < MIN_CHOICE_OPTIONS:
+            return
+        groups.append(
+            ChoiceGroup(
+                item=item,
+                options=options,
+                recommended=recommended if recommended in options else "",
+            )
+        )
+
+    for line in body.splitlines():
+        for part in _choice_segments(_BULLET_RE.sub("", line).strip()):
+            match = _CHOICE_KEY_RE.match(part.strip())
+            if match is None:
+                continue
+            key, value = match.group("key"), match.group("value").strip()
+            if key == "项":
+                close()
+                current["item"] = value
+            elif key == "选项":
+                current["options"] = value
+            else:
+                current["recommended"] = value
+    close()
+    return tuple(groups)
+
+
 def parse_turn(text: str) -> TurnOutput:
     """解析一轮助手输出。原文原样带回，前端展示的仍是 Agent 说的话。"""
     return TurnOutput(
@@ -351,6 +450,7 @@ def parse_turn(text: str) -> TurnOutput:
         drafts=parse_drafts(text),
         memories=parse_memories(text),
         naming=parse_naming(text),
+        choices=parse_choices(text),
     )
 
 

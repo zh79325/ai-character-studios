@@ -679,6 +679,15 @@ class NamingOptionOut(Schema):
     reason: str = ""
 
 
+class ChoiceGroupOut(Schema):
+    """一处要用户拍板的分歧。前端摆成选择组件，用户点完拼成一句话发回去。"""
+
+    item: str
+    options: list[str] = Field(default_factory=list)
+    recommended: str = ""
+    """Agent 的推荐，前端拿它预选。空就是没给或给的不在选项里。"""
+
+
 class ConversationDetailOut(Schema):
     conversation: ConversationOut
     messages: list[MessageOut] = Field(default_factory=list)
@@ -688,6 +697,8 @@ class ConversationDetailOut(Schema):
     """这场会话在改哪个定稿文件，供前端 diff 面板标题使用。"""
     naming: list[NamingOptionOut] = Field(default_factory=list)
     """最近一轮给的命名建议，立项收口面板拿它做候选项。"""
+    choices: list[ChoiceGroupOut] = Field(default_factory=list)
+    """最近一轮要用户拍板的选项，前端摆在输入框上方。"""
     briefing: str = ""
     """摆在消息最前面的开场提示：项目现状与接下来该说什么。平台现算，不入库、不进上下文，
     只项目会话有。"""
@@ -711,6 +722,7 @@ class TurnOut(Schema):
     completion_tokens: int | None = None
     provider_label: str = ""
     naming: list[NamingOptionOut] = Field(default_factory=list)
+    choices: list[ChoiceGroupOut] = Field(default_factory=list)
 
 
 class CommitIn(Schema):
