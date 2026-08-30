@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # 服务
     host: str = "127.0.0.1"
-    port: int = Field(default=0, description="0 表示由系统分配空闲端口")
+    port: int = Field(default=8799, description="固定端口：Electron 靠它判后端是不是已经在跑")
 
     @property
     def db_dir(self) -> Path:

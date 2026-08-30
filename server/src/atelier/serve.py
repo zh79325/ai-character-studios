@@ -1,19 +1,18 @@
 """进程入口：Electron spawn 的就是它，单独跑起来给浏览器或别的客户端用也是它。
 
-约定死一件事：**标准输出的第一行必须是 `ATELIER_PORT=xxxxx`**，Electron 主进程靠这行
-拿到端口。端口 0 时由系统分配空闲端口，且 socket 先绑好再打印、再交给 uvicorn——
-不先绑就打印会有「打印出来的端口被别人抢走」的空窗。
+端口是固定的（默认 8799，`ATELIER_PORT` 或 `--port` 可改）。固定端口才谈得上「后端已经在跑就
+直接用」：Electron 启动先对这个端口探一下 `/api/health`，活的就不再 spawn——两个后端同时开着会抢
+同一份 SQLite，还会把会话发到不是你看日志那个进程上。
 
-单独跑后端要给一个固定端口：端口每次都变的话前端没法配。
+标准输出的第一行仍是 `ATELIER_PORT=xxxxx`，Electron spawn 后靠它确认端口已就绪。
 
-    uv run atelier-serve --port 8799             # app 那边 npm run dev:web 连的就是它
+    uv run atelier-serve                         # 默认 8799
     uv run atelier-serve --port 8799 --reload    # 改后端代码自动重启
 """
 
 from __future__ import annotations
 
 import argparse
-import socket
 import sys
 from collections.abc import Sequence
 
@@ -27,16 +26,6 @@ APP_PATH = "atelier.main:app"
 """给 uvicorn 的导入串而不是 app 对象：热重启要靠它在子进程里重新导入。"""
 
 
-def bind_socket(host: str, port: int) -> socket.socket:
-    """绑好监听 socket 并保持占用，端口 0 时由内核挑一个空闲的。"""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
-    sock.listen(128)
-    sock.set_inheritable(True)
-    return sock
-
-
 def announce_port(port: int) -> None:
     sys.stdout.write(f"{PORT_LINE_PREFIX}{port}\n")
     sys.stdout.flush()
@@ -47,35 +36,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     settings = get_settings()
     parser = argparse.ArgumentParser(prog="atelier-serve", description="Atelier 本地后端")
     parser.add_argument("--host", default=settings.host)
-    parser.add_argument(
-        "--port", type=int, default=settings.port, help="0 = 由系统分配空闲端口（默认）"
-    )
+    parser.add_argument("--port", type=int, default=settings.port, help="固定端口，默认 8799")
     parser.add_argument(
         "--reload",
         action="store_true",
-        help="改代码自动重启，单独跑后端时用；必须同时给非 0 的 --port",
+        help="改代码自动重启，单独跑后端时用",
     )
     args = parser.parse_args(argv)
-    if args.reload and args.port == 0:
-        parser.error("--reload 要一个固定端口：重启由 uvicorn 自己开子进程，绑好的 socket 传不进去")
+    if not 0 < args.port <= 65535:
+        parser.error("--port 要一个 1-65535 的固定端口")
     return args
 
 
-def serve(host: str, port: int) -> None:
-    """先绑 socket、再报端口、最后把这个 socket 交给 uvicorn。"""
-    sock = bind_socket(host, port)
-    announce_port(sock.getsockname()[1])
-    config = uvicorn.Config(
-        APP_PATH,
-        log_level="info",
-        access_log=False,
-        timeout_graceful_shutdown=5,
-    )
-    uvicorn.Server(config).run(sockets=[sock])
-
-
-def serve_reload(host: str, port: int) -> None:
-    """热重启模式：端口是命令行给死的，照样先报出来，日志格式对外保持一致。"""
+def serve(host: str, port: int, *, reload: bool = False) -> None:
+    """先报端口再交给 uvicorn。端口被别人占着就让 uvicorn 直接报 address in use。"""
     announce_port(port)
     uvicorn.run(
         APP_PATH,
@@ -83,17 +57,14 @@ def serve_reload(host: str, port: int) -> None:
         port=port,
         log_level="info",
         access_log=False,
-        reload=True,
+        reload=reload,
         timeout_graceful_shutdown=5,
     )
 
 
 def main() -> None:
     args = parse_args()
-    if args.reload:
-        serve_reload(args.host, args.port)
-    else:
-        serve(args.host, args.port)
+    serve(args.host, args.port, reload=args.reload)
 
 
 if __name__ == "__main__":

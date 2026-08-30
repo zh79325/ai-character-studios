@@ -1,15 +1,16 @@
 /**
- * Electron 主进程：先把后端拉起来拿到端口，再开窗口。
+ * Electron 主进程：先接上后端拿到端口，再开窗口。
  *
  * 顺序不能反——渲染层第一件事就是问端口，窗口先开只会让它拿到 null。
  *
- * 设了 `ATELIER_BACKEND_PORT` 就不拉后端，直接连那个已经跑着的（后端自己 `--reload` 调时用）。
+ * 后端已经在跑（自己 `uv run atelier-serve` 起的，或上一次没退干净的）就直接用它，只有没人在跑才
+ * 自己 spawn；具体认人的规矩在 `backend.ts` 的 `ensureBackend`。
  */
 import { resolve } from 'node:path'
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
-import { externalPort, resolveServerDir, startBackend, stopBackend, type Backend } from './backend'
+import { ensureBackend, resolveServerDir, stopBackend, type Backend } from './backend'
 
 /** 后端启动与运行日志都先攒在这，渲染层订阅时能补上开窗之前的那段。 */
 const LOG_BACKLOG = 500
@@ -92,16 +93,9 @@ async function chooseDirectory(defaultPath?: string): Promise<string | null> {
 
 async function boot(): Promise<void> {
   registerIpc()
-  const external = externalPort()
-  if (external !== null) {
-    backend = { port: external, process: null }
-    pushLog(`[electron] 用外部后端 127.0.0.1:${external}，本次不拉子进程`)
-    createWindow()
-    return
-  }
   const serverDir = resolveServerDir(app.getAppPath(), process.resourcesPath, app.isPackaged)
   try {
-    backend = await startBackend({ serverDir, onLog: pushLog })
+    backend = await ensureBackend({ serverDir, onLog: pushLog })
     pushLog(`[electron] 后端就绪，端口 ${backend.port}`)
   } catch (err) {
     startupError = err instanceof Error ? err.message : String(err)

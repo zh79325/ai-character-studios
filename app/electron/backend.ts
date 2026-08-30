@@ -1,11 +1,14 @@
 /**
- * 拉起 Python 后端并接住它的端口。
+ * 接上 Python 后端：能追到现成的就用现成的，追不到才自己拉一个。
  *
- * 端口不是前端定的，是后端绑完 socket 后从 stdout 第一行告诉我们的（`ATELIER_PORT=xxxxx`）。
- * 这样避免「前端挑个端口结果被占」和「打印出来的端口被别人抢走」两种空窗。
+ * 两个后端同时开着会抢同一份 SQLite，还会把会话发到不是你看日志那个进程上，所以启动顺序是：
  *
- * 后端也可以自己单独跑（`uv run atelier-serve --port 8799`），这时给 Electron 设
- * `ATELIER_BACKEND_PORT=8799`，它就只连不 spawn——两个进程同时开着会抢同一份 SQLite。
+ * 1. `ATELIER_BACKEND_PORT` 配了就只连不 spawn（后端自己 `--reload` 调时用）；
+ * 2. 对固定端口探一下 `/api/health`，活的就用它；
+ * 3. 探不通才 spawn。
+ *
+ * 自己 spawn 时仍等后端从 stdout 第一行报出端口（`ATELIER_PORT=xxxxx`），那是「已经在监听」的信号，
+ * 比前端猜一个启动耗时靠谱。
  */
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -14,8 +17,19 @@ import type { Readable } from 'node:stream'
 
 export const PORT_LINE_PREFIX = 'ATELIER_PORT='
 
+/** 后端的固定端口，跟 settings.py 里 `port` 的默认值对齐。 */
+export const DEFAULT_PORT = 8799
+
 /** 后端起不来就一直等没意义，超时后放弃并把已收到的输出一起报出去。 */
 const START_TIMEOUT_MS = 60_000
+
+/** 探活只给本机一下：这个端口上要么已经有个能应答的后端，要么就没人。 */
+const PROBE_TIMEOUT_MS = 1_500
+
+/** 后端报出端口到真的开始监听中间隔着 uvicorn 启动，这个间隔轮着探。 */
+const READY_POLL_MS = 200
+
+const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
 
 /** stdin 用不上（后端不读输入），stdout/stderr 都要读。 */
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>
@@ -57,10 +71,42 @@ export function resolveServerDir(
   return existsSync(sibling) ? sibling : resolve(appPath, 'server')
 }
 
+/** 探一下这个端口上真的是个能服务的后端。 */
+export async function probeBackend(port: number, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 export interface StartOptions {
   serverDir: string
   /** 每收到一行后端输出就回调一次，主进程转发给渲染层的日志面板。 */
   onLog?: (line: string) => void
+}
+
+/**
+ * 拿到一个能用的后端：先看环境变量，再探固定端口，都不成才 spawn。
+ *
+ * 环境变量那条不探活：用户既然指死了端口，就该连它并在前端看见「后端没起来」，而不是默默地另拉一个。
+ */
+export async function ensureBackend({ serverDir, onLog }: StartOptions): Promise<Backend> {
+  const configured = externalPort()
+  if (configured !== null) {
+    onLog?.(`[electron] ATELIER_BACKEND_PORT=${configured}，只连不 spawn`)
+    return { port: configured, process: null }
+  }
+
+  if (await probeBackend(DEFAULT_PORT)) {
+    onLog?.(`[electron] 后端已经在 127.0.0.1:${DEFAULT_PORT} 上跑着，直接用它`)
+    return { port: DEFAULT_PORT, process: null }
+  }
+
+  return startBackend({ serverDir, onLog })
 }
 
 export function startBackend({ serverDir, onLog }: StartOptions): Promise<Backend> {
@@ -83,12 +129,21 @@ export function startBackend({ serverDir, onLog }: StartOptions): Promise<Backen
       fn()
     }
 
+    // 后端是先报端口再交给 uvicorn，拿到端口只说明它要起了；探通了才能交给上层发请求
+    const waitReady = async (port: number) => {
+      while (!settled) {
+        if (await probeBackend(port)) {
+          finish(() => fulfil({ port, process: child }))
+          return
+        }
+        await delay(READY_POLL_MS)
+      }
+    }
+
     const timer = setTimeout(() => {
       finish(() => {
         child.kill('SIGKILL')
-        reject(
-          new Error(`后端 ${START_TIMEOUT_MS / 1000}s 内没报出端口：\n${collected.join('\n')}`),
-        )
+        reject(new Error(`后端 ${START_TIMEOUT_MS / 1000}s 内没起来：\n${collected.join('\n')}`))
       })
     }, START_TIMEOUT_MS)
 
@@ -101,7 +156,7 @@ export function startBackend({ serverDir, onLog }: StartOptions): Promise<Backen
         collected.push(line)
         onLog?.(line)
         const port = parsePortLine(line)
-        if (port !== null) finish(() => fulfil({ port, process: child }))
+        if (port !== null && !settled) void waitReady(port)
       }
     })
 
