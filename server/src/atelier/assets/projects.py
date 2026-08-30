@@ -8,6 +8,9 @@
 是索引不是真相，删了不影响项目本身（重新导入一次就回来），所以任何时候都以磁盘上的
 `project.json` 为准，冲突时改库不改文件。
 
+「现在打开的是哪个项目」只活在内存里（见 `opened_code`）：重启之后就是没打开，开工从点
+「打开」开始。
+
 「新建」与「导入」因此是同一件事的两半：新建 = 铺目录骨架 + 登记；导入 = 只登记。
 """
 
@@ -16,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,16 +33,27 @@ from sqlalchemy.orm import Session
 from atelier.assets import layout
 from atelier.db.migrate import upgrade_project
 from atelier.db.project_models import Character, ProjectMeta
-from atelier.db.runtime_models import AppSetting, ProjectRegistry
+from atelier.db.runtime_models import ProjectRegistry
 from atelier.db.session import dispose_project_engine, project_session
 from atelier.errors import Conflict, NotFound
 from atelier.settings import get_settings
 
-CURRENT_PROJECT_KEY = "current_project"
 FORBIDDEN_SECTION = "风格禁止项"
 PLACEHOLDER = "待填"
 
 ReviewMode = Literal["full", "lean", "solo"]
+
+Stage = Literal["drafting", "ready"]
+"""项目所处阶段。`drafting` = 还在跟 Agent 对焦、名字与骨架都没定；`ready` = 已立项。
+
+这个字段不在注册表里而在 `project.json` 里：项目搬到别的机器上得能看出它是否立过项。
+老项目的 json 里没这个键，读出来就是 `ready`。"""
+
+DRAFT_CODE_PREFIX = "draft-"
+"""立项期的临时代号前缀。会话得存在项目库里，所以对话开始前就得先有个项目身份，
+而真正的代号要等对焦完才定。"""
+
+DRAFT_NAME = "未命名项目"
 
 
 def _now() -> datetime:
@@ -94,6 +109,7 @@ class ProjectConfig(BaseModel):
     """相对项目目录的姿势模版；为空则回落全局 `templates/人物姿势模版.jpg`。"""
     art_bible: str = layout.ART_BIBLE
     review_mode: ReviewMode = "lean"
+    stage: Stage = "ready"
 
 
 def read_config(project_dir: Path) -> ProjectConfig:
@@ -242,17 +258,26 @@ class ProjectSummary:
     dir_path: str
     managed: bool
     missing: bool
-    is_current: bool
     last_opened_at: datetime | None
+    stage: Stage = "ready"
+
+
+def stage_of(project_dir: Path) -> Stage:
+    """读项目所处阶段。读不出来（目录不在、json 坏了）当 `ready`：删不了、导不进才是真问题，
+    在列表上把它标成「立项中」只会把用户往对焦页引。"""
+    try:
+        return read_config(project_dir).stage
+    except (NotFound, Conflict):
+        return "ready"
 
 
 def list_projects(runtime: Session) -> list[ProjectSummary]:
     """列出本机所有项目，顺手校准 missing 标记（外置盘没挂就是这个状态）。"""
-    current = current_code(runtime)
     rows = runtime.scalars(select(ProjectRegistry).order_by(ProjectRegistry.name)).all()
     out: list[ProjectSummary] = []
     for row in rows:
-        missing = not layout.is_project_dir(Path(row.dir_path))
+        project_dir = Path(row.dir_path)
+        missing = not layout.is_project_dir(project_dir)
         if row.missing != missing:
             row.missing = missing
         out.append(
@@ -262,8 +287,8 @@ def list_projects(runtime: Session) -> list[ProjectSummary]:
                 dir_path=row.dir_path,
                 managed=row.managed,
                 missing=missing,
-                is_current=row.code == current,
                 last_opened_at=row.last_opened_at,
+                stage="ready" if missing else stage_of(project_dir),
             )
         )
     return out
@@ -316,33 +341,40 @@ def forget(runtime: Session, code: str) -> None:
         raise NotFound(f"项目 {code} 没有登记在本机")
     dispose_project_engine(layout.project_db_path(Path(row.dir_path)))
     runtime.delete(row)
-    if current_code(runtime) == code:
-        _set_setting(runtime, CURRENT_PROJECT_KEY, "")
+    if opened_code() == code:
+        close_project()
     runtime.flush()
 
 
 # --------------------------------------------------------------------------- #
-# 当前项目
+# 打开的项目
 # --------------------------------------------------------------------------- #
 
+_opened: str | None = None
+"""本进程打开的项目代号。
 
-def _set_setting(runtime: Session, key: str, value: str) -> None:
-    row = runtime.get(AppSetting, key)
-    if row is None:
-        runtime.add(AppSetting(key=key, value=value))
-    else:
-        row.value = value
-        row.updated_at = _now()
+不入库：它不是要攻下来的数据，而是「现在在干哪个项目」这么一个会话事实。存进库里的后果是
+用户下次启动就看见一个自己没点过的项目被当成已打开，而开工本就该从点「打开」开始。"""
 
-
-def current_code(runtime: Session) -> str | None:
-    row = runtime.get(AppSetting, CURRENT_PROJECT_KEY)
-    return row.value or None if row is not None else None
+_opened_lock = threading.Lock()
 
 
-def current(runtime: Session) -> ProjectRef | None:
-    """当前项目；没选过、或选的那个已经不在了就返回 None（前端引导用户去选）。"""
-    code = current_code(runtime)
+def opened_code() -> str | None:
+    """本进程打开的项目代号，没打开就是 None。"""
+    with _opened_lock:
+        return _opened
+
+
+def close_project() -> None:
+    """回到「没打开任何项目」。项目本身一点不动。"""
+    global _opened
+    with _opened_lock:
+        _opened = None
+
+
+def opened(runtime: Session) -> ProjectRef | None:
+    """打开的项目；没打开、或打开的那个已经不在了就返回 None（前端引导用户去选）。"""
+    code = opened_code()
     if code is None:
         return None
     try:
@@ -352,14 +384,16 @@ def current(runtime: Session) -> ProjectRef | None:
 
 
 def open_project(runtime: Session, code: str) -> ProjectRef:
-    """切到某个项目：校准索引、把库补到 head、记成当前项目。"""
+    """打开某个项目：校准索引、把库补到 head、记住接下来干活就在它里。"""
+    global _opened
     ref = resolve(runtime, code)
     ensure_schema(ref)
     _sync_meta(ref)
     row = runtime.get(ProjectRegistry, code)
     if row is not None:
         row.last_opened_at = _now()
-    _set_setting(runtime, CURRENT_PROJECT_KEY, code)
+    with _opened_lock:
+        _opened = code
     return ref
 
 
@@ -408,6 +442,79 @@ def _placeholder_readme(dir_name: str) -> str:
     )
 
 
+def _is_empty_dir(path: Path) -> bool:
+    """除了隐藏文件之外没东西就算空。
+
+    立项时目录是用系统对话框选的，Finder 里进去看一眼就会给它留下 `.DS_Store`，拿这个报
+    「目录非空」用户只会觉得软件坏了。
+    """
+    return not any(child.name[0] != "." for child in path.iterdir())
+
+
+def bootstrap_project(runtime: Session, dir_path: Path) -> ProjectRef:
+    """开个立项中的空壳项目：只写 `project.json` 与项目库，不铺骨架。
+
+    素材目录、art bible、git 规则都等 `finalize_project`——对焦还没开始就铺一堆写着「待填」
+    的模板，用户下一步得先去删它们。
+
+    代号先给个临时的：会话存在项目库里，没有项目身份就无处开会话，而名字与代号要等聊完
+    才由用户定。
+    """
+    target = dir_path.expanduser().resolve()
+    if layout.is_project_dir(target):
+        raise Conflict(f"{target} 已经是一个项目，请用导入")
+    if target.exists() and not target.is_dir():
+        raise Conflict(f"{target} 不是目录")
+    if target.exists() and not _is_empty_dir(target):
+        raise Conflict(f"{target} 已存在且非空")
+
+    code = f"{DRAFT_CODE_PREFIX}{secrets.token_hex(3)}"
+    try:
+        name = layout.safe_dir_name(target.name)
+    except layout.LayoutError:
+        name = DRAFT_NAME
+
+    target.mkdir(parents=True, exist_ok=True)
+    config = ProjectConfig(code=code, name=name, stage="drafting")
+    write_config(target, config)
+
+    ref = ProjectRef(code=code, name=name, dir=target)
+    ensure_schema(ref)
+    _sync_meta(ref)
+    _register(runtime, ref, managed=_under_default_root(target))
+    return open_project(runtime, code)
+
+
+def finalize_project(runtime: Session, ref: ProjectRef, *, name: str, code: str) -> ProjectRef:
+    """用户确认了名字与代号，现在才把项目真正立起来。
+
+    改代号 = 换注册表主键，但项目目录与库都不动：库里路径全是相对项目目录的，
+    `_sync_meta` 会把 `project_meta` 校到新 code。art bible 只在缺失时才从模板补——对焦里
+    已经沉淀过的那份不能被模板盖掉。
+    """
+    safe_name = layout.safe_dir_name(name)
+    safe_code = _validate_code(code)
+    if safe_code.startswith(DRAFT_CODE_PREFIX):
+        raise Conflict(f"项目代号不能以 {DRAFT_CODE_PREFIX} 开头")
+
+    clash = runtime.get(ProjectRegistry, safe_code)
+    if clash is not None and clash.code != ref.code:
+        raise Conflict(f"项目代号 {safe_code} 已被占用")
+
+    config = read_config(ref.dir)
+    config.code = safe_code
+    config.name = safe_name
+    config.stage = "ready"
+
+    fresh = ProjectRef(code=safe_code, name=safe_name, dir=ref.dir)
+    _write_skeleton(ref.dir, config)
+    layout.ensure_git_files(ref.dir)
+    ensure_schema(fresh)
+    _sync_meta(fresh)
+    _register(runtime, fresh, managed=_under_default_root(ref.dir))
+    return open_project(runtime, safe_code)
+
+
 def create_project(
     runtime: Session,
     *,
@@ -443,6 +550,7 @@ def create_project(
         review_mode=review_mode,
     )
     _write_skeleton(target, config)
+    layout.ensure_git_files(target)
 
     ref = ProjectRef(code=safe_code, name=safe_name, dir=target)
     ensure_schema(ref)

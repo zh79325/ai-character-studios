@@ -3,8 +3,8 @@
 配置库与全局日志库位置固定，各自一个 Session 工厂即可。项目库不同：它在项目目录下，
 而项目目录可以在磁盘任意位置，所以要先定位「这次请求说的是哪个项目」，再开它的 Session。
 
-定位规则：查询参数 `?project=code` 优先（前端切页时显式带上，避免和「当前项目」抢），
-没给就用本机记住的当前项目。都没有就 404，让前端引导用户先建或导入一个项目。
+定位规则：查询参数 `?project=code` 优先（前端切页时显式带上，避免和「打开的项目」抢），
+没给就用本次运行里打开的那个。都没有就 404，让前端引导用户先建或导入一个项目。
 
 写操作在请求结束时统一提交，出错回滚——providers/router 与 providers/usage 内部会自行
 commit，这里只兜住 API 层自己的改动。
@@ -54,12 +54,12 @@ def project_ref(
 ) -> ProjectRef:
     """定位本次请求作用于哪个项目，并保证它的库已升到当前结构。
 
-    只定位不切换：带 `?project=` 查一眼别的项目，不该把用户的当前项目换掉——换项目是
+    只定位不切换：带 `?project=` 查一眼别的项目，不该把用户打开的项目换掉——换项目是
     `PUT /api/projects/current` 一个明确的动作。
     """
-    ref = projects.resolve(runtime, project) if project else projects.current(runtime)
+    ref = projects.resolve(runtime, project) if project else projects.opened(runtime)
     if ref is None:
-        raise NotFound("还没有选择项目，先新建或导入一个")
+        raise NotFound("还没有打开项目，先新建或导入一个")
     projects.ensure_schema(ref)
     return ref
 

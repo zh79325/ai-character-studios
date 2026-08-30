@@ -173,3 +173,23 @@ def test_候选与退位版本共用编号(tmp_path: Path) -> None:
     assert first.name == "赤瞳_渲染图_v1_20260830-120000.png"
     assert second.name == "赤瞳_渲染图_v2_20260830-120000.png"
     assert layout.tmp_dir(asset) == asset / "tmp"
+
+
+def test_git规则把二进制素材指向lfs(tmp_path: Path) -> None:
+    gitignore, gitattributes = layout.ensure_git_files(tmp_path)
+
+    assert "tmp/" in gitignore.read_text(encoding="utf-8")
+    text = gitattributes.read_text(encoding="utf-8")
+    assert "*.png filter=lfs" in text
+    assert "*.glb filter=lfs" in text
+    assert "*.db binary" in text  # 项目库是二进制，但没必要占 LFS 额度
+
+
+def test_已有的git规则不覆盖(tmp_path: Path) -> None:
+    """用户可能已经按自己的仓库习惯改过这两份。"""
+    (tmp_path / ".gitignore").write_text("我自己写的\n", encoding="utf-8")
+
+    gitignore, gitattributes = layout.ensure_git_files(tmp_path)
+
+    assert gitignore.read_text(encoding="utf-8") == "我自己写的\n"
+    assert gitattributes.is_file()

@@ -273,13 +273,3 @@ class ProjectRegistry(RuntimeBase):
     last_opened_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class AppSetting(RuntimeBase):
-    """本机偏好：Unity 可执行路径、并发数、当前项目等。"""
-
-    __tablename__ = "app_settings"
-
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

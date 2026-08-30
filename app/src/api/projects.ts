@@ -12,7 +12,7 @@ import type {
   Character,
   ProjectConfig,
   ProjectConfigPatch,
-  ProjectCreateIn,
+  ProjectFinalizeIn,
   ProjectList,
   ProjectSummary,
   ScanResult,
@@ -23,8 +23,17 @@ export function listProjects(sync = false): Promise<ProjectList> {
   return request<ProjectList>(withQuery('/api/projects', { sync: sync || null }))
 }
 
-export function createProject(payload: ProjectCreateIn): Promise<ProjectList> {
-  return request<ProjectList>('/api/projects', { method: 'POST', body: payload })
+/** 立项第一步：占下目录并切过去，接下来在立项页跟 Agent 对焦。 */
+export function bootstrapProject(dirPath: string): Promise<ProjectList> {
+  return request<ProjectList>('/api/projects/bootstrap', {
+    method: 'POST',
+    body: { dir_path: dirPath },
+  })
+}
+
+/** 立项收口：定下名字与代号，后端顺手铺素材目录、git 规则与 art bible。 */
+export function finalizeProject(payload: ProjectFinalizeIn): Promise<ProjectList> {
+  return request<ProjectList>('/api/projects/current/finalize', { method: 'POST', body: payload })
 }
 
 /** 挂上一个已有的项目目录：换机器、外置盘、同事拷来的都走这里。 */

@@ -8,6 +8,8 @@
 {项目目录}/
 ├── project.json          # 项目配置的唯一真相
 ├── art-bible.md          # 视觉真相
+├── .gitignore            # 忽略过程产物
+├── .gitattributes        # 素材走 Git LFS
 ├── .atelier/             # 项目自己的运行数据（不进 Git）
 │   ├── .gitignore        # 内容就是 *，防止被用户的仓库收进去
 │   └── project.db
@@ -105,6 +107,49 @@ def ensure_data_dir(project_dir: Path) -> Path:
             encoding="utf-8",
         )
     return target
+
+
+GITIGNORE = """\
+# 过程产物与退位的历史版本，随时可由定稿重跑出来
+tmp/
+*.tmp
+
+# 系统垃圾文件
+.DS_Store
+Thumbs.db
+"""
+
+GITATTRIBUTES = """\
+* text=auto eol=lf
+
+# Git LFS —— 二进制素材
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.webp filter=lfs diff=lfs merge=lfs -text
+*.glb filter=lfs diff=lfs merge=lfs -text
+*.fbx filter=lfs diff=lfs merge=lfs -text
+*.usdz filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+
+# SQLite 库按二进制处理但不进 LFS
+*.db binary
+"""
+
+
+def ensure_git_files(project_dir: Path) -> tuple[Path, Path]:
+    """给项目目录铺上 `.gitignore` 与 `.gitattributes`。
+
+    素材目录几乎一定会被纳入 Git，而图片模型不走 LFS 会把仓库撑爆。已存在的不覆盖：
+    用户可能已经按自己的仓库习惯改过。
+    """
+    gitignore = project_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(GITIGNORE, encoding="utf-8")
+    gitattributes = project_dir / ".gitattributes"
+    if not gitattributes.exists():
+        gitattributes.write_text(GITATTRIBUTES, encoding="utf-8")
+    return gitignore, gitattributes
 
 
 def ensure_asset_dirs(asset_dir: Path) -> Path:

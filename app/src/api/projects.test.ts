@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetBaseUrl } from './client'
 import {
+  bootstrapProject,
   buildConfigPatch,
+  finalizeProject,
   forgetProject,
   listProjects,
   readConfig,
@@ -71,6 +73,26 @@ describe('列表', () => {
   it('要认领手动拷进去的项目才带 sync', async () => {
     await listProjects(true)
     expect(onlyCall().url).toBe('http://127.0.0.1:62066/api/projects?sync=true')
+  })
+})
+
+describe('立项', () => {
+  it('第一步只交目录——名字与代号还没聊出来', async () => {
+    await bootstrapProject('/tmp/赤瞳系列')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/projects/bootstrap',
+      method: 'POST',
+      body: { dir_path: '/tmp/赤瞳系列' },
+    })
+  })
+
+  it('收口作用在当前项目上，所以路径是 /current/finalize', async () => {
+    await finalizeProject({ name: '赤瞳', code: 'chitong' })
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/projects/current/finalize',
+      method: 'POST',
+      body: { name: '赤瞳', code: 'chitong' },
+    })
   })
 })
 

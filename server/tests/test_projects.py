@@ -245,14 +245,14 @@ def test_forget_leaves_the_files_alone(session: Session, tmp_path: Path) -> None
     assert ref.db_path.is_file()
 
 
-def test_forget_clears_the_current_project(session: Session) -> None:
+def test_forget_closes_the_opened_project(session: Session) -> None:
     ref = projects_mod.create_project(session, name="项目", code="p1")
     projects_mod.open_project(session, ref.code)
 
     projects_mod.forget(session, "p1")
 
-    assert projects_mod.current_code(session) is None
-    assert projects_mod.current(session) is None
+    assert projects_mod.opened_code() is None
+    assert projects_mod.opened(session) is None
 
 
 def test_forgetting_an_unknown_project_is_not_found(session: Session) -> None:
@@ -388,25 +388,36 @@ def test_sync_default_root_claims_manually_copied_projects(
     assert projects_mod.sync_default_root(session) == []  # 再扫不重复认领
 
 
-def test_current_project_survives_a_switch(session: Session) -> None:
+def test_opening_another_project_moves_over(session: Session) -> None:
     one = projects_mod.create_project(session, name="第一个", code="p1")
     two = projects_mod.create_project(session, name="第二个", code="p2")
 
     projects_mod.open_project(session, one.code)
-    assert projects_mod.current(session) == one
+    assert projects_mod.opened(session) == one
 
     projects_mod.open_project(session, two.code)
-    assert projects_mod.current(session) == two
+    assert projects_mod.opened(session) == two
     assert registry(session, "p2").last_opened_at is not None
 
 
-def test_current_is_none_when_the_project_vanished(session: Session, tmp_path: Path) -> None:
-    """当前项目所在的盘拔了，不该让整个应用起不来，只是回到「没选项目」。"""
+def test_opened_is_none_when_the_project_vanished(session: Session, tmp_path: Path) -> None:
+    """打开的项目所在的盘拔了，不该让整个应用起不来，只是回到「没打开项目」。"""
     ref = projects_mod.create_project(session, name="项目", code="p1", dir_path=tmp_path / "p")
     projects_mod.open_project(session, ref.code)
     shutil.rmtree(ref.dir)
 
-    assert projects_mod.current(session) is None
+    assert projects_mod.opened(session) is None
+
+
+def test_the_opened_project_does_not_outlive_the_process(session: Session) -> None:
+    """打开哪个项目不入库：后端重启就是没打开，开工从用户点「打开」开始。"""
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+    projects_mod.open_project(session, ref.code)
+
+    projects_mod.close_project()  # 等同于换一个进程
+
+    assert projects_mod.opened_code() is None
+    assert projects_mod.resolve(session, "p1").dir == ref.dir  # 项目本身一点不少
 
 
 # --------------------------------------------------------------------------- #

@@ -87,6 +87,8 @@ class TurnResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     provider_label: str = ""
+    naming: tuple[parsing.NamingOption, ...] = ()
+    """这轮给的项目命名建议，只在立项对焦里会有。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,24 @@ def memory_of(project: Session, conversation_id: str) -> ConversationMemory:
         project.add(memory)
         project.flush()
     return memory
+
+
+def naming_of(project: Session, conversation_id: str) -> tuple[parsing.NamingOption, ...]:
+    """这场会话目前的命名建议：从最近一条带过该块的助手消息里现场解析。
+
+    不建表也不加列：建议本身就存在消息原文里，再存一份就多一处要对账的状态。只认最近那
+    一条：聊到后面模型会改主意，把历史建议堆在一起只会让用户面对十几个过期选项。
+    """
+    rows = project.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+        .order_by(Message.turn_no.desc())
+    )
+    for row in rows:
+        options = parsing.parse_naming(row.content)
+        if options:
+            return options
+    return ()
 
 
 def drafts_of(
@@ -476,6 +496,7 @@ def send(
         prompt_tokens=reply.prompt_tokens,
         completion_tokens=reply.completion_tokens,
         provider_label=decision.candidate.label,
+        naming=parsed.naming,
     )
     BUS.publish(conversation.id, TURN, {"turn_no": assistant.turn_no, "drafts": list(draft_ids)})
     return result

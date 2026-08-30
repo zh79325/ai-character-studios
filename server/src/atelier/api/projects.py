@@ -1,8 +1,9 @@
 """项目管理接口。
 
-「新建」与「导入」是同一件事的两半，所以放在一个路由文件里：新建 = 铺骨架 + 登记，导入
-= 只登记。项目目录可以在磁盘任意位置，接口一律收发绝对路径（前端从系统文件对话框拿到
-的就是绝对路径），库里也只存绝对路径，口径只有一种。
+新建项目分两步：`POST /bootstrap` 只占下目录与项目库（此后就能开会话对焦），
+`POST /current/finalize` 在用户确认名字与代号后铺骨架、git 规则与 art bible。
+导入则是只登记。项目目录可以在磁盘任意位置，接口一律收发绝对路径（前端从系统文件对话框
+拿到的就是绝对路径），库里也只存绝对路径，口径只有一种。
 
 配置读写全部直通磁盘上的 `project.json`：它是唯一真相，库里不留副本，因此不存在「表和
 文件不一致」这种要对账的状态。
@@ -21,9 +22,10 @@ from atelier.api.schemas import (
     ArtBibleIn,
     ArtBibleOut,
     CharacterOut,
+    ProjectBootstrapIn,
     ProjectConfigOut,
     ProjectConfigPatch,
-    ProjectCreateIn,
+    ProjectFinalizeIn,
     ProjectImportIn,
     ProjectListOut,
     ProjectSummaryOut,
@@ -44,15 +46,15 @@ def _summary_out(item: projects.ProjectSummary) -> ProjectSummaryOut:
         dir_path=item.dir_path,
         managed=item.managed,
         missing=item.missing,
-        is_current=item.is_current,
         last_opened_at=item.last_opened_at.isoformat() if item.last_opened_at else None,
+        stage=item.stage,
     )
 
 
 def _list_out(session: Session) -> ProjectListOut:
     return ProjectListOut(
         projects=[_summary_out(item) for item in projects.list_projects(session)],
-        current=projects.current_code(session),
+        opened=projects.opened_code(),
         default_root=str(get_settings().assets_dir),
     )
 
@@ -69,23 +71,25 @@ def list_projects(session: RuntimeDb, sync: bool = False) -> ProjectListOut:
     return _list_out(session)
 
 
-@router.post("", response_model=ProjectListOut, status_code=status.HTTP_201_CREATED)
-def create_project(payload: ProjectCreateIn, session: RuntimeDb) -> ProjectListOut:
-    """新建项目并切过去——刚建完就是要用它，不必再点一次切换。"""
-    ref = projects.create_project(
-        session,
-        name=payload.name,
-        code=payload.code,
-        dir_path=Path(payload.dir_path) if payload.dir_path else None,
-        style=projects.ProjectStyle.model_validate(payload.style.model_dump())
-        if payload.style
-        else None,
-        defaults=projects.ProjectDefaults.model_validate(payload.defaults.model_dump())
-        if payload.defaults
-        else None,
-        review_mode=payload.review_mode,
-    )
-    projects.open_project(session, ref.code)
+@router.post("/bootstrap", response_model=ProjectListOut, status_code=status.HTTP_201_CREATED)
+def bootstrap_project(payload: ProjectBootstrapIn, session: RuntimeDb) -> ProjectListOut:
+    """选完目录就开一个立项中的项目并切过去，接下来在对焦页聊。
+
+    此时只有 `project.json` 与项目库，名字暂时用目录名、代号是临时的。
+    """
+    projects.bootstrap_project(session, Path(payload.dir_path))
+    return _list_out(session)
+
+
+@router.post("/current/finalize", response_model=ProjectListOut)
+def finalize_project(
+    payload: ProjectFinalizeIn, ref: CurrentProject, session: RuntimeDb
+) -> ProjectListOut:
+    """立项收口：定下名字与代号，铺素材目录、`.gitignore`、`.gitattributes` 与 art bible。
+
+    已立项的项目重复调也安全：目录与文件都是「缺了才补」。
+    """
+    projects.finalize_project(session, ref, name=payload.name, code=payload.code)
     return _list_out(session)
 
 
@@ -99,7 +103,7 @@ def import_project(payload: ProjectImportIn, session: RuntimeDb) -> ProjectListO
 
 @router.put("/current", response_model=ProjectListOut)
 def switch_project(payload: ProjectSwitchIn, session: RuntimeDb) -> ProjectListOut:
-    """切换当前项目。切的同时把目标项目的库补到 head。
+    """打开另一个项目。打开的同时把目标项目的库补到 head。
 
     code 走请求体而不是路径：路径上还有 `/current/config`、`/current/art-bible` 这些具名
     子资源，再来一个 `/current/{code}` 就会互相抢匹配。
@@ -176,7 +180,7 @@ def list_characters(ref: CurrentProject) -> list[CharacterOut]:
 
 @router.get("/current", response_model=ProjectSummaryOut)
 def read_current(ref: CurrentProject, session: RuntimeDb) -> ProjectSummaryOut:
-    """当前项目是谁。没选过时依赖层直接 404，前端据此引导去新建或导入。"""
+    """打开的项目是谁。没打开时依赖层直接 404，前端据此引导去新建或导入。"""
     return _current_summary(session, ref)
 
 
@@ -191,5 +195,4 @@ def _current_summary(session: Session, ref: ProjectRef) -> ProjectSummaryOut:
         dir_path=str(ref.dir),
         managed=False,
         missing=False,
-        is_current=True,
     )

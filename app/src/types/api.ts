@@ -219,15 +219,18 @@ export interface Health {
   config_db: string
   runtime_db: string
   usage_server: string | null
-  /** 当前项目的 code；一台新装的机器上还没有项目时是 null。 */
-  current_project: string | null
-  /** 当前项目自带的库文件，跟着项目目录走。 */
+  /** 本次运行里打开的项目 code；后端只记在内存，重启就回到 null。 */
+  opened_project: string | null
+  /** 打开的项目自带的库文件，跟着项目目录走。 */
   project_db: string | null
 }
 
 // --------------------------------------------------------------------------- //
 // 项目
 // --------------------------------------------------------------------------- //
+
+/** 项目阶段：`drafting` 还在对焦、名字与骨架都没定；`ready` 已立项。 */
+export type ProjectStage = 'drafting' | 'ready'
 
 /** 装机项目列表的一行。带绝对路径：项目可以在磁盘任意位置，用户靠它分辨同名项目。 */
 export interface ProjectSummary {
@@ -238,13 +241,14 @@ export interface ProjectSummary {
   managed: boolean
   /** 目录当下不在（外置盘没挂、被搬走），列表里还留着但不能用。 */
   missing: boolean
-  is_current: boolean
   last_opened_at: string | null
+  stage: ProjectStage
 }
 
 export interface ProjectList {
   projects: ProjectSummary[]
-  current: string | null
+  /** 本次运行里打开的项目代号。只存内存，后端重启就回到 null。 */
+  opened: string | null
   /** 默认项目根，新建时拿它做目录预填。 */
   default_root: string
 }
@@ -276,6 +280,7 @@ export interface ProjectConfig extends Record<string, unknown> {
   pose_template: string | null
   art_bible: string
   review_mode: ReviewMode
+  stage: ProjectStage
 }
 
 /** 配置表单的提交体。code 是跟着目录走的身份，改不了，所以不在这里。 */
@@ -287,13 +292,15 @@ export interface ProjectConfigPatch {
   review_mode?: ReviewMode
 }
 
-export interface ProjectCreateIn {
+/** 立项第一步：只占下目录，名字与代号等对焦完再定。 */
+export interface ProjectBootstrapIn {
+  dir_path: string
+}
+
+/** 立项收口：定下名字与代号，同时铺目录骨架与 git 规则。 */
+export interface ProjectFinalizeIn {
   name: string
   code: string
-  /** 留空建在默认项目根下，给了就建在这个任意位置。 */
-  dir_path?: string | null
-  style?: Partial<ProjectStyle>
-  review_mode?: ReviewMode
 }
 
 export interface ArtBible {
@@ -525,6 +532,14 @@ export interface Draft {
   stale: boolean
 }
 
+/** Agent 给的一组项目命名建议里的一条。用户在立项页选一条或自己重写。 */
+export interface NamingOption {
+  name: string
+  /** 建议的代号；模型给得不合法时是空串，让用户自己填。 */
+  code: string
+  reason: string
+}
+
 export interface ConversationDetail {
   conversation: Conversation
   messages: Message[]
@@ -532,6 +547,8 @@ export interface ConversationDetail {
   drafts: Draft[]
   /** 这场会话在改哪个定稿文件，diff 面板拿它做标题。 */
   artifact_path: string | null
+  /** 最近一轮给出的命名建议，没给过就是空。 */
+  naming: NamingOption[]
 }
 
 export interface Turn {
@@ -545,6 +562,7 @@ export interface Turn {
   prompt_tokens: number | null
   completion_tokens: number | null
   provider_label: string
+  naming: NamingOption[]
 }
 
 export interface Archived {

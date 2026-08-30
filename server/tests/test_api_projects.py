@@ -20,11 +20,17 @@ pytestmark = pytest.mark.usefixtures("projects_root")
 
 
 def create(client: TestClient, name: str, code: str, dir_path: Path | None = None) -> dict:
-    payload: dict[str, object] = {"name": name, "code": code}
-    if dir_path is not None:
-        payload["dir_path"] = str(dir_path)
-    response = client.post("/api/projects", json=payload)
+    """走完整的两段式立项：先占下目录，再定名字与代号。
+
+    立项本来要在这两步之间跟 Agent 对焦，但除了对焦本身，别的用例只关心「有个立好的项目」。
+    """
+    if dir_path is None:
+        dir_path = Path(client.get("/api/projects").json()["default_root"]) / name
+    response = client.post("/api/projects/bootstrap", json={"dir_path": str(dir_path)})
     assert response.status_code == 201, response.text
+
+    response = client.post("/api/projects/current/finalize", json={"name": name, "code": code})
+    assert response.status_code == 200, response.text
     return response.json()
 
 
@@ -43,25 +49,59 @@ def test_empty_install_lists_nothing_but_tells_where_to_put_things(
     body = client.get("/api/projects").json()
 
     assert body["projects"] == []
-    assert body["current"] is None
+    assert body["opened"] is None
     assert body["default_root"] == str(projects_root)
 
 
-def test_create_lands_in_the_default_root_and_becomes_current(
+def test_bootstrap_opens_a_drafting_project_without_the_skeleton(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """选完目录就能开始对焦，但此时还不该铺一堆写着「待填」的模板。"""
+    target = tmp_path / "外置盘" / "待命名"
+
+    response = client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    row = summary(body, body["opened"])
+    assert row["stage"] == "drafting"
+    assert row["name"] == "待命名"  # 暂时借目录名
+    assert layout.is_project_dir(target)
+    assert (target / ".atelier" / "project.db").is_file()  # 会话得有地方存
+    assert not (target / "characters").exists()
+    assert not (target / ".gitignore").exists()
+
+
+def test_bootstrap_refuses_a_directory_that_is_already_a_project(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """已经是项目的目录该走导入，不在这里悄悄兼容。"""
+    create(client, "项目", "p1", tmp_path / "src")
+
+    response = client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "src")})
+
+    assert response.status_code == 409
+
+
+def test_finalize_lands_in_the_default_root_and_opens_it(
     client: TestClient, projects_root: Path
 ) -> None:
-    """刚建完就是要用它，不必再点一次切换。"""
+    """刚立完项就是要用它，不必再点一次打开。"""
     body = create(client, "赤瞳系列", "chitong")
 
-    assert body["current"] == "chitong"
+    assert body["opened"] == "chitong"
+    assert [item["code"] for item in body["projects"]] == ["chitong"]  # 临时代号那条已经退场
     row = summary(body, "chitong")
     assert row["dir_path"] == str(projects_root / "赤瞳系列")
     assert row["managed"] is True
+    assert row["stage"] == "ready"
     assert layout.is_project_dir(projects_root / "赤瞳系列")
 
 
-def test_create_accepts_any_directory(client: TestClient, tmp_path: Path) -> None:
-    """项目不必待在仓库里：前端从系统文件对话框拿到的绝对路径直接收。"""
+def test_finalize_lays_out_the_skeleton_and_the_git_rules(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """项目不必待在仓库里；素材目录与 git 规则都是立项收口时才铺的。"""
     target = tmp_path / "外置盘" / "我的项目"
 
     body = create(client, "我的项目", "mine", target)
@@ -69,23 +109,55 @@ def test_create_accepts_any_directory(client: TestClient, tmp_path: Path) -> Non
     row = summary(body, "mine")
     assert row["dir_path"] == str(target)
     assert row["managed"] is False
-    assert (target / ".atelier" / "project.db").is_file()
+    assert (target / "characters").is_dir()
+    assert (target / "art-bible.md").is_file()
+    # 图片不走 LFS 会把用户的仓库撑爆
+    assert "tmp/" in (target / ".gitignore").read_text(encoding="utf-8")
+    assert "filter=lfs" in (target / ".gitattributes").read_text(encoding="utf-8")
 
 
-def test_create_with_a_taken_code_is_409(client: TestClient, tmp_path: Path) -> None:
-    create(client, "第一个", "dup", tmp_path / "a")
+def test_finalize_keeps_what_the_focusing_already_settled(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """对焦阶段沉淀下来的 art bible 不能被模板盖掉。"""
+    target = tmp_path / "待命名"
+    client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
+    client.put("/api/projects/current/art-bible", json={"content": "# 聊出来的\n"})
 
-    response = client.post(
-        "/api/projects", json={"name": "第二个", "code": "dup", "dir_path": str(tmp_path / "b")}
+    create_response = client.post(
+        "/api/projects/current/finalize", json={"name": "我的项目", "code": "mine"}
     )
+
+    assert create_response.status_code == 200, create_response.text
+    assert (target / "art-bible.md").read_text(encoding="utf-8") == "# 聊出来的\n"
+
+
+def test_a_project_json_without_stage_reads_as_ready(client: TestClient, tmp_path: Path) -> None:
+    """老项目的 `project.json` 里没有 stage，读出来该是已立项而不是被拉回对焦页。"""
+    create(client, "项目", "p1", tmp_path / "src")
+    raw_path = layout.project_json_path(tmp_path / "src")
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    del raw["stage"]
+    raw_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert summary(client.get("/api/projects").json(), "p1")["stage"] == "ready"
+
+
+def test_finalize_with_a_taken_code_is_409(client: TestClient, tmp_path: Path) -> None:
+    create(client, "第一个", "dup", tmp_path / "a")
+    client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "b")})
+
+    response = client.post("/api/projects/current/finalize", json={"name": "第二个", "code": "dup"})
 
     assert response.status_code == 409
     assert "dup" in response.json()["detail"]
 
 
-def test_create_with_an_impossible_name_is_400(client: TestClient) -> None:
+def test_finalize_with_an_impossible_name_is_400(client: TestClient, tmp_path: Path) -> None:
     """名字要当目录名用，斜杠这类字符在布局层就被拦下，是入参问题。"""
-    response = client.post("/api/projects", json={"name": "a/b", "code": "slash"})
+    client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "a")})
+
+    response = client.post("/api/projects/current/finalize", json={"name": "a/b", "code": "slash"})
 
     assert response.status_code == 400
 
@@ -100,7 +172,7 @@ def test_import_mounts_a_directory_from_anywhere(client: TestClient, tmp_path: P
 
     assert response.status_code == 200
     body = response.json()
-    assert body["current"] == "p1"
+    assert body["opened"] == "p1"
     assert summary(body, "p1")["dir_path"] == str(tmp_path / "src")
 
 
@@ -111,15 +183,13 @@ def test_import_of_a_plain_directory_is_404(client: TestClient, tmp_path: Path) 
     assert client.post("/api/projects/import", json={"dir_path": str(plain)}).status_code == 404
 
 
-def test_switch_changes_the_current_project(client: TestClient) -> None:
+def test_opening_another_project_moves_over(client: TestClient) -> None:
     create(client, "第一个", "p1")
     create(client, "第二个", "p2")
 
     body = client.put("/api/projects/current", json={"code": "p1"}).json()
 
-    assert body["current"] == "p1"
-    assert summary(body, "p1")["is_current"] is True
-    assert summary(body, "p2")["is_current"] is False
+    assert body["opened"] == "p1"
     assert client.get("/api/projects/current").json()["code"] == "p1"
 
 
@@ -134,7 +204,7 @@ def test_delete_only_removes_the_index_entry(client: TestClient, tmp_path: Path)
     body = client.delete("/api/projects/p1").json()
 
     assert body["projects"] == []
-    assert body["current"] is None
+    assert body["opened"] is None
     assert layout.is_project_dir(tmp_path / "src")
 
 
@@ -154,14 +224,14 @@ def test_sync_claims_projects_dropped_into_the_default_root(
     assert summary(body, "outside")["dir_path"] == str(projects_root / "外面的")
 
 
-def test_health_reports_the_current_project(client: TestClient) -> None:
+def test_health_reports_the_opened_project(client: TestClient) -> None:
     """前端启动时靠它决定是进工作台还是引导去新建项目。"""
-    assert client.get("/api/health").json()["current_project"] is None
+    assert client.get("/api/health").json()["opened_project"] is None
 
     create(client, "项目", "p1")
     body = client.get("/api/health").json()
 
-    assert body["current_project"] == "p1"
+    assert body["opened_project"] == "p1"
     assert body["project_db"].endswith("/.atelier/project.db")
 
 
@@ -247,7 +317,7 @@ def test_the_project_query_param_looks_without_switching(client: TestClient) -> 
     assert (
         client.get("/api/projects/current/config", params={"project": "p1"}).json()["code"] == "p1"
     )
-    assert client.get("/api/projects").json()["current"] == "p2"
+    assert client.get("/api/projects").json()["opened"] == "p2"
 
 
 def test_an_unknown_project_query_param_is_404(client: TestClient) -> None:

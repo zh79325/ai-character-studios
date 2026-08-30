@@ -41,7 +41,8 @@ _log = structlog.get_logger(__name__)
 META_JSON = "meta.json"
 
 MERGED_CONFIG_KEYS = ("style", "defaults", "review_mode", "pose_template")
-"""`project.json` 里允许 Agent 改的键。`code` 与 `art_bible` 是平台的账，它说了不算。"""
+"""`project.json` 里允许 Agent 改的键。`code`、`name`、`stage` 与 `art_bible` 是平台的账，
+它说了不算——前三个由立项流程写，用户在面板上确认。"""
 
 
 def _now() -> datetime:

@@ -302,13 +302,15 @@ class ProjectSummaryOut(Schema):
     dir_path: str
     managed: bool
     missing: bool
-    is_current: bool
     last_opened_at: str | None = None
+    stage: Literal["drafting", "ready"] = "ready"
+    """`drafting` = 还在立项对焦、名字与骨架都没定。"""
 
 
 class ProjectListOut(Schema):
     projects: list[ProjectSummaryOut]
-    current: str | None = None
+    opened: str | None = None
+    """本次运行里打开的项目代号。只存内存，后端重启就回到 null。"""
     default_root: str
     """默认项目根（仓库 `assets/`），前端新建时拿它做目录预填。"""
 
@@ -345,6 +347,7 @@ class ProjectConfigOut(Schema):
     pose_template: str | None = None
     art_bible: str = "art-bible.md"
     review_mode: Literal["full", "lean", "solo"] = "lean"
+    stage: Literal["drafting", "ready"] = "ready"
 
 
 class ProjectConfigPatch(Schema):
@@ -357,15 +360,15 @@ class ProjectConfigPatch(Schema):
     review_mode: Literal["full", "lean", "solo"] | None = None
 
 
-class ProjectCreateIn(Schema):
+class ProjectBootstrapIn(Schema):
+    dir_path: str = Field(min_length=1, description="空目录（或还不存在的路径），项目产出都落这里")
+
+
+class ProjectFinalizeIn(Schema):
+    """立项收口：名字与代号是对焦完之后用户选定的，不是建项目时填的。"""
+
     name: str = Field(min_length=1, max_length=100)
     code: str = Field(min_length=1, max_length=64)
-    dir_path: str | None = Field(
-        default=None, description="留空建在默认项目根下，给了就建在这个任意位置"
-    )
-    style: ProjectStyleIn | None = None
-    defaults: ProjectDefaultsIn | None = None
-    review_mode: Literal["full", "lean", "solo"] = "lean"
 
 
 class ProjectImportIn(Schema):
@@ -666,6 +669,14 @@ class DraftOut(Schema):
     """基线已经变了：草稿写出来之后定稿被别处改过，此时沉淀会被拒绝。"""
 
 
+class NamingOptionOut(Schema):
+    """一条项目命名建议。`code` 可能为空（模型给的代号不合法），前端要允许用户自己补。"""
+
+    name: str
+    code: str = ""
+    reason: str = ""
+
+
 class ConversationDetailOut(Schema):
     conversation: ConversationOut
     messages: list[MessageOut] = Field(default_factory=list)
@@ -673,6 +684,8 @@ class ConversationDetailOut(Schema):
     drafts: list[DraftOut] = Field(default_factory=list)
     artifact_path: str | None = None
     """这场会话在改哪个定稿文件，供前端 diff 面板标题使用。"""
+    naming: list[NamingOptionOut] = Field(default_factory=list)
+    """最近一轮给的命名建议，立项收口面板拿它做候选项。"""
 
 
 class SendMessageIn(Schema):
@@ -690,6 +703,7 @@ class TurnOut(Schema):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     provider_label: str = ""
+    naming: list[NamingOptionOut] = Field(default_factory=list)
 
 
 class CommitIn(Schema):

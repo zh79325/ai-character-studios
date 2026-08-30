@@ -56,16 +56,16 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["health"])
     def health(session: RuntimeDb) -> dict[str, Any]:
-        """Electron 起完后端后靠这个确认真的能服务了。项目库跟着当前项目走，没选则为 null。"""
+        """Electron 起完后端后靠这个确认真的能服务了。项目库跟着打开的项目走，没打开则为 null。"""
         settings = get_settings()
-        current = projects.current(session)
+        ref = projects.opened(session)
         return {
             "ok": True,
             "config_db": str(settings.config_db_path),
             "runtime_db": str(settings.runtime_db_path),
             "usage_server": settings.usage_server_url or None,
-            "current_project": current.code if current else None,
-            "project_db": str(current.db_path) if current else None,
+            "opened_project": ref.code if ref else None,
+            "project_db": str(ref.db_path) if ref else None,
         }
 
     return app

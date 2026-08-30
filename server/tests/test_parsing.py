@@ -178,6 +178,69 @@ def test_没有记忆块返回空() -> None:
     assert parsing.parse_memories("普通回答") == ()
 
 
+def test_命名建议一行一条() -> None:
+    text = """想了几个名字：
+
+[项目命名建议]
+- 名称: 赤瞳系列 / 代号: chitong / 理由: 主角的红瞳是最强记忆点
+- 名称: 湿滑金属 / 代号: wet_metal / 理由: 直指美术方向
+"""
+    options = parsing.parse_naming(text)
+
+    assert [(o.name, o.code) for o in options] == [
+        ("赤瞳系列", "chitong"),
+        ("湿滑金属", "wet_metal"),
+    ]
+    assert options[0].reason == "主角的红瞳是最强记忆点"
+
+
+def test_命名建议分行写也收() -> None:
+    text = """[项目命名建议]
+名称：赤瞳系列
+代号：chitong
+说明：红瞳是记忆点
+"""
+    (option,) = parsing.parse_naming(text)
+
+    assert (option.name, option.code, option.reason) == ("赤瞳系列", "chitong", "红瞳是记忆点")
+
+
+def test_不合法的代号降级成没给() -> None:
+    """代号要进目录、日志与外部 API 参数，模型给中文或大写时当没给，让用户自己填。"""
+    text = """[项目命名建议]
+- 名称: 赤瞳 / 代号: 赤瞳 / 理由: 一
+- 名称: 湿滑金属 / 代号: Wet Metal / 理由: 二
+- 名称: 临时代号 / 代号: draft-abc / 理由: 三
+"""
+    options = parsing.parse_naming(text)
+
+    assert [o.code for o in options] == ["", "", "draft-abc"]  # draft- 由提交那一关拦
+
+
+def test_没名称的条目丢掉() -> None:
+    """面板上不该出现一个只有代号的空选项。"""
+    text = "[项目命名建议]\n- 代号: chitong / 理由: 只给了代号\n- 名称: <中文项目名>\n"
+
+    assert parsing.parse_naming(text) == ()
+
+
+def test_命名块到下一个标记就结束() -> None:
+    text = """[项目命名建议]
+- 名称: 赤瞳系列 / 代号: chitong
+
+[对焦进度]
+已定：名称: 这行是进度不是命名
+下一步：等你选
+"""
+    options = parsing.parse_naming(text)
+
+    assert [o.name for o in options] == ["赤瞳系列"]
+
+
+def test_没有命名块返回空() -> None:
+    assert parsing.parse_naming("名称这个词出现在正文里也不算") == ()
+
+
 def test_整轮解析原文原样保留() -> None:
     text = """先说结论。
 
@@ -192,6 +255,9 @@ def test_整轮解析原文原样保留() -> None:
 
 [项目记忆]
 preference: 冷色调
+
+[项目命名建议]
+- 名称: 赤瞳系列 / 代号: chitong / 理由: 记忆点
 """
     turn = parsing.parse_turn(text)
 
@@ -200,3 +266,4 @@ preference: 冷色调
     assert turn.progress is not None
     assert turn.progress.decisions == ("题材定了",)
     assert [i.content for i in turn.memories] == ["冷色调"]
+    assert [o.code for o in turn.naming] == ["chitong"]

@@ -13,8 +13,13 @@ import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, S
 import { useEffect } from 'react'
 
 import { buildConfigPatch, readConfig, updateConfig } from '@/api/projects'
-import { REVIEW_MODES } from '@/components/ProjectCreateDrawer'
 import type { ProjectConfig, ReviewMode } from '@/types/api'
+
+export const REVIEW_MODES = [
+  { value: 'full', label: 'full：每一步都过评审' },
+  { value: 'lean', label: 'lean：关键节点过评审（推荐）' },
+  { value: 'solo', label: 'solo：只在门禁处过评审' },
+]
 
 interface FormValues {
   name: string

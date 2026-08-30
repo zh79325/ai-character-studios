@@ -20,6 +20,12 @@ MEMORY_KINDS = ("preference", "taboo", "fact")
 
 PROGRESS_MARKER = "[对焦进度]"
 MEMORY_MARKER = "[项目记忆]"
+NAMING_MARKER = "[项目命名建议]"
+"""立项对焦里的命名建议块。
+
+不走草稿那一路：项目名与代号改的是注册表主键，得由用户在收口面板上选定后显式提交，
+而不能跟 art-bible.md 一起被「沉淀」进去。
+"""
 CHARACTER_MEMORY_MARKER = "[角色记忆]"
 """角色型 Agent 的记忆块标记。
 
@@ -42,10 +48,14 @@ _DRAFT_RE = re.compile(
 
 # 一个块从它的标记行开始，到下一个标记行或文本结束为止
 _BLOCK_END_RE = re.compile(
-    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆)", re.MULTILINE
+    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议)", re.MULTILINE
 )
 
 _KEY_RE = re.compile(r"^(?P<key>已定|待定|下一步)\s*[:：]\s*(?P<value>.*)$")
+_NAMING_KEY_RE = re.compile(
+    r"^(?P<key>名称|名字|项目名|代号|code|理由|说明)\s*[:：]\s*(?P<value>.*)$", re.I
+)
+_NAMING_SPLIT_RE = re.compile(r"\s*[/｜|；;]\s*")
 _MEMORY_RE = re.compile(rf"^(?P<kind>{'|'.join(MEMORY_KINDS)})\s*[:：]\s*(?P<value>.*)$", re.I)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)、])\s*")
 _FENCE_RE = re.compile(r"^\s*(?:```+|~~~+)")
@@ -136,6 +146,19 @@ class Progress:
 
 
 @dataclass(frozen=True, slots=True)
+class NamingOption:
+    """一条项目命名建议。
+
+    `code` 可能为空：模型给的代号过不了 ASCII 那一关时只留名称，名称本身仍然是有用的
+    建议，丢掉整条等于让用户再聊一遗。
+    """
+
+    name: str
+    code: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TurnOutput:
     """一轮助手输出的解析结果，原文始终原样保留。"""
 
@@ -143,6 +166,7 @@ class TurnOutput:
     progress: Progress | None = None
     drafts: tuple[DraftBlock, ...] = ()
     memories: tuple[MemoryItem, ...] = ()
+    naming: tuple[NamingOption, ...] = ()
 
     @property
     def has_draft(self) -> bool:
@@ -255,6 +279,70 @@ def parse_memories(text: str) -> tuple[MemoryItem, ...]:
     return tuple(items)
 
 
+_CODE_OK_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _clean_code(raw: str) -> str:
+    """从一段自由文本里取出可用的代号，取不出就给空。
+
+    代号要进路径、日志与外部 API 参数，尺度跟 `projects._validate_code` 一致；这里只负责
+    把不合格的建议降级成「没给代号」，真正拦人的是提交时那一关。
+
+    模型爱在代号后面跟一句中文尾巴（「推荐」、「简短好记」），那种只取第一个词；但尾巴里
+    还带英文单词时就不猜了——`Wet Metal` 截成 `wet` 比空着更坏。
+    """
+    tokens = raw.strip().strip("`").strip().split()
+    if not tokens:
+        return ""
+    if any(re.search(r"[0-9A-Za-z]", one) for one in tokens[1:]):
+        return ""
+    token = tokens[0].lower().strip("，,。.；;")
+    return token if _CODE_OK_RE.match(token) else ""
+
+
+def parse_naming(text: str) -> tuple[NamingOption, ...]:
+    """解析 `[项目命名建议]`。一次可以给多条，用户在收口面板上选一条或自己重写。
+
+    以「名称」为一条的开头：名称、代号、理由既可能写在同一行用 `/` 隔开，也可能分三行写，
+    两种都收。没名称的条目直接丢，否则面板上会出现一个只有代号的空选项。
+    """
+    body = _block_body(text, NAMING_MARKER)
+    if body is None:
+        return ()
+
+    options: list[NamingOption] = []
+    current: dict[str, str] = {}
+
+    def close() -> None:
+        name = current.get("name", "").strip().strip("`").strip()
+        if name and not is_placeholder(name):
+            options.append(
+                NamingOption(
+                    name=name,
+                    code=_clean_code(current.get("code", "")),
+                    reason=current.get("reason", "").strip(),
+                )
+            )
+        current.clear()
+
+    for line in body.splitlines():
+        for part in _NAMING_SPLIT_RE.split(_BULLET_RE.sub("", line).strip()):
+            match = _NAMING_KEY_RE.match(part.strip())
+            if match is None:
+                continue
+            key = match.group("key").lower()
+            value = match.group("value").strip()
+            if key in ("名称", "名字", "项目名"):
+                close()
+                current["name"] = value
+            elif key in ("代号", "code"):
+                current["code"] = value
+            else:
+                current["reason"] = value
+    close()
+    return tuple(options)
+
+
 def parse_turn(text: str) -> TurnOutput:
     """解析一轮助手输出。原文原样带回，前端展示的仍是 Agent 说的话。"""
     return TurnOutput(
@@ -262,6 +350,7 @@ def parse_turn(text: str) -> TurnOutput:
         progress=parse_progress(text),
         drafts=parse_drafts(text),
         memories=parse_memories(text),
+        naming=parse_naming(text),
     )
 
 

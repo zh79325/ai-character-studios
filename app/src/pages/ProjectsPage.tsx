@@ -17,7 +17,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { forgetProject, importProject, listProjects, switchProject } from '@/api/projects'
 import DirectoryPicker from '@/components/DirectoryPicker'
-import ProjectCreateDrawer from '@/components/ProjectCreateDrawer'
+import ProjectBootstrapModal from '@/components/ProjectBootstrapModal'
 import type { ProjectList, ProjectSummary } from '@/types/api'
 
 export default function ProjectsPage() {
@@ -40,6 +40,12 @@ export default function ProjectsPage() {
     void queryClient.invalidateQueries()
   }
 
+  /** 打开某个项目走到底：换缓存，再进项目首页。 */
+  const enter = (fresh: ProjectList) => {
+    adopt(fresh)
+    navigate('/project')
+  }
+
   const sync = useMutation({
     mutationFn: () => listProjects(true),
     onSuccess: (fresh) => {
@@ -54,20 +60,16 @@ export default function ProjectsPage() {
   const doImport = useMutation({
     mutationFn: (dir: string) => importProject(dir),
     onSuccess: (fresh) => {
-      message.success(`已导入并打开 ${fresh.current}`)
+      message.success(`已导入并打开 ${fresh.opened}`)
       setImportDir(null)
-      adopt(fresh)
-      navigate('/project')
+      enter(fresh)
     },
     onError: (err: Error) => message.error(err.message),
   })
 
   const open = useMutation({
     mutationFn: (code: string) => switchProject(code),
-    onSuccess: (fresh) => {
-      adopt(fresh)
-      navigate('/project')
-    },
+    onSuccess: enter,
     onError: (err: Error) => message.error(err.message),
   })
 
@@ -88,6 +90,7 @@ export default function ProjectsPage() {
         <Space direction="vertical" size={0}>
           <Space size={6}>
             <Typography.Text strong>{name}</Typography.Text>
+            {row.stage === 'drafting' && <Tag color="orange">立项中</Tag>}
             {row.missing && <Tag color="error">目录不在</Tag>}
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -183,14 +186,11 @@ export default function ProjectsPage() {
         </Typography.Paragraph>
       </Card>
 
-      <ProjectCreateDrawer
+      <ProjectBootstrapModal
         open={creating}
         defaultRoot={list.data?.default_root ?? ''}
         onClose={() => setCreating(false)}
-        onCreated={(fresh) => {
-          adopt(fresh)
-          navigate('/project')
-        }}
+        onCreated={enter}
       />
 
       <Modal

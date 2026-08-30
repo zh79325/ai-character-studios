@@ -47,7 +47,6 @@ def test_runtime_holds_only_machine_level_tables() -> None:
         "circuit_breakers",
         "route_logs",
         "project_registry",
-        "app_settings",
     }
 
 

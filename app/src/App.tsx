@@ -8,8 +8,11 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import { health } from '@/api/config'
 import { useProjectMenu } from '@/components/ProjectMenu'
 import AgentsPage from '@/pages/AgentsPage'
+import ArtBiblePage from '@/pages/ArtBiblePage'
 import CharacterPage from '@/pages/CharacterPage'
+import DesignPage from '@/pages/DesignPage'
 import LogsPage from '@/pages/LogsPage'
+import ProjectConfigPage from '@/pages/ProjectConfigPage'
 import ProjectPage from '@/pages/ProjectPage'
 import ProjectsPage from '@/pages/ProjectsPage'
 import ProvidersPage from '@/pages/ProvidersPage'
@@ -17,7 +20,7 @@ import UsagePage from '@/pages/UsagePage'
 import { useUiStore } from '@/store/ui'
 
 /**
- * 顶部导航里除了「项目」那一栏（它带动态子菜单，在 useProjectMenu 里）的固定部分。
+ * 顶部导航里除了项目那几栏（它们带动态子菜单，在 useProjectMenu 里）的固定部分。
  *
  * 角色工作台不进导航：得先有个角色才打开得开，入口在人物素材表里。
  */
@@ -73,7 +76,7 @@ export default function App() {
         <Menu
           mode="horizontal"
           selectedKeys={[pathname]}
-          items={[projectMenu.item, ...(CONFIG_NAV ?? [])]}
+          items={[...projectMenu.items, ...(CONFIG_NAV ?? [])]}
           onClick={({ key }) => {
             // 项目菜单的项不是路由，它自己消掉；剩下的 key 就是路径
             if (projectMenu.handle(key)) return
@@ -100,7 +103,11 @@ export default function App() {
         )}
         <Routes>
           <Route path="/projects" element={<ProjectsPage />} />
+          {/* 项目首页就是立项对焦页：已立项的项目在这儿接着调项目要求 */}
           <Route path="/project" element={<ProjectPage />} />
+          <Route path="/project/config" element={<ProjectConfigPage />} />
+          <Route path="/project/art-bible" element={<ArtBiblePage />} />
+          <Route path="/design/:category" element={<DesignPage />} />
           {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在人物素材表里 */}
           <Route path="/characters/:id" element={<CharacterPage />} />
           <Route path="/providers" element={<ProvidersPage />} />

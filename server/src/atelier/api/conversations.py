@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
 from fastapi import APIRouter, Header, Query, Request, status
 from sqlalchemy import func, select
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from atelier.agents import conversation as engine
+from atelier.agents import parsing
 from atelier.agents.stream_bus import BUS, COMMITTED, ERROR, TURN
 from atelier.api.deps import CurrentProject, ProjectDb, RuntimeDb
 from atelier.api.schemas import (
@@ -34,6 +35,7 @@ from atelier.api.schemas import (
     DiscardOut,
     DraftOut,
     MessageOut,
+    NamingOptionOut,
     ProjectMemoryIn,
     ProjectMemoryOut,
     ProjectMemoryPatch,
@@ -140,6 +142,10 @@ def _memory_out(row: ProjectMemory) -> ProjectMemoryOut:
     )
 
 
+def _naming_out(options: Sequence[parsing.NamingOption]) -> list[NamingOptionOut]:
+    return [NamingOptionOut(name=item.name, code=item.code, reason=item.reason) for item in options]
+
+
 def _detail(project: Session, ref: ProjectRef, row: Conversation) -> ConversationDetailOut:
     memory = engine.memory_of(project, row.id)
     artifact_path, _ = engine.artifact_of(project, ref, row)
@@ -154,6 +160,7 @@ def _detail(project: Session, ref: ProjectRef, row: Conversation) -> Conversatio
         ),
         drafts=[_draft_out(ref, d) for d in engine.drafts_of(project, row.id)],
         artifact_path=artifact_path,
+        naming=_naming_out(engine.naming_of(project, row.id)),
     )
 
 
@@ -219,6 +226,7 @@ def send_message(
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         provider_label=result.provider_label,
+        naming=_naming_out(result.naming),
     )
 
 
