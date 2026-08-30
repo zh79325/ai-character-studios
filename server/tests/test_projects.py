@@ -111,13 +111,26 @@ def test_creating_on_an_existing_project_points_at_import(session: Session, tmp_
         projects_mod.create_project(session, name="新项目", code="fresh", dir_path=ref.dir)
 
 
-def test_creating_in_a_non_empty_dir_is_refused(session: Session, tmp_path: Path) -> None:
+def test_creating_in_a_dir_that_already_has_files_is_fine(session: Session, tmp_path: Path) -> None:
+    """参考图、旧稿往往先丢进目录再立项，为此逼用户另建一个空目录只是添乱。"""
     busy = tmp_path / "已有东西"
     busy.mkdir()
     (busy / "我的照片.png").touch()
 
-    with pytest.raises(Conflict):
-        projects_mod.create_project(session, name="占用", code="busy", dir_path=busy)
+    ref = projects_mod.create_project(session, name="入驻", code="busy", dir_path=busy)
+
+    assert ref.dir == busy
+    assert (busy / "我的照片.png").is_file()  # 原有的东西一个不动
+
+
+def test_creating_where_an_art_bible_sits_is_refused(session: Session, tmp_path: Path) -> None:
+    """`art-bible.md` 在就说明这块地已归另一个项目，铺下去会盖掉它。"""
+    taken = tmp_path / "别人的项目"
+    taken.mkdir()
+    (taken / "art-bible.md").write_text("# 别人的视觉真相\n", encoding="utf-8")
+
+    with pytest.raises(Conflict, match="art-bible.md"):
+        projects_mod.create_project(session, name="占用", code="taken", dir_path=taken)
 
 
 def test_duplicate_code_is_refused(session: Session, tmp_path: Path) -> None:

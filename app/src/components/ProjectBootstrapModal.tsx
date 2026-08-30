@@ -47,8 +47,8 @@ export default function ProjectBootstrapModal({ open, defaultRoot, onClose, onCr
     >
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
-          选一个空目录存放这个项目的全部产出。接着在立项页跟设计师聊，名字、代号与目录骨架
-          等聊定了再一起落下来。
+          选一个目录存放这个项目的全部产出，里面已经有参考图、旧稿也不要紧。接着在立项页跟设计师聊，
+          名字、代号与目录骨架等聊定了再一起落下来。
         </Typography.Text>
         <DirectoryPicker
           value={dir}

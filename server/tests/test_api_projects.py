@@ -72,6 +72,20 @@ def test_bootstrap_opens_a_drafting_project_without_the_skeleton(
     assert not (target / ".gitignore").exists()
 
 
+def test_bootstrap_takes_a_directory_that_already_has_files(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """用户常先把参考图丢进目录再来立项，拦下来只会逼他多建一个空目录。"""
+    target = tmp_path / "已经攒了料"
+    target.mkdir()
+    (target / "参考图.png").touch()
+
+    response = client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
+
+    assert response.status_code == 201, response.text
+    assert (target / "参考图.png").is_file()  # 原有的东西一个不动
+
+
 def test_bootstrap_refuses_a_directory_that_is_already_a_project(
     client: TestClient, tmp_path: Path
 ) -> None:

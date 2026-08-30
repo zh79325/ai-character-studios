@@ -442,13 +442,17 @@ def _placeholder_readme(dir_name: str) -> str:
     )
 
 
-def _is_empty_dir(path: Path) -> bool:
-    """除了隐藏文件之外没东西就算空。
+def _project_marks(path: Path) -> list[str]:
+    """目录里已经属于某个项目的标志文件。
 
-    立项时目录是用系统对话框选的，Finder 里进去看一眼就会给它留下 `.DS_Store`，拿这个报
-    「目录非空」用户只会觉得软件坏了。
+    非空不算占用：用户往往先把参考图、旧稿、策划文档丢进目录再来立项，为这个逼他另建
+    一个空目录只是添乱（还有 Finder 进去看一眼就留下的 `.DS_Store`）。真会撞车的只有项目自己
+    的两份真相：`project.json` 与 `art-bible.md`——它们在就说明这块地已经归另一个项目，
+    铺下去会盖掉别人的东西。
     """
-    return not any(child.name[0] != "." for child in path.iterdir())
+    if not path.is_dir():
+        return []
+    return [name for name in (layout.PROJECT_JSON, layout.ART_BIBLE) if (path / name).is_file()]
 
 
 def bootstrap_project(runtime: Session, dir_path: Path) -> ProjectRef:
@@ -465,8 +469,9 @@ def bootstrap_project(runtime: Session, dir_path: Path) -> ProjectRef:
         raise Conflict(f"{target} 已经是一个项目，请用导入")
     if target.exists() and not target.is_dir():
         raise Conflict(f"{target} 不是目录")
-    if target.exists() and not _is_empty_dir(target):
-        raise Conflict(f"{target} 已存在且非空")
+    marks = _project_marks(target)
+    if marks:
+        raise Conflict(f"{target} 里已经有 {'、'.join(marks)}，换个目录或走导入")
 
     code = f"{DRAFT_CODE_PREFIX}{secrets.token_hex(3)}"
     try:
@@ -537,8 +542,9 @@ def create_project(
 
     if layout.is_project_dir(target):
         raise Conflict(f"{target} 已经是一个项目，请用导入")
-    if target.exists() and any(target.iterdir()):
-        raise Conflict(f"{target} 已存在且非空")
+    marks = _project_marks(target)
+    if marks:
+        raise Conflict(f"{target} 里已经有 {'、'.join(marks)}，换个目录或走导入")
     if runtime.get(ProjectRegistry, safe_code) is not None:
         raise Conflict(f"项目代号 {safe_code} 已被占用")
 

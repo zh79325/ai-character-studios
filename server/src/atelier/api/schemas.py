@@ -361,7 +361,9 @@ class ProjectConfigPatch(Schema):
 
 
 class ProjectBootstrapIn(Schema):
-    dir_path: str = Field(min_length=1, description="空目录（或还不存在的路径），项目产出都落这里")
+    dir_path: str = Field(
+        min_length=1, description="项目产出落地的目录（可以还不存在，里面本来有东西也行）"
+    )
 
 
 class ProjectFinalizeIn(Schema):
