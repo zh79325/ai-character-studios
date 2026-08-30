@@ -309,6 +309,14 @@ def test_没有待选项块返回空() -> None:
     assert parsing.parse_choices("选项这个词出现在正文里也不算") == ()
 
 
+def test_一轮只摆前四组() -> None:
+    """模型一口气列十几项时只留前四项，剩下的等这一批拍完再问。"""
+    lines = "\n".join(f"- 项: 第{i} 项 / 选项: A | B" for i in range(1, 7))
+    groups = parsing.parse_choices(f"[待选项]\n{lines}\n")
+
+    assert [g.item for g in groups] == ["第1 项", "第2 项", "第3 项", "第4 项"]
+
+
 def test_整轮解析原文原样保留() -> None:
     text = """先说结论。
 

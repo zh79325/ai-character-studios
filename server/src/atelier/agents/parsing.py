@@ -370,6 +370,11 @@ def parse_naming(text: str) -> tuple[NamingOption, ...]:
 MIN_CHOICE_OPTIONS = 2
 """一组至少要两个选项。只给一个的话用户点它等于没做选择，那就不是分歧而是结论。"""
 
+MAX_CHOICE_GROUPS = 4
+"""一轮最多摆四组。立项要定的维度十几个，一次全摊出来用户无从下手；多给的在这里截掉，
+剩下的等这一批拍完再问。截而不报错：前四组本身是能用的，因为多了两组就一个不给反而更坏。
+"""
+
 
 def _choice_segments(line: str) -> list[str]:
     """把一行切成「项 / 选项 / 推荐」几段。
@@ -388,7 +393,7 @@ def _choice_segments(line: str) -> list[str]:
 
 
 def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
-    """解析 `[待选项]`。一次可以给好几组，用户在面板上一次点完。
+    """解析 `[待选项]`。一次最多收 `MAX_CHOICE_GROUPS` 组，用户在面板上一次点完。
 
     以「项」为一组的开头，三段既可能写在同一行用 `/` 隔开，也可能分行写。选项之间用 `|`
     而不是 `/`：选项文字里本来就常带斜杠（「3:7 写实/风格化」），两边用同一个分隔符就会把一个
@@ -439,7 +444,7 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
             else:
                 current["recommended"] = value
     close()
-    return tuple(groups)
+    return tuple(groups[:MAX_CHOICE_GROUPS])
 
 
 def parse_turn(text: str) -> TurnOutput:
