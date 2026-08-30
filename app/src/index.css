@@ -11,6 +11,98 @@ body {
     sans-serif;
 }
 
+/* 会话气泡里的 Markdown：块间距挤到最小，不然一个标题就把气泡拉长一大截 */
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md table {
+  margin: 0 0 6px;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 10px 0 4px;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+
+.md li {
+  margin: 2px 0;
+}
+
+.md li > p {
+  margin: 0;
+}
+
+.md code {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.md pre {
+  margin: 0 0 6px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.md pre code {
+  background: none;
+  padding: 0;
+}
+
+.md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid rgba(0, 0, 0, 0.12);
+  color: #595959;
+}
+
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+
+.md th,
+.md td {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 3px 8px;
+  text-align: left;
+}
+
+.md hr {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.md img {
+  max-width: 100%;
+}
+
 /* 日志面板：等宽、自己滚，别把整页撑长 */
 .log-pane {
   font-family: 'SF Mono', Menlo, Consolas, monospace;

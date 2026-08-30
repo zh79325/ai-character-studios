@@ -39,7 +39,8 @@ import {
   subscribeConversation,
 } from '@/api/conversations'
 import DraftDiffPanel from '@/components/DraftDiffPanel'
-import type { Conversation, Message, TargetKind } from '@/types/api'
+import MarkdownText from '@/components/MarkdownText'
+import type { Conversation, ConversationDetail, Message, TargetKind } from '@/types/api'
 
 interface Props {
   agentCode: string
@@ -193,10 +194,13 @@ export default function ChatPanel({
         toast.info(`上下文快满了，第 ${turn.folded_turns.join('、')} 轮已折进摘要，原文还在`)
       }
     },
-    // 发失败不能让用户重新敲一遍：把话送回输入框（除非他已经又敲了新的）
-    onError: (err: Error, content) => {
+    // 后端是先落库再调模型，所以要先看这句话到底存下没：存下了就别再送回输入框，否则重发会冒出两条同样的话
+    onError: async (err: Error, content) => {
+      await queryClient.invalidateQueries({ queryKey: ['conversation', chosen] })
+      const fresh = queryClient.getQueryData<ConversationDetail>(['conversation', chosen])
+      const landed = fresh?.messages.some((one) => one.role === 'user' && one.content === content)
       setPending(null)
-      setInput((prev) => (prev === '' ? content : prev))
+      if (landed !== true) setInput((prev) => (prev === '' ? content : prev))
       toast.error(err.message)
     },
   })
@@ -459,8 +463,7 @@ function MessageList({
   }, [messages, pending, streaming])
 
   // 一句号召摆成气泡，看着像 AI 已经先开口说过话了；铺成居中大字才是「这一屏在等你说」
-  const hero =
-    briefingBlank && messages.length === 0 && pending === null && streaming === null
+  const hero = briefingBlank && messages.length === 0 && pending === null && streaming === null
   if (hero) {
     return (
       <div
@@ -512,7 +515,8 @@ function MessageList({
                   opacity: one.folded ? 0.55 : 1,
                   borderRadius: 8,
                   padding: '8px 12px',
-                  whiteSpace: 'pre-wrap',
+                  // 用户那边是纯文本，换行得自己留；Agent 那边交给 Markdown 排
+                  whiteSpace: one.role === 'user' ? 'pre-wrap' : undefined,
                   wordBreak: 'break-word',
                   fontSize: 13,
                 }}
@@ -522,7 +526,7 @@ function MessageList({
                     已折进摘要 ·{' '}
                   </Typography.Text>
                 )}
-                {one.content}
+                {one.role === 'user' ? one.content : <MarkdownText text={one.content} />}
               </div>
             </div>
           )
@@ -552,12 +556,11 @@ function MessageList({
                 background: '#fafafa',
                 borderRadius: 8,
                 padding: '8px 12px',
-                whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
                 fontSize: 13,
               }}
             >
-              {streaming === '' ? <Spin size="small" /> : streaming}
+              {streaming === '' ? <Spin size="small" /> : <MarkdownText text={streaming} />}
             </div>
           </div>
         )}
