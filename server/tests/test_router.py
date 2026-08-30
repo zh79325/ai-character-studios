@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from atelier.db.runtime_models import CircuitBreaker, Conversation, RouteLog
+from atelier.db.project_models import Conversation
+from atelier.db.runtime_models import CircuitBreaker, RouteLog
 from atelier.providers import router, usage
 from atelier.providers.base import (
     CallOutcome,
@@ -23,16 +24,19 @@ AGENT = "spec_writer"
 
 
 def _conversation(session: Session, cid: str = "c1") -> Conversation:
-    row = Conversation(
+    """会话行住在项目库里，但选路层只按 StickyBinding 协议读写它，不关心它在哪个库。
+
+    所以这里不入库也能测：直接造一个游离对象交给 `select_candidate`，它改完属性由谁提交
+    是调用方的事。这正好把「选路不得摸项目库」这个约束钉住了。
+    """
+    return Conversation(
         id=cid,
-        project_code="chitong",
         target_kind="character",
         target_ref="chitong_shuangweishou",
         agent_code=AGENT,
+        bound_provider_label="",
+        rebind_count=0,
     )
-    session.add(row)
-    session.commit()
-    return row
 
 
 def _logs(session: Session) -> list[RouteLog]:
@@ -100,13 +104,13 @@ def test_first_turn_binds_and_next_turns_reuse(session: Session) -> None:
     make_provider(session, "second", priority=2)
 
     conversation = _conversation(session)
-    bound = router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    bound = router.select_candidate(session, AGENT, binding=conversation)
     assert bound.outcome == "bound"
     assert conversation.bound_provider_model_id == bound.candidate.provider_model_id
     assert conversation.bound_at is not None
 
     for _ in range(3):
-        again = router.select_candidate(session, AGENT, conversation_id=conversation.id)
+        again = router.select_candidate(session, AGENT, binding=conversation)
         assert again.outcome == "sticky_hit"
         assert again.candidate.provider_model_id == bound.candidate.provider_model_id
 
@@ -140,11 +144,11 @@ def test_rebind_prefers_the_same_model_on_another_account(session: Session) -> N
     make_model(session, other, "minimax-m3", agent_code=AGENT)
 
     conversation = _conversation(session)
-    router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    router.select_candidate(session, AGENT, binding=conversation)
     assert conversation.bound_provider_model_id == bound_model.id
 
     router.open_breaker(session, bound_model.id, "连不上")
-    rebound = router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    rebound = router.select_candidate(session, AGENT, binding=conversation)
 
     # other 的 priority 更小，但同模型的 backup 优先——换账号不改行为
     assert rebound.outcome == "rebound"
@@ -161,32 +165,35 @@ def test_rebind_falls_back_to_another_model(session: Session) -> None:
     make_model(session, fallback, "minimax-m3", agent_code=AGENT)
 
     conversation = _conversation(session)
-    router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    router.select_candidate(session, AGENT, binding=conversation)
     router.open_breaker(session, bound_model.id, "连不上")
 
-    rebound = router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    rebound = router.select_candidate(session, AGENT, binding=conversation)
     assert rebound.candidate.label == "fallback/minimax-m3"
     assert rebound.outcome == "rebound"
 
 
 def test_binding_lost_with_the_model_rebinds_silently(session: Session) -> None:
-    """模型被删只是置空绑定，会话照常继续，下一轮重选。"""
+    """模型被删后会话里剩下一个悬空 id，下一轮当「已绑不可用」换绑，会话照常继续。
+
+    跳库了就没有外键 SET NULL 可依赖（会话在项目库、模型在全局库），这正是项目目录换了
+    机器后的常态：id 对不上也得能跑。
+    """
     primary = make_provider(session, "primary", priority=1)
     backup = make_provider(session, "backup", priority=2)
     bound_model = make_model(session, primary, "glm-5.3", agent_code=AGENT)
     make_model(session, backup, "glm-5.3", agent_code=AGENT)
 
     conversation = _conversation(session)
-    router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    router.select_candidate(session, AGENT, binding=conversation)
 
     session.delete(bound_model)
     session.commit()
-    session.refresh(conversation)
-    assert conversation.bound_provider_model_id is None
 
-    again = router.select_candidate(session, AGENT, conversation_id=conversation.id)
-    assert again.outcome == "bound"
+    again = router.select_candidate(session, AGENT, binding=conversation)
+    assert again.outcome == "rebound"
     assert again.candidate.label == "backup/glm-5.3"
+    assert "已绑模型" in (conversation.rebind_reason or "")
 
 
 def test_exhausted_quota_forces_rebind(session: Session) -> None:
@@ -198,10 +205,10 @@ def test_exhausted_quota_forces_rebind(session: Session) -> None:
     make_model(session, backup, "glm-5.3", agent_code=AGENT)
 
     conversation = _conversation(session)
-    router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    router.select_candidate(session, AGENT, binding=conversation)
     usage.mark_exhausted(session, bound_model, "tokens")
 
-    rebound = router.select_candidate(session, AGENT, conversation_id=conversation.id)
+    rebound = router.select_candidate(session, AGENT, binding=conversation)
     assert rebound.candidate.label == "backup/glm-5.3"
     assert "额度" in (conversation.rebind_reason or "")
 

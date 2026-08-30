@@ -1,7 +1,12 @@
-"""日志库（db/runtime.db，本地不进 Git）表定义。
+"""全局日志库（db/runtime.db，本地不进 Git）表定义。
 
-含 provider 凭证、额度用量、项目与素材状态、任务与事件、会话与记忆。
-禁止与配置库 join，跨库引用只存 code 字符串。
+这里只放**机器级**数据：provider 凭证、Agent 绑定、额度用量、熔断、路由日志，加上
+「本机打开过哪些项目」的注册表与本机偏好。它们跟着这台机器走，不跟着项目走。
+
+项目自己的东西（素材、状态、任务、会话、记忆）在各项目目录下的 `.atelier/project.db`，
+见 `project_models.py`——项目目录连库整体搬走仍是同一个项目。
+
+禁止与配置库、项目库 join，跨库引用只存 code 字符串或裸 id。
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -29,7 +33,7 @@ def _now() -> datetime:
 
 
 class RuntimeBase(DeclarativeBase):
-    """日志库独立 Base，与配置库 metadata 完全隔离。"""
+    """全局日志库独立 Base，与配置库、项目库的 metadata 完全隔离。"""
 
     type_annotation_map = {dict[str, Any]: JSON, list[str]: JSON}
 
@@ -243,279 +247,30 @@ class RouteLog(RuntimeBase):
 
 
 # --------------------------------------------------------------------------- #
-# 项目与素材
+# 项目注册表与本机偏好
 # --------------------------------------------------------------------------- #
 
 
-class Project(RuntimeBase):
-    """project.json 的可查询副本，磁盘为真相，启动时幂等同步。"""
+class ProjectRegistry(RuntimeBase):
+    """本机打开过哪些项目，以及它们在磁盘上的位置。
 
-    __tablename__ = "projects"
+    项目的真相全在自己的目录里（`project.json` + `.atelier/project.db`），目录可以放在
+    磁盘任意位置。本表只是一份「最近打开」的索引，丢了也不影响项目本身：重新指向目录
+    导入一次就恢复。所以这里不存任何项目内容，只存路径与上次打开时间。
+    """
+
+    __tablename__ = "project_registry"
+    __table_args__ = (UniqueConstraint("dir_path", name="uq_project_dir"),)
 
     code: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    dir_path: Mapped[str] = mapped_column(String(512))
-    style: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    defaults: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    pose_template: Mapped[str | None] = mapped_column(String(512), default=None)
-    art_bible: Mapped[str] = mapped_column(String(255), default="art-bible.md")
-    review_mode: Mapped[str] = mapped_column(String(16), default="lean")
-    state: Mapped[str] = mapped_column(String(32), default="P0_project_shaping")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class Character(RuntimeBase):
-    """人物素材，状态与 meta.json 双写，断电可从 meta.json 恢复。"""
-
-    __tablename__ = "characters"
-    __table_args__ = (
-        UniqueConstraint("project_code", "name", name="uq_character_name"),
-        Index("ix_characters_project", "project_code"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    name: Mapped[str] = mapped_column(String(128))
-    dir_path: Mapped[str] = mapped_column(String(512))
-    state: Mapped[str] = mapped_column(String(32), default="S0_spec_drafting")
-    spec_path: Mapped[str | None] = mapped_column(String(512), default=None)
-    hard_constraints: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    gate_spec_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    gate_render_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class Generation(RuntimeBase):
-    """一条产物记录：中间产物与定稿都登记，便于回溯与归档。"""
-
-    __tablename__ = "generations"
-    __table_args__ = (Index("ix_generations_target", "project_code", "target_kind", "target_ref"),)
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    target_kind: Mapped[str] = mapped_column(String(32))
-    target_ref: Mapped[str] = mapped_column(String(128))
-    stage: Mapped[str] = mapped_column(String(32))
-    variant: Mapped[str | None] = mapped_column(String(64), default=None)
-    file_path: Mapped[str] = mapped_column(String(512))
-    file_hash: Mapped[str | None] = mapped_column(String(64), default=None)
-    is_final: Mapped[bool] = mapped_column(Boolean, default=False)
-    source: Mapped[str] = mapped_column(String(32), default="generated")
-    task_id: Mapped[str | None] = mapped_column(String(64), default=None)
-    asset_spec: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-# --------------------------------------------------------------------------- #
-# 任务与事件
-# --------------------------------------------------------------------------- #
-
-
-class Task(RuntimeBase):
-    """一次工作流步骤的执行单元。"""
-
-    __tablename__ = "tasks"
-    __table_args__ = (Index("ix_tasks_project", "project_code"),)
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    target_kind: Mapped[str] = mapped_column(String(32))
-    target_ref: Mapped[str] = mapped_column(String(128))
-    stage: Mapped[str] = mapped_column(String(32))
-    agent_code: Mapped[str | None] = mapped_column(String(64), default=None)
-    status: Mapped[str] = mapped_column(String(16), default="pending")
-    params_snapshot: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    result: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    error: Mapped[str | None] = mapped_column(Text, default=None)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class TaskStep(RuntimeBase):
-    """任务内的子步骤，如四视图的每一张。"""
-
-    __tablename__ = "task_steps"
-    __table_args__ = (Index("ix_task_steps_task", "task_id"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[str] = mapped_column(String(64))
-    step_no: Mapped[int] = mapped_column(Integer)
-    name: Mapped[str] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(16), default="pending")
-    progress: Mapped[float] = mapped_column(Float, default=0.0)
-    external_task_id: Mapped[str | None] = mapped_column(String(128), default=None)
-    result: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    error: Mapped[str | None] = mapped_column(Text, default=None)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class TaskEvent(RuntimeBase):
-    """运行日志与门禁决策，SSE 推给前端的数据源，写入前已脱敏。"""
-
-    __tablename__ = "task_events"
-    __table_args__ = (Index("ix_task_events_task_seq", "task_id", "seq"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[str] = mapped_column(String(64))
-    seq: Mapped[int] = mapped_column(Integer)
-    ts: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    level: Mapped[str] = mapped_column(String(16), default="info")
-    event: Mapped[str] = mapped_column(String(64))
-    message: Mapped[str] = mapped_column(Text, default="")
-    payload: Mapped[dict[str, Any]] = mapped_column(default=dict)
-
-
-# --------------------------------------------------------------------------- #
-# 会话与记忆
-# --------------------------------------------------------------------------- #
-
-
-class Conversation(RuntimeBase):
-    """一次与会话型 Agent 的对焦过程。
-
-    provider 轮转的粒度是会话，不是单次调用：多轮对话每轮都要重发前缀上下文，
-    换 provider 等于让对方从零算一遍前缀、自己这边的缓存全部作废。所以会话首轮选定
-    一个 provider_model 后就绑定在此，之后每轮复用，只有熔断、额度耗尽或该模型被删
-    才换绑。单次调用型 Agent（conversational=false）没有前缀可复用，才按调用轮转。
-    """
-
-    __tablename__ = "conversations"
-    __table_args__ = (
-        Index("ix_conversations_target", "project_code", "target_kind", "target_ref"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    target_kind: Mapped[str] = mapped_column(String(32))
-    target_ref: Mapped[str | None] = mapped_column(String(128), default=None)
-    agent_code: Mapped[str] = mapped_column(String(64))
-    title: Mapped[str] = mapped_column(String(255), default="")
-    status: Mapped[str] = mapped_column(String(16), default="active")
-
-    # 会话级粘性绑定
-    bound_provider_model_id: Mapped[int | None] = mapped_column(
-        ForeignKey("provider_models.id", ondelete="SET NULL"), default=None
-    )
-    bound_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    rebind_count: Mapped[int] = mapped_column(Integer, default=0)
-    rebind_reason: Mapped[str | None] = mapped_column(String(255), default=None)
-
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-    bound_provider_model: Mapped[ProviderModel | None] = relationship(lazy="selectin")
-
-
-class Message(RuntimeBase):
-    """会话消息原文，只折叠不删除。"""
-
-    __tablename__ = "messages"
-    __table_args__ = (
-        UniqueConstraint("conversation_id", "turn_no", name="uq_message_turn"),
-        Index("ix_messages_conv", "conversation_id"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[str] = mapped_column(String(64))
-    turn_no: Mapped[int] = mapped_column(Integer)
-    role: Mapped[str] = mapped_column(String(16))
-    content: Mapped[str] = mapped_column(Text)
-    token_count: Mapped[int] = mapped_column(Integer, default=0)
-    folded: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class ConversationMemory(RuntimeBase):
-    """滚动摘要 + 已拍板结论 + 待确认问题。"""
-
-    __tablename__ = "conversation_memory"
-
-    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    summary: Mapped[str] = mapped_column(Text, default="")
-    open_questions: Mapped[list[str]] = mapped_column(default=list)
-    decisions: Mapped[list[str]] = mapped_column(default=list)
-    folded_turns: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class ArtifactDraft(RuntimeBase):
-    """未确认的产物草稿：只入库，不落盘。确认沉淀是唯一落盘入口。"""
-
-    __tablename__ = "artifact_drafts"
-    __table_args__ = (Index("ix_drafts_conv", "conversation_id"),)
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(String(64))
-    target_path: Mapped[str] = mapped_column(String(512))
-    content: Mapped[str] = mapped_column(Text)
-    based_on_hash: Mapped[str] = mapped_column(String(64), default="")
-    status: Mapped[str] = mapped_column(String(16), default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class ProjectMemory(RuntimeBase):
-    """项目长期记忆，注入所有 Agent 的 prompt，可在设置页增删改。"""
-
-    __tablename__ = "project_memory"
-    __table_args__ = (
-        UniqueConstraint("project_code", "content_hash", name="uq_project_memory"),
-        Index("ix_project_memory_project", "project_code"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    kind: Mapped[str] = mapped_column(String(16))
-    content: Mapped[str] = mapped_column(Text)
-    content_hash: Mapped[str] = mapped_column(String(64))
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    source_conversation_id: Mapped[str | None] = mapped_column(String(64), default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class ProjectAgentPrompt(RuntimeBase):
-    """项目级 Agent 附加指令。
-
-    工程级提示词在 atelier/prompts/agents/*.md，只读不可改；本表存用户为某项目
-    给某 Agent 补充的指令，组装上下文时追加在工程提示词之后，不覆盖、不改写。
-    """
-
-    __tablename__ = "project_agent_prompts"
-    __table_args__ = (
-        UniqueConstraint("project_code", "agent_code", name="uq_project_agent_prompt"),
-        Index("ix_project_agent_prompt_project", "project_code"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    agent_code: Mapped[str] = mapped_column(String(64))
-    content: Mapped[str] = mapped_column(Text)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class ProjectPromptSnippet(RuntimeBase):
-    """项目自定义提示词片段：负向词、风格层等，与工程预设合并后使用。"""
-
-    __tablename__ = "project_prompt_snippets"
-    __table_args__ = (
-        UniqueConstraint("project_code", "code", name="uq_project_prompt_snippet"),
-        Index("ix_project_prompt_snippet_project", "project_code", "kind"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    project_code: Mapped[str] = mapped_column(String(64))
-    code: Mapped[str] = mapped_column(String(64))
-    kind: Mapped[str] = mapped_column(String(16))
-    slot: Mapped[str | None] = mapped_column(String(32), default=None)
-    content: Mapped[str] = mapped_column(Text)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    sort_no: Mapped[int] = mapped_column(Integer, default=0)
-    remark: Mapped[str | None] = mapped_column(Text, default=None)
+    dir_path: Mapped[str] = mapped_column(String(1024))
+    """项目目录的绝对路径。默认项目根下的项目也存绝对路径，口径只有一种。"""
+    managed: Mapped[bool] = mapped_column(Boolean, default=True)
+    """true = 位于默认项目根（仓库 assets/），扫描时自动登记；false = 从别处导入的。"""
+    missing: Mapped[bool] = mapped_column(Boolean, default=False)
+    """上次同步时目录不见了（外置盘没挂、被搬走）。只标记不删记录，等它回来。"""
+    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

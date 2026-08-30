@@ -24,6 +24,12 @@ class Settings(BaseSettings):
 
     repo_root: Path = REPO_ROOT
 
+    projects_root: Path | None = Field(
+        default=None,
+        description="默认项目根（新建项目不指定目录时落在这里），留空则用仓库 assets/",
+    )
+    """项目可以在磁盘任意位置，这里只是「没说放哪儿时放哪儿」的缺省，不是项目必须待在的地方。"""
+
     # 上下文与路由默认值
     default_context_budget: int = 24000
     recent_turns: int = 8
@@ -55,7 +61,8 @@ class Settings(BaseSettings):
 
     @property
     def assets_dir(self) -> Path:
-        return self.repo_root / "assets"
+        """默认项目根。它下面的项目会被自动扫描认领，别处的项目靠显式导入。"""
+        return (self.projects_root or (self.repo_root / "assets")).expanduser()
 
     @property
     def templates_dir(self) -> Path:

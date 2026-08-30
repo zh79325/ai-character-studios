@@ -14,8 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from atelier.api import config, events, providers
+from atelier.api import projects as projects_api
+from atelier.api.deps import RuntimeDb
 from atelier.api.portable import PortableError
-from atelier.api.provider_ops import Conflict, NotFound
+from atelier.assets import projects
+from atelier.assets.layout import LayoutError
+from atelier.errors import Conflict, NotFound
 from atelier.providers.base import NoCandidateError, ProviderError
 from atelier.providers.period import PeriodExprError
 from atelier.settings import get_settings
@@ -43,18 +47,22 @@ def create_app() -> FastAPI:
     app.include_router(providers.router)
     app.include_router(config.router)
     app.include_router(events.router)
+    app.include_router(projects_api.router)
 
     _install_error_handlers(app)
 
     @app.get("/api/health", tags=["health"])
-    def health() -> dict[str, Any]:
-        """Electron 起完后端后靠这个确认真的能服务了。"""
+    def health(session: RuntimeDb) -> dict[str, Any]:
+        """Electron 起完后端后靠这个确认真的能服务了。项目库跟着当前项目走，没选则为 null。"""
         settings = get_settings()
+        current = projects.current(session)
         return {
             "ok": True,
             "config_db": str(settings.config_db_path),
             "runtime_db": str(settings.runtime_db_path),
             "usage_server": settings.usage_server_url or None,
+            "current_project": current.code if current else None,
+            "project_db": str(current.db_path) if current else None,
         }
 
     return app
@@ -74,6 +82,11 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(PortableError)
     async def _portable(_: Request, exc: PortableError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": f"配置包不合法：{exc}"})
+
+    @app.exception_handler(LayoutError)
+    async def _layout(_: Request, exc: LayoutError) -> JSONResponse:
+        # 目录名不合规或路径越出项目目录：是入参问题，不是服务器问题
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(PeriodExprError)
     async def _period(_: Request, exc: PeriodExprError) -> JSONResponse:

@@ -2,11 +2,15 @@
 
 流是靠轮询数据库增量推的，所以测试里把轮询间隔压到 0.01 秒；任务进终态后流会自己收，
 不用强行掐断连接。
+
+这条流横跨两个库：任务与任务事件在项目库（`tasks` 夹具），选路日志在全局库（`session`
+夹具）。用例里两边分开写，正好钉住「一条流两个游标」不会因为拆库而漏推。
 """
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 
 import pytest
@@ -16,7 +20,10 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from atelier.api import events
-from atelier.db.runtime_models import RouteLog, Task, TaskEvent
+from atelier.assets.projects import ProjectRef
+from atelier.db.project_models import Task, TaskEvent
+from atelier.db.runtime_models import RouteLog
+from atelier.db.session import project_engine
 
 
 @pytest.fixture(autouse=True)
@@ -24,10 +31,21 @@ def fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(events, "POLL_SECONDS", 0.01)
 
 
+@pytest.fixture
+def proj_engine(project: ProjectRef) -> Engine:
+    """当前项目库的 engine——项目建在 tmp_path 下，所以这就是个临时库。"""
+    return project_engine(project.db_path)
+
+
+@pytest.fixture
+def tasks(proj_engine: Engine) -> Iterator[Session]:
+    with Session(proj_engine) as s:
+        yield s
+
+
 def make_task(session: Session, task_id: str, status: str = "succeeded") -> Task:
     task = Task(
         id=task_id,
-        project_code="chitong",
         target_kind="character",
         target_ref="chitong_beast",
         stage="spec",
@@ -101,14 +119,14 @@ def test_start_cursor_on_an_empty_table(session: Session) -> None:
     assert events._start_cursor(session, None) == 0
 
 
-def test_fetch_task_events_respects_the_sequence(session: Session) -> None:
-    make_task(session, "t-1")
-    add_event(session, "t-1", 1, "started")
-    add_event(session, "t-1", 2, "prompt_built")
-    add_event(session, "other", 1, "started")
+def test_fetch_task_events_respects_the_sequence(tasks: Session) -> None:
+    make_task(tasks, "t-1")
+    add_event(tasks, "t-1", 1, "started")
+    add_event(tasks, "t-1", 2, "prompt_built")
+    add_event(tasks, "other", 1, "started")
 
-    assert [row.seq for row in events.fetch_task_events(session, "t-1", 0)] == [1, 2]
-    assert [row.seq for row in events.fetch_task_events(session, "t-1", 1)] == [2]
+    assert [row.seq for row in events.fetch_task_events(tasks, "t-1", 0)] == [1, 2]
+    assert [row.seq for row in events.fetch_task_events(tasks, "t-1", 1)] == [2]
 
 
 # --------------------------------------------------------------------------- #
@@ -116,14 +134,17 @@ def test_fetch_task_events_respects_the_sequence(session: Session) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_unknown_task_is_404(client: TestClient) -> None:
+def test_unknown_task_is_404(client: TestClient, tasks: Session) -> None:
+    """项目是选好的，只是任务号不存在——404 得来自任务而不是「没选项目」。"""
     assert client.get("/api/events/nope").status_code == 404
 
 
-def test_finished_task_replays_then_closes(client: TestClient, session: Session) -> None:
-    make_task(session, "t-1", status="succeeded")
-    add_event(session, "t-1", 1, "started", "开工")
-    add_event(session, "t-1", 2, "finished", "收工")
+def test_finished_task_replays_then_closes(
+    client: TestClient, tasks: Session, session: Session
+) -> None:
+    make_task(tasks, "t-1", status="succeeded")
+    add_event(tasks, "t-1", 1, "started", "开工")
+    add_event(tasks, "t-1", 2, "finished", "收工")
     add_route_log(session, task_id="t-1")
     add_route_log(session, task_id="other")  # 别的任务的日志不该混进来
 
@@ -137,19 +158,19 @@ def test_finished_task_replays_then_closes(client: TestClient, session: Session)
     assert "event: done" in body
 
 
-def test_after_seq_skips_what_the_panel_already_has(client: TestClient, session: Session) -> None:
-    make_task(session, "t-1")
-    add_event(session, "t-1", 1, "started", "第一条")
-    add_event(session, "t-1", 2, "finished", "第二条")
+def test_after_seq_skips_what_the_panel_already_has(client: TestClient, tasks: Session) -> None:
+    make_task(tasks, "t-1")
+    add_event(tasks, "t-1", 1, "started", "第一条")
+    add_event(tasks, "t-1", 2, "finished", "第二条")
 
     body = client.get("/api/events/t-1", params={"after_seq": 1}).text
     assert "第一条" not in body
     assert "第二条" in body
 
 
-def test_failed_task_also_closes_the_stream(client: TestClient, session: Session) -> None:
-    make_task(session, "t-1", status="failed")
-    add_event(session, "t-1", 1, "failed", "provider 502")
+def test_failed_task_also_closes_the_stream(client: TestClient, tasks: Session) -> None:
+    make_task(tasks, "t-1", status="failed")
+    add_event(tasks, "t-1", 1, "failed", "provider 502")
 
     body = client.get("/api/events/t-1").text
     assert "event: done" in body
@@ -157,17 +178,17 @@ def test_failed_task_also_closes_the_stream(client: TestClient, session: Session
 
 
 def test_stream_sees_writes_that_land_after_it_started(
-    client: TestClient, session: Session, engine: Engine
+    client: TestClient, tasks: Session, proj_engine: Engine
 ) -> None:
     """长连接不能被 SQLite 的只读快照钉在打开那一刻的数据上。
 
     开流之前挂一个定时写入：流必须看到它，并在任务转终态后收掉。
     """
-    make_task(session, "t-1", status="running")
-    add_event(session, "t-1", 1, "started", "开工")
+    make_task(tasks, "t-1", status="running")
+    add_event(tasks, "t-1", 1, "started", "开工")
 
     def write_later() -> None:
-        with Session(engine) as late:
+        with Session(proj_engine) as late:
             late.add(TaskEvent(task_id="t-1", seq=2, event="progress", message="画到一半"))
             late.commit()
             task = late.get(Task, "t-1")

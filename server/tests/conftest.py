@@ -1,9 +1,11 @@
-"""路由层与 API 测试的共用夹具：内存双库 + 断网的用量服务。
+"""路由层与 API 测试的共用夹具：临时三库 + 断网的用量服务。
 
 用量服务默认不可用，账务全走本地镜像——这是远程挂掉时的兜底路径，也是单测里唯一
 不依赖外部服务的路径。要测远程口径的用例自己装一个假客户端。
 
-API 测试用 `client` 夹具：把两个库的依赖换成内存 Session，不碰 db/ 下的真库。
+API 测试用 `client` 夹具：把全局两库的依赖换成临时库的 Session，不碰 db/ 下的真库。项目库
+不需要覆盖：它本来就住在项目目录里，把项目建在 tmp_path 下就已经是隔离的（见 `project`
+夹具）。
 """
 
 from __future__ import annotations
@@ -18,7 +20,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from atelier.assets import projects as projects_mod
 from atelier.db.config_models import ConfigBase
+from atelier.db.project_models import ProjectBase
 from atelier.db.runtime_models import (
     ModelLimit,
     Provider,
@@ -26,8 +30,10 @@ from atelier.db.runtime_models import (
     ProviderModel,
     RuntimeBase,
 )
+from atelier.db.session import dispose_project_engines, project_engine
 from atelier.providers import usage
 from atelier.providers.usage_client import Permit
+from atelier.settings import get_settings
 
 
 class OfflineUsageClient:
@@ -116,25 +122,74 @@ def cfg_session(cfg_engine: Engine) -> Iterator[Session]:
         yield s
 
 
+@pytest.fixture(autouse=True)
+def release_project_engines() -> Iterator[None]:
+    """用完就放开项目库句柄。
+
+    engine 是按库路径缓存的进程级字典，而每个用例的项目都在新的 tmp_path 里，不收就是
+    一路累连接池，整轮跑下来容易碰文件句柄上限。
+    """
+    yield
+    dispose_project_engines()
+
+
+@pytest.fixture
+def projects_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """把默认项目根指到临时目录，并让建项目库走 create_all 而不跑 alembic。
+
+    不指开就会在仓库真的 `assets/` 下建测试项目；不换掉 alembic 则每建一个项目就要跑一轮
+    迁移，十几个用例加起来很浪费。「迁移真的能建出同一套表」由 test_migrations 单独盯。
+    """
+    root = tmp_path / "projects"
+    root.mkdir()
+    settings = get_settings().model_copy(update={"projects_root": root})
+
+    def fake_upgrade(db_path: Path, revision: str = "head") -> None:
+        ProjectBase.metadata.create_all(project_engine(db_path))
+
+    monkeypatch.setattr(projects_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(projects_mod, "upgrade_project", fake_upgrade)
+    monkeypatch.setattr("atelier.api.projects.get_settings", lambda: settings)
+    return root
+
+
+@pytest.fixture
+def project(session: Session, projects_root: Path) -> projects_mod.ProjectRef:
+    """一个建在临时项目根下、已登记且已设为当前的项目。"""
+    ref = projects_mod.create_project(session, name="测试项目", code="demo")
+    projects_mod.open_project(session, ref.code)
+    session.commit()
+    return ref
+
+
 @pytest.fixture
 def client(engine: Engine, cfg_engine: Engine) -> Iterator[TestClient]:
-    """指向临时双库的 HTTP 客户端，不碰 db/ 下的真库。
+    """指向临时全局两库的 HTTP 客户端，不碰 db/ 下的真库。
 
     每个请求开自己的 Session（与真实依赖一致），不把测试线程的 Session 借给应用线程——
         Session 不是线程安全的，SSE 测试里两边会同时用库。
+
+    全局库那一份要跟真依赖一样在请求结尾提交：不提交的话路由层自己 commit 的东西看得见、
+    API 层改的东西却静静丢掉，下一个请求就像什么都没发生过。
     """
     from atelier.api.deps import config_db, runtime_db
     from atelier.main import app
 
-    def _open(target: Engine) -> Callable[[], Iterator[Session]]:
+    def _open(target: Engine, *, commit: bool) -> Callable[[], Iterator[Session]]:
         def dependency() -> Iterator[Session]:
             with Session(target) as s:
-                yield s
+                try:
+                    yield s
+                    if commit:
+                        s.commit()
+                except Exception:
+                    s.rollback()
+                    raise
 
         return dependency
 
-    app.dependency_overrides[runtime_db] = _open(engine)
-    app.dependency_overrides[config_db] = _open(cfg_engine)
+    app.dependency_overrides[runtime_db] = _open(engine, commit=True)
+    app.dependency_overrides[config_db] = _open(cfg_engine, commit=False)
     try:
         with TestClient(app) as test_client:
             yield test_client

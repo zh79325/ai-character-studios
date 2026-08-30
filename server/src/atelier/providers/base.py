@@ -12,6 +12,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol, runtime_checkable
 
 # 计量口径：文本记 tokens，生图/视频记 calls，Meshy 记 credits
 LIMIT_KINDS = ("tokens", "calls", "credits")
@@ -45,6 +46,24 @@ class QuotaExhausted(ProviderError):
 
 class NoCandidateError(ProviderError):
     """该 Agent 没有可用候选：没配、全禁用、全熔断或全部额度用尽。"""
+
+
+@runtime_checkable
+class StickyBinding(Protocol):
+    """会话粘性绑定的读写口，选路层通过它记住「这个会话在用哪个候选」。
+
+    会话行住在**项目自己的库**里（项目目录可以在磁盘任意位置），而候选来自全局库，两边
+    不能 join、也不共用 Session。所以选路层不去查会话，改由调用方把会话对象传进来，选路
+    层只按这个协议读写字段，最后由调用方提交自己那个库。`atelier.db.project_models`
+    的 `Conversation` 天然满足它。
+    """
+
+    id: str
+    bound_provider_model_id: int | None
+    bound_provider_label: str
+    bound_at: datetime | None
+    rebind_count: int
+    rebind_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)

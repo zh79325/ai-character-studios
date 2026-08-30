@@ -8,4 +8,11 @@ export interface AtelierBridge {
   logBacklog(): Promise<string[]>
   /** 订阅后端输出，返回退订函数。 */
   onBackendLog(handler: (line: string) => void): () => void
+  /**
+   * 让用户挑一个目录，取消返回 null。
+   *
+   * 项目可以放在磁盘任意位置，新建与导入都要一个绝对路径；让用户手敲路径太容易敲错，
+   * 而系统文件对话框只有主进程开得出来，所以走这道门。
+   */
+  chooseDirectory(defaultPath?: string): Promise<string | null>
 }

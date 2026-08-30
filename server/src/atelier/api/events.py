@@ -4,6 +4,9 @@
 进程（迁移、seed），只要它写进了库，面板就能看到，不需要谁记得去发广播。代价是最多迟
 `POLL_SECONDS` 上屏，对日志面板足够。
 
+两类事件住在不同的库里：路由日志是机器级的（全局 runtime.db），任务与任务事件是项目级的
+（项目目录下的 project.db）。所以任务流同时拿两个 Session，各自轮询自己那份，不做 join。
+
 事件里的内容在写库前已脱敏（key 只留前 4 后 4），这里原样转发，不再解析。
 """
 
@@ -18,9 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from atelier.api.deps import RuntimeDb
+from atelier.api.deps import ProjectDb, RuntimeDb
 from atelier.api.schemas import RouteLogOut
-from atelier.db.runtime_models import RouteLog, Task, TaskEvent
+from atelier.db.project_models import Task, TaskEvent
+from atelier.db.runtime_models import RouteLog
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
@@ -117,12 +121,16 @@ async def route_log_stream(
 @router.get("/{task_id}")
 async def task_event_stream(
     request: Request,
-    session: RuntimeDb,
+    runtime: RuntimeDb,
+    tasks: ProjectDb,
     task_id: str,
     after_seq: int = Query(default=0),
 ) -> EventSourceResponse:
-    """单个任务的运行日志 + 它的路由决策；任务进终态后推 done 并收流。"""
-    task = session.get(Task, task_id)
+    """单个任务的运行日志 + 它的路由决策；任务进终态后推 done 并收流。
+
+    任务在项目库（`tasks`），路由日志在全局库（`runtime`），两边各自推进自己的游标。
+    """
+    task = tasks.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"任务 {task_id} 不存在")
 
@@ -133,10 +141,11 @@ async def task_event_stream(
         nonlocal seq_cursor, log_cursor
         yield ServerSentEvent(event="ready", data=task_id)
         while not await request.is_disconnected():
-            session.rollback()
+            tasks.rollback()
+            runtime.rollback()
             fresh = False
 
-            for row in fetch_task_events(session, task_id, seq_cursor):
+            for row in fetch_task_events(tasks, task_id, seq_cursor):
                 seq_cursor = row.seq
                 fresh = True
                 yield ServerSentEvent(
@@ -145,14 +154,14 @@ async def task_event_stream(
                     data=_task_event_json(row),
                 )
 
-            for log in fetch_route_logs(session, log_cursor, task_id=task_id):
+            for log in fetch_route_logs(runtime, log_cursor, task_id=task_id):
                 log_cursor = log.id
                 fresh = True
                 yield ServerSentEvent(
                     event="route_log", id=str(log.id), data=_route_log_out(log).model_dump_json()
                 )
 
-            current = session.get(Task, task_id)
+            current = tasks.get(Task, task_id)
             if current is not None and current.status in TERMINAL_STATUS and not fresh:
                 yield ServerSentEvent(event="done", data=current.status)
                 return

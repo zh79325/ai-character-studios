@@ -1,16 +1,27 @@
-import { ApiOutlined, DashboardOutlined, ProfileOutlined } from '@ant-design/icons'
+import {
+  ApiOutlined,
+  DashboardOutlined,
+  FolderOutlined,
+  PictureOutlined,
+  ProfileOutlined,
+} from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Layout, Menu, Typography } from 'antd'
 import { useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import { health } from '@/api/config'
+import ProjectSwitcher from '@/components/ProjectSwitcher'
 import LogsPage from '@/pages/LogsPage'
+import ProjectPage from '@/pages/ProjectPage'
+import ProjectsPage from '@/pages/ProjectsPage'
 import ProvidersPage from '@/pages/ProvidersPage'
 import UsagePage from '@/pages/UsagePage'
 import { useUiStore } from '@/store/ui'
 
 const NAV = [
+  { key: '/project', icon: <PictureOutlined />, label: '当前项目' },
+  { key: '/projects', icon: <FolderOutlined />, label: '项目管理' },
   { key: '/providers', icon: <ApiOutlined />, label: '服务商设置' },
   { key: '/usage', icon: <DashboardOutlined />, label: '额度看板' },
   { key: '/logs', icon: <ProfileOutlined />, label: '运行日志' },
@@ -29,6 +40,9 @@ export default function App() {
           <Typography.Text strong style={{ fontSize: 16 }}>
             AI 素材工坊
           </Typography.Text>
+        </div>
+        <div style={{ padding: '0 16px 12px' }}>
+          <ProjectSwitcher />
         </div>
         <Menu
           mode="inline"
@@ -54,10 +68,13 @@ export default function App() {
           />
         )}
         <Routes>
+          <Route path="/project" element={<ProjectPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/usage" element={<UsagePage />} />
           <Route path="/logs" element={<LogsPage />} />
-          <Route path="*" element={<Navigate to="/providers" replace />} />
+          {/* 进来先落在当前项目；没项目时那一页自己会引导去新建 */}
+          <Route path="*" element={<Navigate to="/project" replace />} />
         </Routes>
       </Layout.Content>
     </Layout>

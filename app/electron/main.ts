@@ -5,7 +5,7 @@
  */
 import { resolve } from 'node:path'
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
 import { resolveServerDir, startBackend, stopBackend, type Backend } from './backend'
 
@@ -63,6 +63,29 @@ function registerIpc(): void {
   ipcMain.handle('atelier:port', () => backend?.port ?? null)
   ipcMain.handle('atelier:startup-error', () => startupError)
   ipcMain.handle('atelier:log-backlog', () => [...logs])
+  ipcMain.handle('atelier:choose-directory', (_event, defaultPath?: string) =>
+    chooseDirectory(defaultPath),
+  )
+}
+
+/**
+ * 挑一个项目目录。
+ *
+ * `createDirectory` 是给「新建到别处」用的：用户往往要先建个新文件夹再选它。挂在当前窗口
+ * 上开成 sheet，不然 macOS 上会飘出一个跟应用无关的独立窗口。
+ */
+async function chooseDirectory(defaultPath?: string): Promise<string | null> {
+  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const options = {
+    title: '选择项目目录',
+    buttonLabel: '选这个目录',
+    defaultPath: defaultPath || undefined,
+    properties: ['openDirectory' as const, 'createDirectory' as const],
+  }
+  const result = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options)
+  return result.canceled ? null : (result.filePaths[0] ?? null)
 }
 
 async function boot(): Promise<void> {

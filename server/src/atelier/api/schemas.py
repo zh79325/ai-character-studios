@@ -256,3 +256,119 @@ class RouteLogOut(Schema):
     task_id: str | None
     conversation_id: str | None
     project_code: str | None
+
+
+# --------------------------------------------------------------------------- #
+# 项目
+# --------------------------------------------------------------------------- #
+
+
+class ProjectSummaryOut(Schema):
+    """项目列表的一行。带绝对路径：项目可以在磁盘任意位置，用户靠它分辨同名项目。"""
+
+    code: str
+    name: str
+    dir_path: str
+    managed: bool
+    missing: bool
+    is_current: bool
+    last_opened_at: str | None = None
+
+
+class ProjectListOut(Schema):
+    projects: list[ProjectSummaryOut]
+    current: str | None = None
+    default_root: str
+    """默认项目根（仓库 `assets/`），前端新建时拿它做目录预填。"""
+
+
+class ProjectStyleIn(Schema):
+    model_config = ConfigDict(protected_namespaces=(), from_attributes=True, extra="allow")
+
+    art_style: str = ""
+    mood: str = ""
+    palette: str = ""
+    quality: str = ""
+
+
+class ProjectDefaultsIn(Schema):
+    model_config = ConfigDict(protected_namespaces=(), from_attributes=True, extra="allow")
+
+    image_size: int = Field(default=2048, ge=256, le=8192)
+    texture_resolution: str = "2k"
+    enable_pbr: bool = True
+    target_polycount: int = Field(default=30000, ge=1000)
+    pose_mode: str = "t-pose"
+    height_meters: float = Field(default=1.7, gt=0)
+
+
+class ProjectConfigOut(Schema):
+    """`project.json` 原样吐回。它是项目配置的唯一真相，库里不存副本。"""
+
+    model_config = ConfigDict(protected_namespaces=(), from_attributes=True, extra="allow")
+
+    code: str
+    name: str
+    style: ProjectStyleIn
+    defaults: ProjectDefaultsIn
+    pose_template: str | None = None
+    art_bible: str = "art-bible.md"
+    review_mode: Literal["full", "lean", "solo"] = "lean"
+
+
+class ProjectConfigPatch(Schema):
+    """项目配置表单的提交体。code 是跟着目录走的身份，不得改，因此不在这里。"""
+
+    name: str | None = None
+    style: ProjectStyleIn | None = None
+    defaults: ProjectDefaultsIn | None = None
+    pose_template: str | None = None
+    review_mode: Literal["full", "lean", "solo"] | None = None
+
+
+class ProjectCreateIn(Schema):
+    name: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=1, max_length=64)
+    dir_path: str | None = Field(
+        default=None, description="留空建在默认项目根下，给了就建在这个任意位置"
+    )
+    style: ProjectStyleIn | None = None
+    defaults: ProjectDefaultsIn | None = None
+    review_mode: Literal["full", "lean", "solo"] = "lean"
+
+
+class ProjectImportIn(Schema):
+    dir_path: str = Field(min_length=1, description="已带 project.json 的项目目录")
+
+
+class ProjectSwitchIn(Schema):
+    code: str = Field(min_length=1)
+
+
+class ArtBibleOut(Schema):
+    path: str
+    content: str
+    forbidden: list[str] = Field(
+        default_factory=list,
+        description="「风格禁止项」一节抽出的条目，生图时拼进 negative_prompt",
+    )
+
+
+class ArtBibleIn(Schema):
+    content: str
+
+
+class ScanResultOut(Schema):
+    added: list[str]
+    missing: list[str]
+    """库里有而磁盘上没的素材：只报不删，目录可能只是还没拷过来。"""
+    total: int
+
+
+class CharacterOut(Schema):
+    id: str
+    name: str
+    dir_name: str
+    state: str
+    spec_path: str | None = None
+    updated_at: str

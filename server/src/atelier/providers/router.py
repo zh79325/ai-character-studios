@@ -27,7 +27,6 @@ from sqlalchemy.orm import Session
 
 from atelier.db.runtime_models import (
     CircuitBreaker,
-    Conversation,
     Provider,
     ProviderAgentModel,
     ProviderModel,
@@ -42,6 +41,7 @@ from atelier.providers.base import (
     ProviderError,
     QuotaExhausted,
     RetryableError,
+    StickyBinding,
 )
 from atelier.settings import get_settings
 
@@ -167,6 +167,7 @@ def select_candidate(
     session: Session,
     agent_code: str,
     *,
+    binding: StickyBinding | None = None,
     conversation_id: str | None = None,
     limit_kind: str = "tokens",
     operation: str | None = None,
@@ -175,8 +176,11 @@ def select_candidate(
 ) -> Decision:
     """选出这次要用的候选，写一条 route_log；一个都没有就抛 NoCandidateError。
 
-    有 conversation_id 时走粘性：已绑且可用就直接复用，不动任何额度判定之外的状态。
+    给了 binding（会话行）就走粘性：已绑且仍可用就直接复用，不动任何额度判定之外的状态。
+    绑定的变更只写在传进来的对象上，**由调用方提交项目库**；`session` 是全局库，提交它
+    落不了会话的改动。
     """
+    conversation_id = conversation_id or (binding.id if binding is not None else None)
     candidates = candidates_for(session, agent_code)
     if not candidates:
         _log_route(
@@ -192,9 +196,7 @@ def select_candidate(
         )
         raise NoCandidateError(f"Agent {agent_code} 没有可用候选")
 
-    conversation = (
-        session.get(Conversation, conversation_id) if conversation_id is not None else None
-    )
+    conversation = binding
     skipped: list[tuple[str, str]] = []
 
     # 1. 粘性命中：会话已绑定且仍可用
@@ -243,8 +245,9 @@ def select_candidate(
 
         if conversation is not None:
             conversation.bound_provider_model_id = candidate.provider_model_id
+            conversation.bound_provider_label = candidate.label[:255]
             conversation.bound_at = _now()
-            session.commit()
+            # 会话在项目库里，这边 commit 不了它——留给调用方提交自己那个库
 
         decision = Decision(
             candidate=candidate,

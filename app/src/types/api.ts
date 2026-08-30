@@ -186,4 +186,103 @@ export interface Health {
   config_db: string
   runtime_db: string
   usage_server: string | null
+  /** 当前项目的 code；一台新装的机器上还没有项目时是 null。 */
+  current_project: string | null
+  /** 当前项目自带的库文件，跟着项目目录走。 */
+  project_db: string | null
+}
+
+// --------------------------------------------------------------------------- //
+// 项目
+// --------------------------------------------------------------------------- //
+
+/** 装机项目列表的一行。带绝对路径：项目可以在磁盘任意位置，用户靠它分辨同名项目。 */
+export interface ProjectSummary {
+  code: string
+  name: string
+  dir_path: string
+  /** 在默认项目根下（平台替它管目录），否则只是挂着。 */
+  managed: boolean
+  /** 目录当下不在（外置盘没挂、被搬走），列表里还留着但不能用。 */
+  missing: boolean
+  is_current: boolean
+  last_opened_at: string | null
+}
+
+export interface ProjectList {
+  projects: ProjectSummary[]
+  current: string | null
+  /** 默认项目根，新建时拿它做目录预填。 */
+  default_root: string
+}
+
+/** `project.json` 里的字段都允许用户手写额外键，所以这些结构都不是封闭的。 */
+export interface ProjectStyle extends Record<string, unknown> {
+  art_style: string
+  mood: string
+  palette: string
+  quality: string
+}
+
+export interface ProjectDefaults extends Record<string, unknown> {
+  image_size: number
+  texture_resolution: string
+  enable_pbr: boolean
+  target_polycount: number
+  pose_mode: string
+  height_meters: number
+}
+
+export type ReviewMode = 'full' | 'lean' | 'solo'
+
+export interface ProjectConfig extends Record<string, unknown> {
+  code: string
+  name: string
+  style: ProjectStyle
+  defaults: ProjectDefaults
+  pose_template: string | null
+  art_bible: string
+  review_mode: ReviewMode
+}
+
+/** 配置表单的提交体。code 是跟着目录走的身份，改不了，所以不在这里。 */
+export interface ProjectConfigPatch {
+  name?: string
+  style?: ProjectStyle
+  defaults?: ProjectDefaults
+  pose_template?: string | null
+  review_mode?: ReviewMode
+}
+
+export interface ProjectCreateIn {
+  name: string
+  code: string
+  /** 留空建在默认项目根下，给了就建在这个任意位置。 */
+  dir_path?: string | null
+  style?: Partial<ProjectStyle>
+  review_mode?: ReviewMode
+}
+
+export interface ArtBible {
+  path: string
+  content: string
+  /** 「风格禁止项」一节抽出的条目，生图时拼进 negative_prompt。 */
+  forbidden: string[]
+}
+
+export interface ScanResult {
+  added: string[]
+  /** 库里有而磁盘上没的素材：只报不删，目录可能只是还没拷过来。 */
+  missing: string[]
+  total: number
+}
+
+export interface Character {
+  id: string
+  name: string
+  /** 相对项目目录的路径，如 `characters/chitong_beast`。 */
+  dir_name: string
+  state: string
+  spec_path: string | null
+  updated_at: string
 }

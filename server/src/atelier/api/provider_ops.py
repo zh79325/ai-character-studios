@@ -3,6 +3,8 @@
 Agent 绑定与额度都按「整组替换」处理：前端交上来的那一份就是全量，比逐条 diff 少一半
 出错机会。删 provider 会连带删掉它的模型、额度、用量与绑定（外键级联），所以删除接口
 要求前端确认。
+
+「不存在」与「冲突」用包根的 `atelier.errors`，与项目层共用同一套语义与 HTTP 映射。
 """
 
 from __future__ import annotations
@@ -30,18 +32,10 @@ from atelier.db.runtime_models import (
     ProviderModel,
     UsageCounter,
 )
+from atelier.errors import Conflict, NotFound
 from atelier.providers import period as period_mod
 from atelier.providers import router, usage
 from atelier.providers.usage_client import mask_key
-
-
-class NotFound(LookupError):
-    """要改的 provider 或模型不存在。"""
-
-
-class Conflict(ValueError):
-    """code 撞了，或同一 provider 下 model_id 撞了。"""
-
 
 # --------------------------------------------------------------------------- #
 # 读

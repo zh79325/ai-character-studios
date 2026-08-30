@@ -1,0 +1,217 @@
+/**
+ * 项目管理页。
+ *
+ * 这里管的是「本机认识哪些项目」，不是项目的内容。三个动作对应三种真实处境：新建（从零
+ * 开一个）、导入（换机器、外置盘、同事拷来的目录）、扫默认根（用户直接把目录拖进
+ * `assets/`）。移出只删本机索引，磁盘上的文件一个不动——那是用户的资产。
+ */
+import { FolderOpenOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { App, Button, Card, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+
+import { forgetProject, importProject, listProjects, switchProject } from '@/api/projects'
+import DirectoryPicker from '@/components/DirectoryPicker'
+import ProjectCreateDrawer from '@/components/ProjectCreateDrawer'
+import type { ProjectList, ProjectSummary } from '@/types/api'
+
+export default function ProjectsPage() {
+  const { message } = App.useApp()
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [creating, setCreating] = useState(false)
+  const [importDir, setImportDir] = useState<string | null>(null)
+
+  const list = useQuery({ queryKey: ['projects'], queryFn: () => listProjects() })
+
+  /**
+   * 换项目等于换一个库，缓存里所有项目相关的东西一律作废。
+   *
+   * 逐个点名 key 迟早会漏（后面还要加会话、素材、渲染图），而这个动作是用户主动做的、
+   * 一秒钟一次都不到，全刷一遍的代价可以忽略。
+   */
+  const adopt = (fresh: ProjectList) => {
+    queryClient.setQueryData(['projects'], fresh)
+    void queryClient.invalidateQueries()
+  }
+
+  const sync = useMutation({
+    mutationFn: () => listProjects(true),
+    onSuccess: (fresh) => {
+      const known = new Set((list.data?.projects ?? []).map((item) => item.code))
+      const added = fresh.projects.filter((item) => !known.has(item.code))
+      message.success(added.length ? `认领了 ${added.length} 个项目` : '默认目录里没有新项目')
+      adopt(fresh)
+    },
+    onError: (err: Error) => message.error(err.message),
+  })
+
+  const doImport = useMutation({
+    mutationFn: (dir: string) => importProject(dir),
+    onSuccess: (fresh) => {
+      message.success(`已导入并切到 ${fresh.current}`)
+      setImportDir(null)
+      adopt(fresh)
+    },
+    onError: (err: Error) => message.error(err.message),
+  })
+
+  const doSwitch = useMutation({
+    mutationFn: (code: string) => switchProject(code),
+    onSuccess: (fresh) => {
+      adopt(fresh)
+      navigate('/project')
+    },
+    onError: (err: Error) => message.error(err.message),
+  })
+
+  const forget = useMutation({
+    mutationFn: (code: string) => forgetProject(code),
+    onSuccess: (fresh) => {
+      message.success('已从本机移出，磁盘上的目录还在')
+      adopt(fresh)
+    },
+    onError: (err: Error) => message.error(err.message),
+  })
+
+  const columns: ColumnsType<ProjectSummary> = [
+    {
+      title: '项目',
+      dataIndex: 'name',
+      render: (name: string, row) => (
+        <Space direction="vertical" size={0}>
+          <Space size={6}>
+            <Typography.Text strong>{name}</Typography.Text>
+            {row.is_current && <Tag color="blue">当前</Tag>}
+            {row.missing && <Tag color="error">目录不在</Tag>}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {row.code}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '目录',
+      dataIndex: 'dir_path',
+      ellipsis: true,
+      render: (dir: string, row) => (
+        <Space size={6}>
+          <Typography.Text type={row.missing ? 'danger' : undefined} copyable={{ text: dir }}>
+            {dir}
+          </Typography.Text>
+          {!row.managed && <Tag>外部位置</Tag>}
+        </Space>
+      ),
+    },
+    {
+      title: '最近打开',
+      dataIndex: 'last_opened_at',
+      width: 180,
+      render: (at: string | null) => (at ? at.replace('T', ' ').slice(0, 19) : '—'),
+    },
+    {
+      title: '操作',
+      width: 180,
+      render: (_, row) => (
+        <Space size={4}>
+          <Button
+            size="small"
+            type={row.is_current ? 'default' : 'primary'}
+            disabled={row.missing || row.is_current}
+            loading={doSwitch.isPending && doSwitch.variables === row.code}
+            onClick={() => doSwitch.mutate(row.code)}
+          >
+            {row.is_current ? '已在用' : '切过去'}
+          </Button>
+          <Popconfirm
+            title={`把 ${row.code} 移出本机？`}
+            description="只删本机索引，磁盘上的项目目录一个字节都不动，之后还能再导入回来。"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => forget.mutate(row.code)}
+          >
+            <Button size="small" danger>
+              移出
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card
+        size="small"
+        title="本机项目"
+        extra={
+          <Space>
+            <Button icon={<PlusOutlined />} type="primary" onClick={() => setCreating(true)}>
+              新建项目
+            </Button>
+            <Button icon={<FolderOpenOutlined />} onClick={() => setImportDir('')}>
+              导入已有目录
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={sync.isPending}
+              onClick={() => sync.mutate()}
+              title="扫一遍默认项目根，认领手动拷进去的项目"
+            >
+              扫默认目录
+            </Button>
+          </Space>
+        }
+      >
+        <Table
+          rowKey="code"
+          size="small"
+          loading={list.isLoading}
+          dataSource={list.data?.projects ?? []}
+          columns={columns}
+          pagination={false}
+          locale={{ emptyText: '还没有项目，先新建一个，或者导入一个已有的项目目录' }}
+        />
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12 }}>
+          默认项目根：{list.data?.default_root ?? '—'}
+          。项目也可以放在磁盘任意位置，配置与运行库都在项目目录里，整份拷走换台机器导入即可。
+        </Typography.Paragraph>
+      </Card>
+
+      <ProjectCreateDrawer
+        open={creating}
+        defaultRoot={list.data?.default_root ?? ''}
+        onClose={() => setCreating(false)}
+        onCreated={(fresh) => {
+          adopt(fresh)
+          navigate('/project')
+        }}
+      />
+
+      <Modal
+        open={importDir !== null}
+        title="导入已有项目"
+        okText="导入"
+        confirmLoading={doImport.isPending}
+        okButtonProps={{ disabled: !importDir?.trim() }}
+        onCancel={() => setImportDir(null)}
+        onOk={() => importDir?.trim() && doImport.mutate(importDir.trim())}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            选中的目录里得有 `project.json`；代号与配置都以那份文件为准。
+          </Typography.Text>
+          <DirectoryPicker
+            value={importDir ?? ''}
+            onChange={setImportDir}
+            placeholder="/Volumes/外置盘/赤瞳系列"
+            defaultPath={list.data?.default_root}
+          />
+        </Space>
+      </Modal>
+    </Space>
+  )
+}
