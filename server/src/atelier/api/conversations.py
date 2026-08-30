@@ -133,6 +133,7 @@ def _memory_out(row: ProjectMemory) -> ProjectMemoryOut:
         id=row.id,
         kind=row.kind,
         content=row.content,
+        character_ref=row.character_ref,
         enabled=row.enabled,
         source_conversation_id=row.source_conversation_id,
         created_at=row.created_at.isoformat(),
@@ -334,16 +335,30 @@ def read_diff(
 
 
 @memory_router.get("", response_model=list[ProjectMemoryOut])
-def list_memories(project: ProjectDb) -> list[ProjectMemoryOut]:
-    """项目记忆全量，含已停用的——停用是让它不再注入，不是删掉。"""
-    rows = project.scalars(select(ProjectMemory).order_by(ProjectMemory.created_at)).all()
+def list_memories(
+    project: ProjectDb,
+    character_ref: str | None = Query(
+        default=None, description="填角色 id 只看它那一档加项目级；不填看全部"
+    ),
+) -> list[ProjectMemoryOut]:
+    """项目记忆全量，含已停用的——停用是让它不再注入，不是删掉。
+
+    不填 `character_ref` 给全部：设置页要能一眼看完这个项目攒下的所有记忆，包括各个角色名下
+    那些——拿不到全量就无法解释模型为何还带着某条旧偏好。
+    """
+    stmt = select(ProjectMemory).order_by(ProjectMemory.created_at)
+    if character_ref is not None:
+        stmt = stmt.where(ProjectMemory.character_ref.in_(("", character_ref)))
+    rows = project.scalars(stmt).all()
     return [_memory_out(row) for row in rows]
 
 
 @memory_router.post("", response_model=ProjectMemoryOut, status_code=status.HTTP_201_CREATED)
 def add_memory(payload: ProjectMemoryIn, project: ProjectDb) -> ProjectMemoryOut:
     """手写一条记忆。与 Agent 沉淀出来的走同一张表、同一套去重。"""
-    added = engine.write_memory(project, payload.kind, payload.content)
+    added = engine.write_memory(
+        project, payload.kind, payload.content, character_ref=payload.character_ref
+    )
     if added is None:
         raise Conflict("这条记忆已经有了")
     project.commit()

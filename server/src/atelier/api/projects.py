@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, status
 from sqlalchemy.orm import Session
 
+from atelier.api.characters import character_out
 from atelier.api.deps import CurrentProject, RuntimeDb
 from atelier.api.schemas import (
     ArtBibleIn,
@@ -170,7 +171,7 @@ def scan_project(ref: CurrentProject) -> ScanResultOut:
 @router.get("/current/characters", response_model=list[CharacterOut])
 def list_characters(ref: CurrentProject) -> list[CharacterOut]:
     """当前项目的人物素材。换项目就是换库，列表天然隔离。"""
-    return [CharacterOut.model_validate(row) for row in projects.character_rows(ref)]
+    return [character_out(row) for row in projects.character_rows(ref)]
 
 
 @router.get("/current", response_model=ProjectSummaryOut)

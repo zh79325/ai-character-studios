@@ -4,7 +4,7 @@ capability: text
 role: 角色设定审校
 max_turns: 1
 conversational: false
-memory_scope: project
+memory_scope: character
 context_budget: 16000
 output_contract: verdict
 allow_tools: [read_art_bible, read_project_memory, read_spec]

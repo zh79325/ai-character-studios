@@ -365,13 +365,65 @@ class ScanResultOut(Schema):
     total: int
 
 
+class ConstraintOut(Schema):
+    item: str
+    value: str
+
+
 class CharacterOut(Schema):
     id: str
     name: str
     dir_name: str
     state: str
+    state_label: str
+    """状态的中文说法。前端不该自己维护一份状态码到人话的映射，两处总会对不齐。"""
     spec_path: str | None = None
+    hard_constraints: list[ConstraintOut] = Field(default_factory=list)
+    """最近一次评审翻译出来的硬约束。后续每张图对着它逐条判定。"""
+    gate_spec_confirmed_at: str | None = None
+    gate_render_confirmed_at: str | None = None
     updated_at: str
+
+
+class CharacterCreateIn(Schema):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class SpecReviewIn(Schema):
+    conversation_id: str | None = Field(
+        default=None, description="驳回后自动重生要用的设定会话；不给就只审一次"
+    )
+
+
+class SpecReviewOut(Schema):
+    character_id: str
+    decision: str
+    approved: bool
+    attempt: int
+    regenerated: int
+    manual: bool
+    """自动重生用尽仍未通过：界面上要把问题摆给用户，让他改 art bible 或自己动手。"""
+    sections: dict[str, list[str]]
+    constraints: list[ConstraintOut]
+    text: str
+    """裁决全文。卡片上原样展示——摘一句话用户判断不了该不该放行。"""
+
+
+class GateIn(Schema):
+    note: str = Field(default="", max_length=2000)
+
+
+class AdvanceIn(Schema):
+    state: str = Field(min_length=1)
+
+
+class TaskEventOut(Schema):
+    seq: int
+    ts: str
+    level: str
+    event: str
+    message: str
+    payload: dict[str, Any]
 
 
 # --------------------------------------------------------------------------- #
@@ -497,6 +549,8 @@ class ProjectMemoryOut(Schema):
     id: str
     kind: str
     content: str
+    character_ref: str = ""
+    """空串是项目级（注入所有会话），否则只注入这个角色的会话。"""
     enabled: bool = True
     source_conversation_id: str | None = None
     created_at: str
@@ -505,6 +559,7 @@ class ProjectMemoryOut(Schema):
 class ProjectMemoryIn(Schema):
     kind: MemoryKind
     content: str = Field(min_length=1)
+    character_ref: str = Field(default="", description="只给某个角色用就填角色 id；留空是项目级")
 
 
 class ProjectMemoryPatch(Schema):

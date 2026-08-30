@@ -46,9 +46,33 @@ interface Props {
   targetRef?: string | null
   /** 新会话的标题，留空让后端按 agent 取一个。 */
   title?: string
+  /** 报出当下看的是哪场会话：评审要拿它做「驳回后自动重生」。 */
+  onActiveChange?: (id: string | null) => void
+  /** 父页面递进来的下一轮说辞。 */
+  handoff?: Handoff | null
 }
 
-export default function ChatPanel({ agentCode, targetKind, targetRef = null, title }: Props) {
+/**
+ * 从外面递进来的一句话。
+ *
+ * 只预填不自动发：这句话是平台替用户拟的，直接发出去等于拿用户的名义说了一句他没看过的话。
+ */
+export interface Handoff {
+  text: string
+  /** 真则先开一场新会话：换方向时旧上下文会把模型拉回原方向。 */
+  fresh: boolean
+  /** 同一句话可能递两次（用户又按了一遍），用它区分。 */
+  nonce: number
+}
+
+export default function ChatPanel({
+  agentCode,
+  targetKind,
+  targetRef = null,
+  title,
+  onActiveChange,
+  handoff = null,
+}: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<string | null>(null)
@@ -73,6 +97,10 @@ export default function ChatPanel({ agentCode, targetKind, targetRef = null, tit
 
   // 离开面板要退订，否则这条连接会一直挂在后端的事件循环上
   useEffect(() => () => stop.current?.(), [])
+
+  useEffect(() => {
+    onActiveChange?.(chosen)
+  }, [chosen, onActiveChange])
 
   const open = useMutation({
     mutationFn: () =>
@@ -125,6 +153,15 @@ export default function ChatPanel({ agentCode, targetKind, targetRef = null, tit
   const messages = (detail.data?.messages ?? []).filter((one) => one.role !== 'system')
   const foldedCount = messages.filter((one) => one.folded).length
   const shown = showFolded ? messages : messages.filter((one) => !one.folded)
+
+  // 只认 nonce：同一句话递两次是两件事，而重渲染不是
+  const handled = useRef(0)
+  useEffect(() => {
+    if (handoff === null || handoff.nonce === handled.current) return
+    handled.current = handoff.nonce
+    setInput(handoff.text)
+    if (handoff.fresh) open.mutate()
+  }, [handoff, open])
 
   const submit = () => {
     const content = input.trim()

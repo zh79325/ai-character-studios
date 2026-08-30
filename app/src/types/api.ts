@@ -277,14 +277,55 @@ export interface ScanResult {
   total: number
 }
 
+/** 从设定里抽出的一条硬性约束，如 `尾巴 = 2 条，彼此分离`。 */
+export interface Constraint {
+  item: string
+  value: string
+}
+
 export interface Character {
   id: string
   name: string
   /** 相对项目目录的路径，如 `characters/chitong_beast`。 */
   dir_name: string
   state: string
+  /** 状态的人话说法，直接显示；`state` 留给逻辑判断。 */
+  state_label: string
   spec_path: string | null
+  /** 评审抽出的约束清单，后续每一步生图都得守住它。 */
+  hard_constraints: Constraint[]
+  /** 人工门禁按下的时刻；null 表示这一关还没过。 */
+  gate_spec_confirmed_at: string | null
+  gate_render_confirmed_at: string | null
   updated_at: string
+}
+
+/** 一次设定评审的结果。裁决只是意见，放行仍要人按门禁。 */
+export interface SpecReview {
+  character_id: string
+  /** `APPROVE` / `CONCERNS` / `REJECT`。 */
+  decision: string
+  approved: boolean
+  /** 这是第几轮评审（含自动重生）。 */
+  attempt: number
+  regenerated: number
+  /** 自动重生用尽仍没过：接下来只能人来判断。 */
+  manual: boolean
+  /** 分节理由，节名 → 条目。 */
+  sections: Record<string, string[]>
+  constraints: Constraint[]
+  /** 裁决全文，原样展示——摘要过的理由会把判断依据丢掉。 */
+  text: string
+}
+
+/** 角色身上发生过的事：裁决、门禁拍板与理由都在这条线上。 */
+export interface TaskEvent {
+  seq: number
+  ts: string
+  level: string
+  event: string
+  message: string
+  payload: Record<string, unknown>
 }
 
 // --------------------------------------------------------------------------- //
@@ -395,6 +436,8 @@ export interface ProjectMemoryItem {
   id: string
   kind: string
   content: string
+  /** 空串是项目级（注入所有人），否则只跟着这一个角色。 */
+  character_ref: string
   /** 停用是让它不再注入上下文，不是删掉。 */
   enabled: boolean
   source_conversation_id: string | null

@@ -249,15 +249,24 @@ class ArtifactDraft(ProjectBase):
 
 
 class ProjectMemory(ProjectBase):
-    """项目长期记忆，注入所有 Agent 的 prompt，可在设置页增删改。"""
+    """项目长期记忆，可在设置页增删改。
+
+    `character_ref` 把记忆分成两档：空串是项目级（注入所有 Agent），填了角色 id 就只注入
+    那个角色的会话。不分的话，在「赤瞳」设定里说的「尾巴要 2 条」会跟着进下一个角色的提示词，
+    用户得反复推翻一条他从没对这个角色说过的要求。
+
+    用空串而不是 NULL 表示项目级：SQLite 的唯一索引里 NULL 彼此不相等，拿 NULL 当默认值等于
+    把项目级记忆的去重关掉。
+    """
 
     __tablename__ = "project_memory"
-    __table_args__ = (UniqueConstraint("content_hash", name="uq_project_memory"),)
+    __table_args__ = (UniqueConstraint("content_hash", "character_ref", name="uq_project_memory"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     kind: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
+    character_ref: Mapped[str] = mapped_column(String(64), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     source_conversation_id: Mapped[str | None] = mapped_column(String(64), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

@@ -615,7 +615,7 @@ class ScanResult:
     total: int
 
 
-def _asset_id(project_code: str, dir_name: str) -> str:
+def asset_id(project_code: str, dir_name: str) -> str:
     """按项目 + 目录名算出稳定 id：重扫、换机器都是同一个 id。"""
     digest = hashlib.sha1(f"{project_code}/{dir_name}".encode()).hexdigest()[:10]
     return f"CHAR-{digest}"
@@ -646,7 +646,7 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
             layout.ensure_asset_dirs(path)
             session.add(
                 Character(
-                    id=_asset_id(ref.code, rel),
+                    id=asset_id(ref.code, rel),
                     name=path.name,
                     dir_name=rel,
                     spec_path=_find_spec(path, ref.dir),
@@ -667,18 +667,35 @@ def _find_spec(asset_dir: Path, project_dir: Path) -> str | None:
     return None
 
 
+def character_row(row: Character) -> dict[str, Any]:
+    """一行角色给到 API 的样子。
+
+    列表与详情共用这一份：两处各拼一遍的话，加字段时总会只加到其中一边。
+    """
+    constraints = row.hard_constraints.get("items") if row.hard_constraints else None
+    return {
+        "id": row.id,
+        "name": row.name,
+        "dir_name": row.dir_name,
+        "state": row.state,
+        "spec_path": row.spec_path,
+        "hard_constraints": [one for one in constraints or [] if isinstance(one, dict)],
+        "gate_spec_confirmed_at": (
+            row.gate_spec_confirmed_at.isoformat()
+            if row.gate_spec_confirmed_at is not None
+            else None
+        ),
+        "gate_render_confirmed_at": (
+            row.gate_render_confirmed_at.isoformat()
+            if row.gate_render_confirmed_at is not None
+            else None
+        ),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
 def character_rows(ref: ProjectRef) -> list[dict[str, Any]]:
     """当前项目的素材列表。切项目后天然隔离——库都不是同一个。"""
     with project_session(ref.db_path) as session:
         rows = session.scalars(select(Character).order_by(Character.created_at)).all()
-        return [
-            {
-                "id": row.id,
-                "name": row.name,
-                "dir_name": row.dir_name,
-                "state": row.state,
-                "spec_path": row.spec_path,
-                "updated_at": row.updated_at.isoformat(),
-            }
-            for row in rows
-        ]
+        return [character_row(row) for row in rows]

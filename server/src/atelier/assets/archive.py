@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -168,23 +169,38 @@ def _meta_dir(ref: ProjectRef, target: Path) -> Path | None:
     return project_dir / relative[0] / relative[1]
 
 
+def read_meta(path: Path) -> dict[str, Any]:
+    """读一份 `meta.json`。读不出来就当空的。
+
+    它是可从库与目录重建的台账，不是真相；为一份坏掉的台账把用户的沉淀拦下来不值得。
+    """
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _log.warning("meta_json_unreadable", path=str(path))
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def merge_meta(path: Path, patch: Mapping[str, Any]) -> None:
+    """把几个顶层键并进 `meta.json`，其余键原样留着。
+
+    逐键并而不是整份覆盖：同一份台账里同时记着沉淀历史、角色状态、各阶段参数快照，写状态
+    的那一方不该把历史抹掉。
+    """
+    meta = read_meta(path)
+    meta.update(patch)
+    _write_atomic(path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+
+
 def _record_meta(
     meta_dir: Path, *, result: ArchiveResult, conversation_id: str, now: datetime
 ) -> None:
-    """把这次沉淀追加进素材的 `meta.json`。
-
-    读不出来就当空的重写：`meta.json` 是可从库与目录重建的台账，不是真相；为了一份坏掉的
-    台账把用户的沉淀拦下来不值得。
-    """
+    """把这次沉淀追加进素材的 `meta.json`。"""
     path = meta_dir / META_JSON
-    meta: dict[str, Any] = {}
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                meta = loaded
-        except (OSError, json.JSONDecodeError):
-            _log.warning("meta_json_unreadable", path=str(path))
+    meta = read_meta(path)
 
     history = meta.get("artifacts")
     entries = list(history) if isinstance(history, list) else []
@@ -198,8 +214,7 @@ def _record_meta(
             "committed_at": now.isoformat(),
         }
     )
-    meta["artifacts"] = entries
-    _write_atomic(path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+    merge_meta(path, {"artifacts": entries})
 
 
 def commit_draft(

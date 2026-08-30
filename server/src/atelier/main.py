@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from atelier.api import config, conversations, events, providers
+from atelier.api import characters, config, conversations, events, providers
 from atelier.api import projects as projects_api
 from atelier.api.deps import RuntimeDb
 from atelier.api.portable import PortableError
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_api.router)
     app.include_router(conversations.router)
     app.include_router(conversations.memory_router)
+    app.include_router(characters.router)
 
     _install_error_handlers(app)
 

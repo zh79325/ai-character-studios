@@ -12,6 +12,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 
 import { health } from '@/api/config'
 import ProjectSwitcher from '@/components/ProjectSwitcher'
+import CharacterPage from '@/pages/CharacterPage'
 import LogsPage from '@/pages/LogsPage'
 import ProjectPage from '@/pages/ProjectPage'
 import ProjectsPage from '@/pages/ProjectsPage'
@@ -69,6 +70,8 @@ export default function App() {
         )}
         <Routes>
           <Route path="/project" element={<ProjectPage />} />
+          {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在人物素材表里 */}
+          <Route path="/characters/:id" element={<CharacterPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/usage" element={<UsagePage />} />

@@ -18,20 +18,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from atelier.agents import context, parsing, tokens
+from atelier.agents import context, dispatch, parsing, tokens
 from atelier.agents.definitions import AgentDefinition, get_agent
 from atelier.agents.stream_bus import BUS, COMMITTED, DELTA, ERROR, TURN
-from atelier.assets import archive, layout, projects
+from atelier.assets import archive, characters, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import (
     ArtifactDraft,
@@ -41,11 +39,11 @@ from atelier.db.project_models import (
     Message,
     ProjectAgentPrompt,
     ProjectMemory,
-    TaskEvent,
 )
+from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict, NotFound
 from atelier.providers import router, text_chat
-from atelier.providers.base import CallOutcome, Decision, ProviderError, RetryableError
+from atelier.providers.base import Decision, ProviderError
 from atelier.settings import get_settings
 
 _log = structlog.get_logger(__name__)
@@ -59,18 +57,11 @@ MAX_FOLD_ROUNDS = 5
 压不下来，此时宁可带着超预算发出去让供应商报错，也比无声地空转几十次好。
 """
 
-MAX_CANDIDATE_SWITCHES = 3
-"""一轮里最多换几个候选。都不通就报错，不无限换下去把每个 provider 都试到熔断。"""
-
-RETRY_BACKOFF_SECONDS = 1.5
-
 FOLD_SUMMARY_SYSTEM = "你在为「{role}」这场对话做前情摘要，只做压缩，不要参与讨论。"
-
-DEFAULT_SPEC_SUFFIX = "角色设定.md"
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
-ChatFn = Callable[..., text_chat.ChatReply]
+ChatFn = dispatch.ChatFn
 """对话调用口。测试与离线冒烟用假实现替换，签名跟 `text_chat.complete` 一致。
 
 不拿 `text_chat.complete` 当默认值而是进函数再取：默认值在定义时就绑死了，那样把模块属性
@@ -215,11 +206,35 @@ def drafts_of(
     return list(project.scalars(stmt.order_by(ArtifactDraft.created_at)))
 
 
-def enabled_memories(project: Session) -> list[ProjectMemory]:
+PROJECT_SCOPE = ""
+"""项目级记忆的 `character_ref`。空串而不是 None，理由在 `ProjectMemory` 里。"""
+
+
+def memory_scope(conversation: Conversation) -> str:
+    """这场会话里聊出来的记忆归谁。
+
+    看的是对焦对象，不是 Agent 声明的 `memory_scope`：同一个 `spec_writer` 在不同角色上聊出
+    的偏好本来就不能混在一起，而声明只能说清它该**看到**哪一档。
+    """
+    if conversation.target_kind == "character" and conversation.target_ref:
+        return conversation.target_ref
+    return PROJECT_SCOPE
+
+
+def enabled_memories(project: Session, character_ref: str = PROJECT_SCOPE) -> list[ProjectMemory]:
+    """该注入的记忆：项目级的总带上，再加当前角色自己那些。
+
+    别的角色那几条不带：「赤瞳的尾巴要 2 条」对下一个角色不仅无用，还会被模型当成本项目的
+    通例写进新设定，用户得花一轮把它推翻。
+    """
+    scopes = {PROJECT_SCOPE, character_ref}
     return list(
         project.scalars(
             select(ProjectMemory)
-            .where(ProjectMemory.enabled.is_(True))
+            .where(
+                ProjectMemory.enabled.is_(True),
+                ProjectMemory.character_ref.in_(sorted(scopes)),
+            )
             .order_by(ProjectMemory.created_at)
         )
     )
@@ -251,14 +266,9 @@ def artifact_of(
         return config.art_bible, path.read_text(encoding="utf-8") if path.is_file() else ""
 
     character = _character(project, conversation.target_ref)
-    relative = character.spec_path or _default_spec_path(character)
+    relative = characters.spec_target(character)
     target = layout.resolve_inside(ref.dir, relative)
     return relative, target.read_text(encoding="utf-8") if target.is_file() else ""
-
-
-def _default_spec_path(character: Character) -> str:
-    # dir_name 已经是相对项目目录的路径（`characters/赤瞳`），别再补一层维度目录
-    return f"{character.dir_name}/{character.name}{DEFAULT_SPEC_SUFFIX}"
 
 
 def config_snapshot(ref: ProjectRef) -> str:
@@ -330,7 +340,8 @@ def resolve_draft_path(
 # --------------------------------------------------------------------------- #
 
 
-def _addendum(project: Session, agent_code: str) -> str | None:
+def addendum(project: Session, agent_code: str) -> str | None:
+    """项目级附加指令。单次调用型 Agent 也要带上——不带就成了评审按的标准跟创作按的标准不一样。"""
     row = project.scalars(
         select(ProjectAgentPrompt).where(
             ProjectAgentPrompt.agent_code == agent_code,
@@ -347,12 +358,12 @@ def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> Co
     is_project = conversation.target_kind == "project"
     return ContextInputs(
         agent=agent,
-        addendum=_addendum(project, conversation.agent_code),
+        addendum=addendum(project, conversation.agent_code),
         artifact_path=artifact_path,
         artifact_text=artifact_text,
         config_path=layout.PROJECT_JSON if is_project else None,
         config_text=config_snapshot(ref) if is_project else None,
-        project_memories=enabled_memories(project),
+        project_memories=enabled_memories(project, memory_scope(conversation)),
         memory=memory_of(project, conversation.id),
         messages=messages_of(project, conversation.id),
     )
@@ -511,60 +522,25 @@ def _call(
     chat: ChatFn,
     on_delta: Callable[[str], None] | None,
 ) -> text_chat.ChatReply:
-    """发出去并记账。限流退避重试，其余失败换候选。"""
-    settings = get_settings()
-    retries = settings.provider_retry_attempts
-    current = decision
-    last_error: ProviderError | None = None
-
-    for switch in range(MAX_CANDIDATE_SWITCHES):
-        for attempt in range(1, retries + 2):
-            try:
-                reply = chat(current.candidate, assembled.payload(), on_delta=on_delta)
-            except RetryableError as exc:
-                last_error = exc
-                router.note_retryable(runtime, agent.agent_code, current, exc, attempt)
-                if attempt <= retries:
-                    time.sleep(RETRY_BACKOFF_SECONDS * attempt)
-                    continue
-                break
-            except ProviderError as exc:
-                last_error = exc
-                break
-            else:
-                router.report_success(
-                    runtime,
-                    agent.agent_code,
-                    current,
-                    _outcome_of(reply),
-                    project_code=ref.code,
-                )
-                return reply
-
-        if last_error is None:  # pragma: no cover - 走到这儿必然有异常
-            break
-        router.report_failure(runtime, agent.agent_code, current, last_error, project_code=ref.code)
-        if switch == MAX_CANDIDATE_SWITCHES - 1:
-            break
-        # 记完账再重选：额度已标满、熔断已打开，select 自然会挑到别人身上
-        current = _select(runtime, project, ref, conversation, agent)
-        conversation.rebind_reason = str(last_error)[:255]
-        project.commit()
-
-    raise last_error if last_error is not None else ProviderError("没有可用候选")
-
-
-def _outcome_of(reply: text_chat.ChatReply) -> CallOutcome:
-    """把回答里的用量翻译成路由层记账用的事实。
-
-    没拿到 usage 就不写 used_delta：估算值混进额度台账，后面对不上账时根本分不清是估歪了
-    还是真的用超了。
+    """发出去并记账。重试与换候选的规矩在 `dispatch`，这里只多一件会话自己的事：换了候选要
+    把新的绑定与原因落进会话行，下一轮才知道该接着粘在谁身上。
     """
-    return CallOutcome(
-        limit_kind="tokens",
-        used_delta=reply.total_tokens,
-        remaining=reply.remaining,
-        latency_ms=reply.latency_ms,
+
+    def rebind(error: ProviderError) -> Decision:
+        picked = _select(runtime, project, ref, conversation, agent)
+        conversation.rebind_reason = str(error)[:255]
+        project.commit()
+        return picked
+
+    return dispatch.call(
+        runtime,
+        agent.agent_code,
+        decision,
+        assembled.payload(),
+        chat,
+        project_code=ref.code,
+        on_delta=on_delta,
+        reselect=rebind,
     )
 
 
@@ -624,7 +600,7 @@ def _fold_until_fits(
             runtime,
             inputs.agent.agent_code,
             decision,
-            _outcome_of(reply),
+            dispatch.outcome_of(reply),
             project_code=ref.code,
         )
         project.commit()
@@ -751,17 +727,29 @@ def harvest_memories(project: Session, conversation_id: str) -> tuple[parsing.Me
 
 
 def write_memory(
-    project: Session, kind: str, content: str, *, source: str | None = None
+    project: Session,
+    kind: str,
+    content: str,
+    *,
+    source: str | None = None,
+    character_ref: str = PROJECT_SCOPE,
 ) -> ProjectMemory | None:
     """写一条项目记忆，已经有一样的就返回 None。
 
     去重按「类别 + 归一化内容」，因为同一条偏好在不同轮里措辞会差一个标点，靠原文比对
     会攒出一堆近似重复，注入时全都占预算。
+
+    角色级那一档还要让着项目级：项目级已经有同一句时不再写副本——两条一模一样的记忆同时
+    注入，用户在设置页关掉其中一条会发现它依旧生效。
     """
     key = memory_hash(kind, content)
+    scopes = {PROJECT_SCOPE, character_ref}
     exists = project.scalars(
-        select(ProjectMemory).where(ProjectMemory.content_hash == key)
-    ).one_or_none()
+        select(ProjectMemory).where(
+            ProjectMemory.content_hash == key,
+            ProjectMemory.character_ref.in_(sorted(scopes)),
+        )
+    ).first()
     if exists is not None:
         return None
     row = ProjectMemory(
@@ -769,6 +757,7 @@ def write_memory(
         kind=kind,
         content=content,
         content_hash=key,
+        character_ref=character_ref,
         source_conversation_id=source,
     )
     project.add(row)
@@ -777,37 +766,20 @@ def write_memory(
 
 
 def _write_memories(
-    project: Session, conversation_id: str, items: Sequence[parsing.MemoryItem]
+    project: Session,
+    conversation: Conversation,
+    items: Sequence[parsing.MemoryItem],
 ) -> tuple[str, ...]:
-    """去重后追写 project_memory，返回真正新增的内容。"""
+    """去重后追写 project_memory，返回真正新增的内容。作用域跟会话的对焦对象一致。"""
+    scope = memory_scope(conversation)
     added: list[str] = []
     for item in items:
-        row = write_memory(project, item.kind, item.content, source=conversation_id)
+        row = write_memory(
+            project, item.kind, item.content, source=conversation.id, character_ref=scope
+        )
         if row is not None:
             added.append(row.content)
     return tuple(added)
-
-
-def _record_event(
-    project: Session, conversation_id: str, event: str, message: str, payload: Mapping[str, Any]
-) -> None:
-    """会话的沉淀记录也进 `task_events`，与工作流任务的日志同一条时间线。
-
-    这里没有 `tasks` 行，用会话 id 当 task_id：会话本身就是这次改动的来源，日志按 id 查
-    得到，比另建一张只为一行记录存在的表实在。
-    """
-    current = project.scalar(
-        select(func.max(TaskEvent.seq)).where(TaskEvent.task_id == conversation_id)
-    )
-    project.add(
-        TaskEvent(
-            task_id=conversation_id,
-            seq=int(current or 0) + 1,
-            event=event,
-            message=message,
-            payload=dict(payload),
-        )
-    )
 
 
 def commit(
@@ -842,7 +814,7 @@ def commit(
         )
         draft.status = "committed"
         archived.append(result)
-        _record_event(
+        record_event(
             project,
             conversation.id,
             "artifact_committed",
@@ -855,7 +827,7 @@ def commit(
             },
         )
 
-    added = _write_memories(project, conversation.id, harvest_memories(project, conversation.id))
+    added = _write_memories(project, conversation, harvest_memories(project, conversation.id))
     _link_spec(project, conversation, archived)
     conversation.status = "committed"
     project.commit()
