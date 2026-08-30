@@ -549,6 +549,10 @@ export interface ConversationDetail {
   artifact_path: string | null
   /** 最近一轮给出的命名建议，没给过就是空。 */
   naming: NamingOption[]
+  /** 开场提示：项目现在是什么样、接下来该说什么。后端现算，只项目会话有。 */
+  briefing: string
+  /** 真则这只是一句开场号召（项目还是白纸），居中铺大字，不当对话气泡。 */
+  briefing_blank: boolean
 }
 
 export interface Turn {

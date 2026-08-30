@@ -164,6 +164,31 @@ def get(project: Session, conversation_id: str) -> Conversation:
     return conversation
 
 
+def ensure(
+    project: Session,
+    *,
+    agent_code: str,
+    target_kind: str,
+    target_ref: str | None = None,
+    title: str = "",
+) -> Conversation:
+    """这个对焦对象当下该聊的那场会话，没有就开一场。
+
+    接着最近那场还开着的聊；上一场已经沉淀或丢弃了才开新的——冻结的会话发不出消息，把它
+    摆上来等于让用户自己去发现「原来得先开一场新的」。
+    """
+    for row in list_conversations(project, target_kind=target_kind, target_ref=target_ref):
+        if row.agent_code == agent_code and row.status == "active":
+            return row
+    return start(
+        project,
+        agent_code=agent_code,
+        target_kind=target_kind,
+        target_ref=target_ref,
+        title=title,
+    )
+
+
 def list_conversations(
     project: Session,
     *,
@@ -289,6 +314,81 @@ def artifact_of(
     relative = characters.spec_target(character)
     target = layout.resolve_inside(ref.dir, relative)
     return relative, target.read_text(encoding="utf-8") if target.is_file() else ""
+
+
+BRIEFING_BLANK = "说出你的想法，让我们开始这个伟大的项目吧"
+"""白纸项目就一句号召。写长了反而像说明书，而这一屏要的只是让用户把第一句话敲出来。"""
+
+BRIEFING_HEAD = "这个项目现在手里有这些："
+
+BRIEFING_TAIL_DRAFTING = (
+    "要接着对焦就直接说改哪儿；定得差不多了就选一组名字与代号，点「完成立项」。"
+)
+
+BRIEFING_TAIL_READY = "要改哪儿直接说；没什么要改就可以去做素材了。"
+
+
+@dataclass(frozen=True, slots=True)
+class Briefing:
+    """对焦面板的开场提示。
+
+    `blank` 是给前端分形态用的：白纸项目只有一句号召，摆成气泡像是 AI 已经发过话了，前端把
+    它铺成居中的大字；有现状可报时才是一段正常的开场发言。
+    """
+
+    text: str = ""
+    blank: bool = False
+
+
+def briefing_of(project: Session, ref: ProjectRef, conversation: Conversation) -> Briefing:
+    """对焦面板最前面那段话：项目现在是什么样、接下来该说什么。
+
+    平台自己拼，不花模型调用：这段话每次打开项目都要显示，而内容全是磁盘与库里现成的事实。
+    也不入库：存下来就会跟不上后续沉淀，用户下次进来看到的就是一份过期总结。
+
+    只给项目会话：角色会话的现状就是那份设定稿本身，它已经摆在旁边的面板里了。
+    """
+    if conversation.target_kind != "project":
+        return Briefing()
+    config = projects.read_config(ref.dir)
+    path = projects.art_bible_path(ref, config)
+    art_bible = path.read_text(encoding="utf-8") if path.is_file() else ""
+    facts = _project_facts(project, config, art_bible)
+    if not facts:
+        return Briefing(text=BRIEFING_BLANK, blank=True)
+    tail = BRIEFING_TAIL_DRAFTING if config.stage == "drafting" else BRIEFING_TAIL_READY
+    body = "\n".join(f"- {one}" for one in facts)
+    return Briefing(text=f"{BRIEFING_HEAD}\n{body}\n\n{tail}")
+
+
+def _project_facts(project: Session, config: projects.ProjectConfig, art_bible: str) -> list[str]:
+    """项目已经有的东西，一条一句人话。空列表就是「还没开始」。
+
+    立项期不报名字与代号：那时候名字只是目录名、代号是临时的，拿它们当「已有的东西」报
+    给用户只会让他以为这两个已经定下了。
+    """
+    facts: list[str] = []
+    if config.stage != "drafting":
+        facts.append(f"名字与代号：{config.name}（{config.code}）")
+
+    style = [
+        value.strip()
+        for value in (config.style.art_style, config.style.mood, config.style.palette)
+        if value.strip()
+    ]
+    if style:
+        facts.append("风格基调：" + "、".join(style))
+
+    if art_bible.strip():
+        gaps = projects.art_bible_gaps(art_bible)
+        done = max(len(projects.ART_BIBLE_SECTIONS) - len(gaps), 0)
+        rest = "，还差：" + "、".join(gaps) if gaps else "，六节都齐了"
+        facts.append(f"视觉规范 {config.art_bible}：六节里写好了 {done} 节{rest}")
+
+    count = int(project.scalar(select(func.count(Character.id))) or 0)
+    if count:
+        facts.append(f"已经有 {count} 个角色建在项目里")
+    return facts
 
 
 def config_snapshot(ref: ProjectRef) -> str:

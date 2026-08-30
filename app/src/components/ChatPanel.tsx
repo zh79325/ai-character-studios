@@ -31,6 +31,7 @@ import {
 import { useEffect, useRef, useState } from 'react'
 
 import {
+  ensureConversation,
   listConversations,
   readConversation,
   sendMessage,
@@ -38,7 +39,7 @@ import {
   subscribeConversation,
 } from '@/api/conversations'
 import DraftDiffPanel from '@/components/DraftDiffPanel'
-import type { Message, TargetKind } from '@/types/api'
+import type { Conversation, Message, TargetKind } from '@/types/api'
 
 interface Props {
   agentCode: string
@@ -50,6 +51,13 @@ interface Props {
   onActiveChange?: (id: string | null) => void
   /** 父页面递进来的下一轮说辞。 */
   handoff?: Handoff | null
+  /**
+   * 会话由系统管起来：进面板就接上该聊的那场，用户不用点「新会话」。
+   *
+   * 立项对焦本来只有一条线，让用户先做一次开会话的动作纯属多余。历史会话仍然能切过去看，
+   * 但那是回看，不是管理。
+   */
+  managed?: boolean
 }
 
 /**
@@ -72,6 +80,7 @@ export default function ChatPanel({
   title,
   onActiveChange,
   handoff = null,
+  managed = false,
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
@@ -86,8 +95,31 @@ export default function ChatPanel({
     queryFn: () => listConversations({ targetKind, targetRef: targetRef ?? undefined }),
   })
   const mine = (list.data ?? []).filter((one) => one.agent_code === agentCode)
+
+  // 托管模式下这一口负责「进来就有会话」：它是幂等的，上一场还开着就是原来那场
+  const ensured = useQuery({
+    queryKey: ['conversation-ensure', targetKind, targetRef, agentCode],
+    queryFn: () =>
+      ensureConversation({
+        agent_code: agentCode,
+        target_kind: targetKind,
+        target_ref: targetRef,
+        title,
+      }),
+    enabled: managed,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  })
+
+  useEffect(() => {
+    const fresh = ensured.data
+    if (fresh === undefined) return
+    queryClient.setQueryData(['conversation', fresh.conversation.id], fresh)
+    void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+  }, [ensured.data, queryClient])
+
   // 默认接着最近那场聊：一次没聊完的会话比一张空白面板有用
-  const chosen = active ?? mine[0]?.id ?? null
+  const chosen = active ?? ensured.data?.conversation.id ?? mine[0]?.id ?? null
 
   const detail = useQuery({
     queryKey: ['conversation', chosen],
@@ -153,6 +185,7 @@ export default function ChatPanel({
   const messages = (detail.data?.messages ?? []).filter((one) => one.role !== 'system')
   const foldedCount = messages.filter((one) => one.folded).length
   const shown = showFolded ? messages : messages.filter((one) => !one.folded)
+  const preparing = managed && chosen === null
 
   // 只认 nonce：同一句话递两次是两件事，而重渲染不是
   const handled = useRef(0)
@@ -175,28 +208,50 @@ export default function ChatPanel({
         <Card
           size="small"
           title={
-            <Space>
-              <Select
-                size="small"
-                style={{ minWidth: 220 }}
-                placeholder="还没有会话"
-                value={chosen ?? undefined}
-                loading={list.isLoading}
-                onChange={setActive}
-                options={mine.map((one) => ({
-                  value: one.id,
-                  label: `${one.title}（${one.message_count} 条${one.status === 'active' ? '' : '，已' + (one.status === 'committed' ? '沉淀' : '丢弃')}）`,
-                }))}
-              />
-              <Button
-                size="small"
-                icon={<PlusOutlined />}
-                loading={open.isPending}
-                onClick={() => open.mutate()}
-              >
-                新会话
-              </Button>
-            </Space>
+            managed ? (
+              <Space size={8}>
+                <Typography.Text strong style={{ fontSize: 13 }}>
+                  对焦
+                </Typography.Text>
+                {mine.length > 1 && (
+                  <Select
+                    size="small"
+                    style={{ minWidth: 220 }}
+                    placeholder="历史会话"
+                    value={chosen ?? undefined}
+                    loading={list.isLoading}
+                    onChange={setActive}
+                    options={mine.map((one) => ({
+                      value: one.id,
+                      label: conversationLabel(one),
+                    }))}
+                  />
+                )}
+              </Space>
+            ) : (
+              <Space>
+                <Select
+                  size="small"
+                  style={{ minWidth: 220 }}
+                  placeholder="还没有会话"
+                  value={chosen ?? undefined}
+                  loading={list.isLoading}
+                  onChange={setActive}
+                  options={mine.map((one) => ({
+                    value: one.id,
+                    label: conversationLabel(one),
+                  }))}
+                />
+                <Button
+                  size="small"
+                  icon={<PlusOutlined />}
+                  loading={open.isPending}
+                  onClick={() => open.mutate()}
+                >
+                  新会话
+                </Button>
+              </Space>
+            )
           }
           extra={
             foldedCount > 0 && (
@@ -210,14 +265,20 @@ export default function ChatPanel({
           }
         >
           {chosen === null ? (
-            <Empty
-              image={null}
-              description={`开一场会话，让 ${agentCode} 陪你把这份定稿聊清楚。它写出来的内容会先当草稿，你确认了才落盘。`}
-            >
-              <Button type="primary" loading={open.isPending} onClick={() => open.mutate()}>
-                开始
-              </Button>
-            </Empty>
+            preparing ? (
+              <Empty image={null} description="正在接上这个项目的对焦会话……">
+                <Spin />
+              </Empty>
+            ) : (
+              <Empty
+                image={null}
+                description={`开一场会话，让 ${agentCode} 陪你把这份定稿聊清楚。它写出来的内容会先当草稿，你确认了才落盘。`}
+              >
+                <Button type="primary" loading={open.isPending} onClick={() => open.mutate()}>
+                  开始
+                </Button>
+              </Empty>
+            )
           ) : (
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               {conversation && (
@@ -245,7 +306,13 @@ export default function ChatPanel({
                   }
                 />
               )}
-              <MessageList messages={shown} streaming={streaming} loading={detail.isLoading} />
+              <MessageList
+                messages={shown}
+                streaming={streaming}
+                loading={detail.isLoading}
+                briefing={detail.data?.briefing ?? ''}
+                briefingBlank={detail.data?.briefing_blank ?? false}
+              />
               <Input.TextArea
                 value={input}
                 rows={3}
@@ -292,6 +359,12 @@ export default function ChatPanel({
   )
 }
 
+/** 一场会话在下拉里的样子。 */
+function conversationLabel(one: Conversation): string {
+  const ended = one.status === 'committed' ? '，已沉淀' : '，已丢弃'
+  return `${one.title}（${one.message_count} 条${one.status === 'active' ? '' : ended}）`
+}
+
 const BUBBLE: Record<string, { background: string; align: string }> = {
   user: { background: '#e6f4ff', align: 'flex-end' },
   assistant: { background: '#fafafa', align: 'flex-start' },
@@ -301,10 +374,16 @@ function MessageList({
   messages,
   streaming,
   loading,
+  briefing,
+  briefingBlank,
 }: {
   messages: Message[]
   streaming: string | null
   loading: boolean
+  /** 开场提示：项目现状与接下来该说什么。后端现算，摆在历史消息前面。 */
+  briefing: string
+  /** 真则这只是一句号召，项目还没有任何东西可总结。 */
+  briefingBlank: boolean
 }) {
   const box = useRef<HTMLDivElement>(null)
 
@@ -314,10 +393,48 @@ function MessageList({
     if (node) node.scrollTop = node.scrollHeight
   }, [messages, streaming])
 
+  // 一句号召摆成气泡，看着像 AI 已经先开口说过话了；铺成居中大字才是「这一屏在等你说」
+  const hero = briefingBlank && messages.length === 0 && streaming === null
+  if (hero) {
+    return (
+      <div
+        style={{
+          height: 420,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 24px',
+        }}
+      >
+        <Typography.Title level={3} style={{ margin: 0, textAlign: 'center', fontWeight: 600 }}>
+          {briefing}
+        </Typography.Title>
+      </div>
+    )
+  }
+
   return (
     <div ref={box} style={{ height: 420, overflowY: 'auto', padding: '4px 2px' }}>
       {loading && <Spin />}
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        {briefing !== '' && !briefingBlank && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+            <div
+              style={{
+                maxWidth: '86%',
+                background: '#f6ffed',
+                border: '1px solid #d9f7be',
+                borderRadius: 8,
+                padding: '8px 12px',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: 13,
+              }}
+            >
+              {briefing}
+            </div>
+          </div>
+        )}
         {messages.map((one) => {
           const style = BUBBLE[one.role] ?? BUBBLE.assistant!
           return (

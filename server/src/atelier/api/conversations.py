@@ -149,6 +149,7 @@ def _naming_out(options: Sequence[parsing.NamingOption]) -> list[NamingOptionOut
 def _detail(project: Session, ref: ProjectRef, row: Conversation) -> ConversationDetailOut:
     memory = engine.memory_of(project, row.id)
     artifact_path, _ = engine.artifact_of(project, ref, row)
+    briefing = engine.briefing_of(project, ref, row)
     return ConversationDetailOut(
         conversation=_conversation_out(project, row),
         messages=[_message_out(m) for m in engine.messages_of(project, row.id)],
@@ -161,6 +162,8 @@ def _detail(project: Session, ref: ProjectRef, row: Conversation) -> Conversatio
         drafts=[_draft_out(ref, d) for d in engine.drafts_of(project, row.id)],
         artifact_path=artifact_path,
         naming=_naming_out(engine.naming_of(project, row.id)),
+        briefing=briefing.text,
+        briefing_blank=briefing.blank,
     )
 
 
@@ -189,6 +192,25 @@ def create_conversation(
 ) -> ConversationDetailOut:
     """开一场新会话。第一轮由前端随后发消息触发，这里不预热模型。"""
     row = engine.start(
+        project,
+        agent_code=payload.agent_code,
+        target_kind=payload.target_kind,
+        target_ref=payload.target_ref,
+        title=payload.title,
+    )
+    return _detail(project, ref, row)
+
+
+@router.post("/ensure", response_model=ConversationDetailOut)
+def ensure_conversation(
+    payload: ConversationCreateIn, project: ProjectDb, ref: CurrentProject
+) -> ConversationDetailOut:
+    """拿这个对焦对象当下该聊的会话，没有就开一场。
+
+    立项对焦用这一口：那本来就只有一条线，让用户先点一下「新会话」才能说话是白多一步。幂等：
+    刷多少次都是同一场，除非上一场已经沉淀或丢弃。因此返的是 200 而不是 201。
+    """
+    row = engine.ensure(
         project,
         agent_code=payload.agent_code,
         target_kind=payload.target_kind,

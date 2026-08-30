@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
@@ -155,6 +156,55 @@ def test_列表按目标过滤(client: TestClient, project: ProjectRef) -> None:
     assert len(listed) == 1
     assert listed[0]["message_count"] == 0
     assert client.get("/api/conversations", params={"target_kind": "character"}).json() == []
+
+
+def ensure(client: TestClient) -> dict[str, object]:
+    """拿项目当下该聊的那场会话。立项页进来就调这一口。"""
+    response = client.post(
+        "/api/conversations/ensure", json={"agent_code": DESIGNER, "target_kind": "project"}
+    )
+    assert response.status_code == 200, response.text
+    return dict(response.json())
+
+
+def test_ensure接着还开着的那场聊(client: TestClient, project: ProjectRef) -> None:
+    """刷几次页不该攒出几场空会话。"""
+    first = ensure(client)
+
+    again = ensure(client)
+
+    assert again["conversation"]["id"] == first["conversation"]["id"]  # type: ignore[index]
+    assert len(client.get("/api/conversations").json()) == 1
+
+
+def test_ensure在上一场收尾后开新的(client: TestClient, talk: str) -> None:
+    """冻结的会话发不出消息，把它摆回去等于让用户自己去想办法。"""
+    assert client.post(f"/api/conversations/{talk}/discard").status_code == 200
+
+    body = ensure(client)
+
+    assert body["conversation"]["id"] != talk  # type: ignore[index]
+    assert body["conversation"]["status"] == "active"  # type: ignore[index]
+
+
+def test_开场提示报出项目现状(client: TestClient, project: ProjectRef) -> None:
+    """已立项的项目要先总结一遍手里有什么，用户才知道该不该接着对焦。"""
+    body = ensure(client)
+
+    assert project.name in str(body["briefing"])
+    assert "art-bible.md" in str(body["briefing"])
+    assert body["briefing_blank"] is False
+
+
+def test_白纸项目直接请用户说想法(client: TestClient, projects_root: Path, tmp_path: Path) -> None:
+    """立项一开头没任何可总结的东西，那就只给一句号召，前端拿 `briefing_blank` 铺成大字。"""
+    created = client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "新项目")})
+    assert created.status_code == 201, created.text
+
+    body = ensure(client)
+
+    assert body["briefing"] == engine.BRIEFING_BLANK
+    assert body["briefing_blank"] is True
 
 
 # --------------------------------------------------------------------------- #

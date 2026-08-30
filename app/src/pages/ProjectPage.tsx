@@ -6,6 +6,9 @@
  *
  * 名字与代号不由用户凭空填：设计师聊出轮廓后会给几组建议（`[项目命名建议]`），用户点一条
  * 进表单或自己重写，再点「完成立项」，后端这时才铺目录骨架与 git 规则。
+ *
+ * 对焦会话由系统管（`managed`）：进页就接上这个项目还开着的那场，没有就开一场，开场先报一遍
+ * 项目现状。用户在这页要做的只有一件事：说自己想要什么。
  */
 import { CheckCircleOutlined, RightOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -35,14 +38,12 @@ export default function ProjectPage() {
   return (
     <ProjectFrame>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        {drafting ? (
-          <FinalizePanel naming={detail.data?.naming ?? []} />
-        ) : (
-          <NextSteps />
-        )}
+        {drafting ? <FinalizePanel naming={detail.data?.naming ?? []} /> : <NextSteps />}
         <ChatPanel
           agentCode="game_designer"
           targetKind="project"
+          title="立项对焦"
+          managed
           onActiveChange={setConversation}
         />
       </Space>

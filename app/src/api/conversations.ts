@@ -47,6 +47,18 @@ export function startConversation(payload: StartConversationIn): Promise<Convers
   return request<ConversationDetail>('/api/conversations', { method: 'POST', body: payload })
 }
 
+/**
+ * 拿这个对焦对象当下该聊的会话，没有就开一场。
+ *
+ * 幂等，可以当普通查询用：只有上一场已经沉淀或丢弃时才真的新建。
+ */
+export function ensureConversation(payload: StartConversationIn): Promise<ConversationDetail> {
+  return request<ConversationDetail>('/api/conversations/ensure', {
+    method: 'POST',
+    body: payload,
+  })
+}
+
 export function readConversation(id: string): Promise<ConversationDetail> {
   return request<ConversationDetail>(`/api/conversations/${encodeURIComponent(id)}`)
 }

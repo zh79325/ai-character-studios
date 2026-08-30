@@ -688,6 +688,11 @@ class ConversationDetailOut(Schema):
     """这场会话在改哪个定稿文件，供前端 diff 面板标题使用。"""
     naming: list[NamingOptionOut] = Field(default_factory=list)
     """最近一轮给的命名建议，立项收口面板拿它做候选项。"""
+    briefing: str = ""
+    """摆在消息最前面的开场提示：项目现状与接下来该说什么。平台现算，不入库、不进上下文，
+    只项目会话有。"""
+    briefing_blank: bool = False
+    """真则这只是一句开场号召（项目还是白纸），前端把它居中铺成大字而不是当成对话气泡。"""
 
 
 class SendMessageIn(Schema):
