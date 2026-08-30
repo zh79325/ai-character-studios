@@ -12,6 +12,7 @@
 │   ├── .gitignore        # 内容就是 *，防止被用户的仓库收进去
 │   └── project.db
 ├── templates/            # 可选，项目级模版覆盖全局
+├── tmp/                  # 项目根定稿的历史版本
 └── characters/ equipment/ maps/ scenes/
     └── {素材名}/{images,models,animations,tmp}/
 ```
@@ -19,6 +20,8 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_JSON = "project.json"
@@ -26,8 +29,9 @@ ART_BIBLE = "art-bible.md"
 DATA_DIR = ".atelier"
 PROJECT_DB = "project.db"
 TEMPLATES_DIR = "templates"
+TMP_DIR = "tmp"
 
-ASSET_SUBDIRS = ("images", "models", "animations", "tmp")
+ASSET_SUBDIRS = ("images", "models", "animations", TMP_DIR)
 GITKEEP = ".gitkeep"
 
 CATEGORY_DIRS = ("characters", "equipment", "maps", "scenes")
@@ -136,3 +140,35 @@ def resolve_inside(project_dir: Path, relative: str) -> Path:
     if candidate != root and root not in candidate.parents:
         raise LayoutError(f"路径 {relative!r} 越出了项目目录")
     return candidate
+
+
+def history_dir(final_path: Path) -> Path:
+    """某个定稿文件的历史版本该放哪儿：与它同级的 `tmp/`。
+
+    一条规则管两种位置——素材目录内的定稿进 `{素材}/tmp/`，项目根上的 `art-bible.md`
+    `project.json` 进 `{项目}/tmp/`。历史版本跟着定稿走，整份目录拷到别处仍然自洽。
+    """
+    target = final_path.parent / TMP_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+_VERSION_RE = re.compile(r"_v(\d+)_\d{8}-\d{6}$")
+
+
+def next_version_path(final_path: Path, now: datetime) -> Path:
+    """给要退位的旧定稿起个名：`{名}_v{N}_{时间戳}{后缀}`。
+
+    版本号数的是同一文件已退位过几次，而不是全目录的文件数——同一个素材目录里既有设定
+    文档也有图片模型，混着数会让版本号看起来跳号。时间戳保证同一秒外的排序稳定，也让
+    「哪个更新」不必依赖文件 mtime。
+    """
+    stem, suffix = final_path.stem, final_path.suffix
+    directory = history_dir(final_path)
+    used = 0
+    for existing in directory.glob(f"{stem}_v*{suffix}"):
+        match = _VERSION_RE.search(existing.stem)
+        if match:
+            used = max(used, int(match.group(1)))
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    return directory / f"{stem}_v{used + 1}_{stamp}{suffix}"

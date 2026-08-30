@@ -372,3 +372,139 @@ class CharacterOut(Schema):
     state: str
     spec_path: str | None = None
     updated_at: str
+
+
+# --------------------------------------------------------------------------- #
+# 会话与记忆
+# --------------------------------------------------------------------------- #
+
+TargetKind = Literal["project", "character"]
+MemoryKind = Literal["preference", "taboo", "fact"]
+
+
+class ConversationCreateIn(Schema):
+    agent_code: str = Field(min_length=1)
+    target_kind: TargetKind
+    target_ref: str | None = Field(
+        default=None, description="角色会话必填，填角色 id；项目会话留空"
+    )
+    title: str = Field(default="", max_length=255)
+
+
+class ConversationOut(Schema):
+    id: str
+    target_kind: str
+    target_ref: str | None = None
+    agent_code: str
+    title: str
+    status: str
+    bound_provider_label: str = ""
+    rebind_count: int = 0
+    rebind_reason: str | None = None
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+    pending_drafts: int = 0
+
+
+class MessageOut(Schema):
+    id: int
+    turn_no: int
+    role: str
+    content: str
+    token_count: int = 0
+    folded: bool = False
+    """已折进摘要。原文仍在这里，前端默认收起、点开可看。"""
+    created_at: str
+
+
+class ConversationMemoryOut(Schema):
+    summary: str = ""
+    decisions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    folded_turns: int = 0
+
+
+class DraftOut(Schema):
+    id: str
+    target_path: str
+    content: str
+    based_on_hash: str = ""
+    status: str
+    created_at: str
+    stale: bool = False
+    """基线已经变了：草稿写出来之后定稿被别处改过，此时沉淀会被拒绝。"""
+
+
+class ConversationDetailOut(Schema):
+    conversation: ConversationOut
+    messages: list[MessageOut] = Field(default_factory=list)
+    memory: ConversationMemoryOut = Field(default_factory=ConversationMemoryOut)
+    drafts: list[DraftOut] = Field(default_factory=list)
+    artifact_path: str | None = None
+    """这场会话在改哪个定稿文件，供前端 diff 面板标题使用。"""
+
+
+class SendMessageIn(Schema):
+    content: str = Field(min_length=1)
+    stream: bool = Field(default=True, description="是否往 SSE 通道推增量")
+
+
+class TurnOut(Schema):
+    conversation_id: str
+    turn_no: int
+    content: str
+    draft_ids: list[str] = Field(default_factory=list)
+    folded_turns: list[int] = Field(default_factory=list)
+    context_tokens: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    provider_label: str = ""
+
+
+class CommitIn(Schema):
+    draft_ids: list[str] | None = Field(default=None, description="留空即沉淀全部待确认草稿")
+
+
+class ArchivedOut(Schema):
+    target_path: str
+    content_hash: str
+    previous_path: str | None = None
+    """旧定稿退位后的位置，都在同级 `tmp/` 下。"""
+
+
+class CommitOut(Schema):
+    conversation_id: str
+    archived: list[ArchivedOut] = Field(default_factory=list)
+    memories_added: list[str] = Field(default_factory=list)
+
+
+class DiscardOut(Schema):
+    conversation_id: str
+    discarded: int
+
+
+class DiffOut(Schema):
+    target_path: str
+    current: str
+    draft: str
+    stale: bool = False
+
+
+class ProjectMemoryOut(Schema):
+    id: str
+    kind: str
+    content: str
+    enabled: bool = True
+    source_conversation_id: str | None = None
+    created_at: str
+
+
+class ProjectMemoryIn(Schema):
+    kind: MemoryKind
+    content: str = Field(min_length=1)
+
+
+class ProjectMemoryPatch(Schema):
+    content: str | None = Field(default=None, min_length=1)
+    enabled: bool | None = None

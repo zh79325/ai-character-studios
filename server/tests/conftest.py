@@ -20,6 +20,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from atelier.agents.stream_bus import BUS
 from atelier.assets import projects as projects_mod
 from atelier.db.config_models import ConfigBase
 from atelier.db.project_models import ProjectBase
@@ -32,6 +33,8 @@ from atelier.db.runtime_models import (
 )
 from atelier.db.session import dispose_project_engines, project_engine
 from atelier.providers import usage
+from atelier.providers.base import Candidate
+from atelier.providers.text_chat import ChatReply
 from atelier.providers.usage_client import Permit
 from atelier.settings import get_settings
 
@@ -160,6 +163,79 @@ def project(session: Session, projects_root: Path) -> projects_mod.ProjectRef:
     projects_mod.open_project(session, ref.code)
     session.commit()
     return ref
+
+
+@pytest.fixture
+def project_db(project: projects_mod.ProjectRef) -> Iterator[Session]:
+    """项目库的 Session。项目库住在项目目录里，跟着 `project` 夹具一起隔离。"""
+    with Session(project_engine(project.db_path)) as s:
+        yield s
+
+
+@pytest.fixture(autouse=True)
+def quiet_bus() -> Iterator[None]:
+    """广播缓冲是进程级单例，用例之间必须清干净。
+
+    不清就会串味：上一个用例发布的 delta 还留在缓冲里，下一个用例按 `after_seq=0` 订流
+    就先读到别人的字。
+    """
+    BUS.clear()
+    yield
+    BUS.clear()
+
+
+class ScriptedChat:
+    """按脚本回答的假模型，签名与 `text_chat.complete` 一致。
+
+    记下每次收到的 `messages`：会话的核心约定是「上下文按固定顺序拼」，只断言最终落库的
+    内容盖不住它——模型到底看见了什么才是要钉住的东西。
+    """
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[dict[str, str]]] = []
+        self.deltas: list[str] = []
+        self.default = "好的。"
+
+    def __call__(
+        self,
+        candidate: Candidate,
+        messages: Any,
+        *,
+        on_delta: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> ChatReply:
+        self.calls.append([dict(m) for m in messages])
+        content = self.replies.pop(0) if self.replies else self.default
+        if on_delta is not None:
+            for piece in content.splitlines(keepends=True):
+                self.deltas.append(piece)
+                on_delta(piece)
+        return ChatReply(
+            content=content,
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
+            latency_ms=5,
+        )
+
+    @property
+    def system_of_last(self) -> str:
+        return self.calls[-1][0]["content"]
+
+
+def bind_text_model(
+    session: Session,
+    agent_code: str,
+    *,
+    code: str = "bailian",
+    model_id: str = "qwen-plus",
+    priority: int = 100,
+    limit: tuple[str, int, str] | None = None,
+) -> ProviderModel:
+    """给某个文本 Agent 备一个可用候选。"""
+    provider = make_provider(session, code, priority=priority)
+    return make_model(session, provider, model_id, agent_code=agent_code, limit=limit)
 
 
 @pytest.fixture

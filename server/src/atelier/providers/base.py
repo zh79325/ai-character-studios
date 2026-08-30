@@ -31,6 +31,13 @@ _QUOTA_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+# 限流的措辞先认：百炼与方舟的 QPM/TPM 报错里就带着 "exceeded"，只看额度词会把「等一秒就好」
+# 误判成「这个账号没额度了」，白白把候选标满并换走。
+_RATE_LIMIT_MARKERS = re.compile(
+    r"rate.?limit|too many requests|per (?:minute|second)|qpm|tpm|rpm|频繁|限流",
+    re.IGNORECASE,
+)
+
 
 class ProviderError(RuntimeError):
     """provider 调用失败的基类。"""
@@ -140,15 +147,15 @@ def parse_remaining(headers: Mapping[str, str], limit_kind: str) -> int | None:
 def classify_failure(status_code: int | None, body: str = "") -> ProviderError:
     """把 HTTP 失败分成「换候选」与「退避重试」两类。
 
-    402 一律是欠费或额度用尽；429 与 4xx 要看错误体里有没有额度字样，纯限流则重试。
-    5xx、超时、连接失败按可重试处理。
+    402 一律是欠费或额度用尽；429 先按限流看，只有措辞明确指向额度且不带限流字样才算耗尽；
+    其余 4xx 看额度字样。5xx、超时、连接失败按可重试处理。
     """
     if status_code == 402:
         return QuotaExhausted(f"HTTP 402 欠费或额度用尽：{body[:200]}")
     if status_code in (401, 403):
         return ProviderError(f"HTTP {status_code} 凭证无效或无权限：{body[:200]}")
     if status_code == 429:
-        if _QUOTA_MARKERS.search(body):
+        if _QUOTA_MARKERS.search(body) and not _RATE_LIMIT_MARKERS.search(body):
             return QuotaExhausted(f"HTTP 429 额度用尽：{body[:200]}")
         return RetryableError(f"HTTP 429 限流：{body[:200]}")
     if status_code is not None and 400 <= status_code < 500:
