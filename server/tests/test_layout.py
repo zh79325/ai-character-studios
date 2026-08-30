@@ -179,6 +179,7 @@ def test_git规则把二进制素材指向lfs(tmp_path: Path) -> None:
     gitignore, gitattributes = layout.ensure_git_files(tmp_path)
 
     assert "tmp/" in gitignore.read_text(encoding="utf-8")
+    assert ".idea/" in gitignore.read_text(encoding="utf-8")
     text = gitattributes.read_text(encoding="utf-8")
     assert "*.png filter=lfs" in text
     assert "*.glb filter=lfs" in text

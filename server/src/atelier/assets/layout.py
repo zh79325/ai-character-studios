@@ -117,6 +117,9 @@ tmp/
 # 系统垃圾文件
 .DS_Store
 Thumbs.db
+
+# 编辑器本机配置
+.idea/
 """
 
 GITATTRIBUTES = """\
