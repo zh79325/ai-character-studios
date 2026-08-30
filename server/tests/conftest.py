@@ -1,19 +1,24 @@
-"""路由层测试的共用夹具：内存日志库 + 断网的用量服务。
+"""路由层与 API 测试的共用夹具：内存双库 + 断网的用量服务。
 
 用量服务默认不可用，账务全走本地镜像——这是远程挂掉时的兜底路径，也是单测里唯一
 不依赖外部服务的路径。要测远程口径的用例自己装一个假客户端。
+
+API 测试用 `client` 夹具：把两个库的依赖换成内存 Session，不碰 db/ 下的真库。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from atelier.db.config_models import ConfigBase
 from atelier.db.runtime_models import (
     ModelLimit,
     Provider,
@@ -67,14 +72,27 @@ class StubUsageClient:
         return self.snapshot_items
 
 
-@pytest.fixture
-def engine() -> Engine:
-    eng = create_engine("sqlite://", future=True)
+def _file_engine(path: Path) -> Engine:
+    """落在临时目录的 sqlite 库。
+
+    不用 `sqlite://` 内存库：TestClient 在另一个线程里跑应用，内存库要么跨线程看不见
+    （默认池）、要么得把同一个连接两边抢（StaticPool），而 SSE 长连接测试就是要一边读
+    一边写。文件库 + WAL 才能让读写各占自己的连接。
+    """
+    eng = create_engine(f"sqlite:///{path}", future=True)
 
     @event.listens_for(eng, "connect")
-    def _fk_on(dbapi_conn: Any, _record: Any) -> None:
+    def _pragmas(dbapi_conn: Any, _record: Any) -> None:
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
+        dbapi_conn.execute("PRAGMA busy_timeout=5000")
 
+    return eng
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Engine:
+    eng = _file_engine(tmp_path / "runtime.db")
     RuntimeBase.metadata.create_all(eng)
     return eng
 
@@ -83,6 +101,45 @@ def engine() -> Engine:
 def session(engine: Engine) -> Iterator[Session]:
     with Session(engine) as s:
         yield s
+
+
+@pytest.fixture
+def cfg_engine(tmp_path: Path) -> Engine:
+    eng = _file_engine(tmp_path / "config.db")
+    ConfigBase.metadata.create_all(eng)
+    return eng
+
+
+@pytest.fixture
+def cfg_session(cfg_engine: Engine) -> Iterator[Session]:
+    with Session(cfg_engine) as s:
+        yield s
+
+
+@pytest.fixture
+def client(engine: Engine, cfg_engine: Engine) -> Iterator[TestClient]:
+    """指向临时双库的 HTTP 客户端，不碰 db/ 下的真库。
+
+    每个请求开自己的 Session（与真实依赖一致），不把测试线程的 Session 借给应用线程——
+        Session 不是线程安全的，SSE 测试里两边会同时用库。
+    """
+    from atelier.api.deps import config_db, runtime_db
+    from atelier.main import app
+
+    def _open(target: Engine) -> Callable[[], Iterator[Session]]:
+        def dependency() -> Iterator[Session]:
+            with Session(target) as s:
+                yield s
+
+        return dependency
+
+    app.dependency_overrides[runtime_db] = _open(engine)
+    app.dependency_overrides[config_db] = _open(cfg_engine)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture(autouse=True)

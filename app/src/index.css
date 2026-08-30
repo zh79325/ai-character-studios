@@ -1,0 +1,27 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    sans-serif;
+}
+
+/* 日志面板：等宽、自己滚，别把整页撑长 */
+.log-pane {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #1f1f1f;
+  color: #d9d9d9;
+  border-radius: 6px;
+  padding: 12px;
+  height: 320px;
+  overflow-y: auto;
+}

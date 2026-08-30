@@ -171,6 +171,23 @@ def peek(session: Session, provider_model: ProviderModel, limit_kind: str) -> Bu
     return _budget(row, limit_row.max_value, granted=row.exhausted_at is None)
 
 
+def local_peek(session: Session, provider_model: ProviderModel, limit_kind: str) -> Budget:
+    """只读本地镜像，不问远程。
+
+    额度看板一次要看几十个候选，逐个打远程会把一次刷新拖成几十个往返；镜像里的数是
+    上一次调用留下的，看板够用，要精确数字点刷新走 `peek`。
+    """
+    limit_row = limit_of(session, provider_model, limit_kind)
+    if limit_row is None or limit_row.max_value <= 0:
+        return _unlimited(limit_kind)
+
+    row = _counter(
+        session, provider_model, limit_kind, period_mod.window_label(limit_row.period_expr)
+    )
+    session.commit()
+    return _budget(row, limit_row.max_value, granted=row.exhausted_at is None)
+
+
 def has_budget(
     session: Session, provider_model: ProviderModel, limit_kind: str, need: int = 1
 ) -> bool:

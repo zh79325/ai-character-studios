@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
+atelier-serve = "atelier.serve:main"
 atelier-migrate = "atelier.db.migrate:main"
 atelier-seed = "atelier.db.seed:main"
 
