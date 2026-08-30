@@ -12,6 +12,10 @@
    什么都不剩了。
 3. **`project.json` 是合并不是覆盖**：Agent 只产出 `style` / `defaults` 这几段，整份
    写回去会把 `code`、`name` 和用户手写的键抹掉。
+
+图片、模型这类二进制产物多一道：**生成当场先落 `tmp/`**（`stage_bytes`），人工门禁里选中
+哪一张，才由 `adopt_file` 拷到定稿位并改成定稿名。拷而不是移：候选留在 `tmp/` 里就是
+这一步的历史，下一次换一张定稿时还能回头对比。
 """
 
 from __future__ import annotations
@@ -79,12 +83,20 @@ def check_hash(ref: ProjectRef, target_path: str, based_on_hash: str) -> str:
     return current
 
 
-def _write_atomic(path: Path, content: str) -> None:
-    """临时文件 + `os.replace`，理由同 project.json：宁可写不成，不能写一半。"""
+def _write_bytes(path: Path, data: bytes) -> None:
+    """临时文件 + `os.replace`：宁可写不成，不能写一半。
+
+    图片尤其需要这一条：写一半的 PNG 看上去文件就在那里，双击却打不开，而此时旧定稿已经
+    退位了。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
+    tmp.write_bytes(data)
     os.replace(tmp, path)
+
+
+def _write_atomic(path: Path, content: str) -> None:
+    _write_bytes(path, content.encode("utf-8"))
 
 
 def _retire(ref: ProjectRef, target: Path, now: datetime) -> str | None:
@@ -196,7 +208,12 @@ def merge_meta(path: Path, patch: Mapping[str, Any]) -> None:
 
 
 def _record_meta(
-    meta_dir: Path, *, result: ArchiveResult, conversation_id: str, now: datetime
+    meta_dir: Path,
+    *,
+    result: ArchiveResult,
+    conversation_id: str,
+    now: datetime,
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     """把这次沉淀追加进素材的 `meta.json`。"""
     path = meta_dir / META_JSON
@@ -204,16 +221,16 @@ def _record_meta(
 
     history = meta.get("artifacts")
     entries = list(history) if isinstance(history, list) else []
-    entries.append(
-        {
-            "target_path": result.target_path,
-            "content_hash": result.content_hash,
-            "previous_hash": result.previous_hash,
-            "previous_path": result.previous_path,
-            "conversation_id": conversation_id,
-            "committed_at": now.isoformat(),
-        }
-    )
+    entry: dict[str, Any] = {
+        "target_path": result.target_path,
+        "content_hash": result.content_hash,
+        "previous_hash": result.previous_hash,
+        "previous_path": result.previous_path,
+        "conversation_id": conversation_id,
+        "committed_at": now.isoformat(),
+    }
+    entry.update(extra or {})
+    entries.append(entry)
     merge_meta(path, {"artifacts": entries})
 
 
@@ -255,3 +272,113 @@ def commit_draft(
         conversation=conversation_id,
     )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# 二进制产物：先落 tmp/，人工采用后才进定稿位
+# --------------------------------------------------------------------------- #
+
+
+def stage_bytes(
+    ref: ProjectRef,
+    *,
+    asset_dir: str,
+    stem: str,
+    suffix: str,
+    data: bytes,
+    now: datetime | None = None,
+) -> str:
+    """把一次生成的产物落进素材的 `tmp/`，返回项目内相对路径。
+
+    生成即落盘，但落的是候选位而不是定稿位：模型一次出图几十秒，不落盘的话用户点「不满意，
+    再来一张」时上一张就永远找不回来了；而落在定稿位等于 Agent 自己拍板，门禁就形同虚设。
+    """
+    directory = layout.resolve_inside(ref.dir, asset_dir)
+    if not directory.is_dir():
+        raise Conflict(f"素材目录不存在：{asset_dir}")
+    target = layout.next_tmp_path(directory, stem, suffix, now or _now())
+    _write_bytes(target, data)
+    _log.info("artifact_staged", project=ref.code, target=ref.relative(target), bytes=len(data))
+    return ref.relative(target)
+
+
+def commit_bytes(
+    ref: ProjectRef,
+    *,
+    target_path: str,
+    data: bytes,
+    conversation_id: str = "",
+    based_on_hash: str | None = None,
+    extra: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+) -> ArchiveResult:
+    """把字节写成定稿。旧定稿先退位。
+
+    `based_on_hash` 给 None 表示不校基线。二进制走这条路是有意的：用户是在门禁上指着某一张
+    图说「就它」，前端手里没有上一版图片的 hash 可比；而旧定稿退位后完整留在 `tmp/` 里，
+    覆盖不会让任何东西消失。文本草稿不适用——那是一路改出来的，基线不对就意味着改错了底本。
+    """
+    moment = now or _now()
+    target = layout.resolve_inside(ref.dir, target_path)
+    relative = ref.relative(target)
+    previous_hash = (
+        check_hash(ref, relative, based_on_hash) if based_on_hash is not None else file_hash(target)
+    )
+
+    previous_path = _retire(ref, target, moment)
+    _write_bytes(target, data)
+
+    result = ArchiveResult(
+        target_path=relative,
+        content_hash=hashlib.sha256(data).hexdigest(),
+        previous_hash=previous_hash,
+        previous_path=previous_path,
+    )
+
+    meta_dir = _meta_dir(ref, target)
+    if meta_dir is not None:
+        _record_meta(
+            meta_dir,
+            result=result,
+            conversation_id=conversation_id,
+            now=moment,
+            extra=extra,
+        )
+
+    _log.info(
+        "artifact_committed",
+        project=ref.code,
+        target=result.target_path,
+        previous=result.previous_path,
+        bytes=len(data),
+    )
+    return result
+
+
+def adopt_file(
+    ref: ProjectRef,
+    *,
+    source_path: str,
+    target_path: str,
+    conversation_id: str = "",
+    extra: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+) -> ArchiveResult:
+    """采用 `tmp/` 里的某个候选：拷到定稿位、改成定稿名，候选本身留着不动。
+
+    定稿名不带版本号也不带时间戳——下游引用的是「这个角色的渲染图」，名字里带版本的话每次
+    换定稿都要改一遍引用。想知道它是哪一版，看 `meta.json` 里这一条的 `source_path`。
+    """
+    source = layout.resolve_inside(ref.dir, source_path)
+    if not source.is_file():
+        raise Conflict(f"要采用的产物不在了：{source_path}")
+
+    payload = {"source_path": ref.relative(source), **dict(extra or {})}
+    return commit_bytes(
+        ref,
+        target_path=target_path,
+        data=source.read_bytes(),
+        conversation_id=conversation_id,
+        extra=payload,
+        now=now,
+    )

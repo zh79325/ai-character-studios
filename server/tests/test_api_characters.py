@@ -11,12 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from atelier.agents import review
+from atelier.agents import render, review
 from atelier.assets import characters, projects
 from atelier.assets.projects import ProjectRef
-from atelier.providers import text_chat
-from tests.conftest import ScriptedChat, bind_text_model
+from atelier.providers import image_gen, text_chat
+from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
 from tests.test_characters import PARTIAL_BIBLE
+from tests.test_render import CARD, ScriptedDraw
 
 WRITER = "spec_writer"
 
@@ -61,6 +62,16 @@ def candidates(session: Session) -> None:
     """写手与评审各一个候选，落在不同 provider 上免得撞主键。"""
     bind_text_model(session, WRITER)
     bind_text_model(session, review.REVIEWER, code="ark")
+    bind_text_model(session, render.SMITH, code="smith")
+    bind_image_model(session, render.PAINTER, code="ark-image")
+
+
+@pytest.fixture
+def draw(monkeypatch: pytest.MonkeyPatch) -> ScriptedDraw:
+    """把生图驱动换成假实现，接口层验的是契约与拦阻。"""
+    scripted = ScriptedDraw()
+    monkeypatch.setattr(image_gen, "generate", scripted)
+    return scripted
 
 
 @pytest.fixture
@@ -386,3 +397,168 @@ def test_不认识的状态不当成还没开始(
     response = client.post(f"/api/characters/{character['id']}/advance", json={"state": "S99"})
 
     assert response.status_code == 409
+
+
+# --------------------------------------------------------------------------- #
+# 渲染图与门禁 2
+# --------------------------------------------------------------------------- #
+
+
+def confirmed(client: TestClient, chat: ScriptedChat) -> dict[str, object]:
+    """设定已经过了门禁 1 的角色，够开工出渲染图。"""
+    character = create(client)
+    settle_spec(client, str(character["id"]), chat)
+    passed = client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    assert passed.status_code == 200, passed.text
+    return character
+
+
+def test_设定没确认就生不了图(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """这是门禁 1 在 HTTP 层的另一个出口：不能绕过 advance 直接生图。"""
+    character = create(client)
+    settle_spec(client, str(character["id"]), chat)
+
+    response = client.post(f"/api/characters/{character['id']}/render", json={})
+
+    assert response.status_code == 409
+    assert "才能生成渲染图" in response.json()["detail"]
+    assert draw.calls == []
+
+
+def test_卡片可以先看不生图(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """prompt 少一截层序，用户在图上只能看出「不对」而看不出「哪里不对」。"""
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+
+    response = client.post(f"/api/characters/{character['id']}/asset-spec", json={})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["code"] == "ASSET-DEMO-001"
+    assert body["size"] == "2048x2048"
+    assert body["constraints"] == ["双尾数量=2"]
+    assert body["card"].startswith("ASSET-DEMO-001")
+    assert draw.calls == []
+
+
+def test_生图后候选里列得出来(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+
+    response = client.post(f"/api/characters/{character['id']}/render", json={})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "/tmp/" in body["file_path"]
+    assert body["spec"]["code"] == "ASSET-DEMO-001"
+    assert body["params"]["model"]
+    listed = client.get(f"/api/characters/{character['id']}/renders").json()
+    assert [one["id"] for one in listed] == [body["generation_id"]]
+    assert listed[0]["is_final"] is False
+
+
+def test_图本体按原格式发出去(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """一张 2048 的 png 动辄几 MB，转 base64 塞进 JSON 再膨 33%。"""
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+
+    response = client.get(
+        f"/api/characters/{character['id']}/renders/{rendered['generation_id']}/image"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == draw.data
+
+
+def test_别人的产物读不到(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+    other = create(client, "青瞳")
+
+    response = client.get(
+        f"/api/characters/{other['id']}/renders/{rendered['generation_id']}/image"
+    )
+
+    assert response.status_code == 404
+
+
+def test_采用得指名哪一张(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """默认采用「最新一张」在用户连生了几张之后就不是他指的那一张了。"""
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    client.post(f"/api/characters/{character['id']}/render", json={})
+
+    response = client.post(f"/api/characters/{character['id']}/render/confirm", json={})
+
+    assert response.status_code == 422
+
+
+def test_采用之后进渲染图已确认(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+
+    response = client.post(
+        f"/api/characters/{character['id']}/render/confirm",
+        json={"generation_id": rendered["generation_id"], "note": "就这张"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == characters.RENDER_CONFIRMED
+    assert body["state_label"] == "渲染图已定稿"
+    assert body["render_path"] == "characters/赤瞳/images/character_赤瞳_渲染图.png"
+    assert body["gate_render_confirmed_at"] is not None
+    listed = client.get(f"/api/characters/{character['id']}/renders").json()
+    assert listed[0]["is_final"] is True
+    assert listed[0]["file_path"] == body["render_path"]
+
+
+def test_不存在的产物采用不了(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    client.post(f"/api/characters/{character['id']}/render", json={})
+
+    response = client.post(
+        f"/api/characters/{character['id']}/render/confirm", json={"generation_id": "nope"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_驳回渲染图时状态停在S2(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    client.post(f"/api/characters/{character['id']}/render", json={})
+
+    response = client.post(
+        f"/api/characters/{character['id']}/render/reject", json={"note": "尾巴粘在一起了"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == characters.RENDER_GENERATED
+    assert response.json()["render_path"] is None
+    events = client.get(f"/api/characters/{character['id']}/events").json()
+    assert events[-1]["event"] == "gate_render_rejected"
+    assert events[-1]["message"] == "尾巴粘在一起了"

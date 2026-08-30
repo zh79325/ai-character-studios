@@ -8,11 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   advanceCharacter,
+  confirmRender,
   confirmSpec,
   createCharacter,
+  draftAssetSpec,
   listCharacterEvents,
+  listRenders,
   readCharacter,
+  rejectRender,
   rejectSpec,
+  renderCharacter,
+  renderImageUrl,
   reviewSpec,
 } from './characters'
 import { resetBaseUrl } from './client'
@@ -117,6 +123,62 @@ describe('门禁 1', () => {
       url: 'http://127.0.0.1:62066/api/characters/c1/advance',
       method: 'POST',
       body: { state: 'S2_render_generated' },
+    })
+  })
+})
+
+describe('渲染图', () => {
+  it('只看卡片与真生图是两个端点，不靠一个参数区分', async () => {
+    await draftAssetSpec('c1')
+    await renderCharacter('c1')
+
+    expect(calls.map((one) => one.url)).toEqual([
+      'http://127.0.0.1:62066/api/characters/c1/asset-spec',
+      'http://127.0.0.1:62066/api/characters/c1/render',
+    ])
+    expect(calls.map((one) => one.body)).toEqual([
+      { note: '', field: '' },
+      { note: '', field: '' },
+    ])
+  })
+
+  it('改某一项要把那一项单独递过去，不能只给一句话', async () => {
+    await renderCharacter('c1', '太暗了', '光照')
+    expect(onlyCall().body).toEqual({ note: '太暗了', field: '光照' })
+  })
+
+  it('候选列表是只读的', async () => {
+    await listRenders('c1')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/renders',
+      method: 'GET',
+    })
+  })
+
+  it('图本体给的是地址，不过 JSON', async () => {
+    const url = await renderImageUrl('c1', 'gen-1')
+
+    expect(url).toBe('http://127.0.0.1:62066/api/characters/c1/renders/gen-1/image')
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('门禁 2', () => {
+  it('采用得指名哪一张，不默认取最新', async () => {
+    await confirmRender('c1', 'gen-2', '就这张')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/render/confirm',
+      method: 'POST',
+      body: { generation_id: 'gen-2', note: '就这张' },
+    })
+  })
+
+  it('驳回不用指哪一张：停的是这一步，不是某一张', async () => {
+    await rejectRender('c1', '尾巴粘在一起了')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/render/reject',
+      method: 'POST',
+      body: { note: '尾巴粘在一起了' },
     })
   })
 })

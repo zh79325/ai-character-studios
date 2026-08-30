@@ -27,9 +27,20 @@ from atelier.providers.base import (
     Candidate,
     ProviderError,
     RetryableError,
+    auth_headers,
     classify_failure,
     parse_remaining,
 )
+
+__all__ = [
+    "CHAT_PATH",
+    "TEXT_DRIVERS",
+    "ChatReply",
+    "auth_headers",
+    "build_payload",
+    "chat_url",
+    "complete",
+]
 
 _log = structlog.get_logger(__name__)
 
@@ -72,12 +83,6 @@ def chat_url(candidate: Candidate) -> str:
     """拼调用地址。endpoint 已经指到 `/v1` 这一级，这里只补动作路径。"""
     base = candidate.endpoint.rstrip("/")
     return base if base.endswith(CHAT_PATH) else f"{base}/{CHAT_PATH}"
-
-
-def auth_headers(candidate: Candidate) -> dict[str, str]:
-    if candidate.auth_style == "x-api-key":
-        return {"x-api-key": candidate.api_key}
-    return {"Authorization": f"Bearer {candidate.api_key}"}
 
 
 def build_payload(

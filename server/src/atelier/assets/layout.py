@@ -142,18 +142,45 @@ def resolve_inside(project_dir: Path, relative: str) -> Path:
     return candidate
 
 
-def history_dir(final_path: Path) -> Path:
-    """某个定稿文件的历史版本该放哪儿：与它同级的 `tmp/`。
-
-    一条规则管两种位置——素材目录内的定稿进 `{素材}/tmp/`，项目根上的 `art-bible.md`
-    `project.json` 进 `{项目}/tmp/`。历史版本跟着定稿走，整份目录拷到别处仍然自洽。
-    """
-    target = final_path.parent / TMP_DIR
+def tmp_dir(asset_dir: Path) -> Path:
+    """过程产物与历史版本的归处，逗手建好。"""
+    target = asset_dir / TMP_DIR
     target.mkdir(parents=True, exist_ok=True)
     return target
 
 
+def history_dir(final_path: Path) -> Path:
+    """某个定稿文件的历史版本该放哪儿：这个素材的 `tmp/`。
+
+    一条规则管三种位置——素材目录下的设定文档进 `{素材}/tmp/`，项目根上的
+    `art-bible.md` `project.json` 进 `{项目}/tmp/`，而 `images/` `models/`
+    `animations/` 里的定稿往上跳一级、仍然回到素材的 `tmp/`。
+
+    图片不在旁边另开一个 `images/tmp/`：一个素材只应该有一个 `tmp/`，分成三处的话
+    “上一版在哪里”这个问题得看类别才能答。历史版本跟着素材走，整份目录拷到别处仍然
+    自洽。已经躺在 `tmp/` 里的文件就地退位，否则会套出 `tmp/tmp/`。
+    """
+    parent = final_path.parent
+    if parent.name == TMP_DIR:
+        parent.mkdir(parents=True, exist_ok=True)
+        return parent
+    if parent.name in ASSET_SUBDIRS:
+        parent = parent.parent
+    return tmp_dir(parent)
+
+
 _VERSION_RE = re.compile(r"_v(\d+)_\d{8}-\d{6}$")
+
+
+def _versioned(directory: Path, stem: str, suffix: str, now: datetime) -> Path:
+    """`{stem}_v{N}_{时间戳}{suffix}`，N 比目录里已有的最大号大一。"""
+    used = 0
+    for existing in directory.glob(f"{stem}_v*{suffix}"):
+        match = _VERSION_RE.search(existing.stem)
+        if match:
+            used = max(used, int(match.group(1)))
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    return directory / f"{stem}_v{used + 1}_{stamp}{suffix}"
 
 
 def next_version_path(final_path: Path, now: datetime) -> Path:
@@ -163,12 +190,12 @@ def next_version_path(final_path: Path, now: datetime) -> Path:
     文档也有图片模型，混着数会让版本号看起来跳号。时间戳保证同一秒外的排序稳定，也让
     「哪个更新」不必依赖文件 mtime。
     """
-    stem, suffix = final_path.stem, final_path.suffix
-    directory = history_dir(final_path)
-    used = 0
-    for existing in directory.glob(f"{stem}_v*{suffix}"):
-        match = _VERSION_RE.search(existing.stem)
-        if match:
-            used = max(used, int(match.group(1)))
-    stamp = now.strftime("%Y%m%d-%H%M%S")
-    return directory / f"{stem}_v{used + 1}_{stamp}{suffix}"
+    return _versioned(history_dir(final_path), final_path.stem, final_path.suffix, now)
+
+
+def next_tmp_path(asset_dir: Path, stem: str, suffix: str, now: datetime) -> Path:
+    """`tmp/` 里下一个候选产物的名字。
+
+    与退位版本共用同一套编号：两者最终躺在同一个 `tmp/` 里，各数一套会出现两个 v2。
+    """
+    return _versioned(tmp_dir(asset_dir), stem, suffix, now)

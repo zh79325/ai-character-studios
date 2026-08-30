@@ -250,3 +250,85 @@ def test_角色目录不存在时顺手建出来(project: ProjectRef) -> None:
     result = commit(project, "characters/新角色/新角色角色设定.md", "# v1\n")
 
     assert project.absolute(result.target_path).is_file()
+
+
+# --------------------------------------------------------------------------- #
+# 二进制产物
+# --------------------------------------------------------------------------- #
+
+
+def asset_dir(ref: ProjectRef, name: str = "chitong") -> Path:
+    return layout.ensure_asset_dirs(ref.absolute(f"characters/{name}"))
+
+
+def test_生成的产物落在tmp里(project: ProjectRef) -> None:
+    """落定稿位等于 Agent 自己拍了板，门禁就形同虚设。"""
+    asset_dir(project)
+
+    relative = archive.stage_bytes(
+        project,
+        asset_dir="characters/chitong",
+        stem="赤瞳_渲染图",
+        suffix=".png",
+        data=b"\x89PNG-1",
+    )
+
+    assert relative.startswith("characters/chitong/tmp/赤瞳_渲染图_v1_")
+    assert project.absolute(relative).read_bytes() == b"\x89PNG-1"
+
+
+def test_素材目录不在就不落盘(project: ProjectRef) -> None:
+    """目录拼错了就顺手建一个的话，产物会散到一堆没人认识的目录里。"""
+    with pytest.raises(Conflict, match="素材目录不存在"):
+        archive.stage_bytes(
+            project, asset_dir="characters/不存在", stem="x", suffix=".png", data=b"1"
+        )
+
+
+def test_图片定稿不校基线(project: ProjectRef) -> None:
+    """用户是在门禁上指着某一张图说「就它」，前端手里没有上一版图的 hash 可比。"""
+    target = "characters/chitong/images/character_赤瞳_渲染图.png"
+    asset_dir(project)
+    archive.commit_bytes(project, target_path=target, data=b"first")
+
+    result = archive.commit_bytes(project, target_path=target, data=b"second")
+
+    assert project.absolute(target).read_bytes() == b"second"
+    assert result.previous_path is not None
+    # 旧定稿退到素材的 tmp/，而不是 images/tmp/
+    assert result.previous_path.startswith("characters/chitong/tmp/")
+    assert project.absolute(result.previous_path).read_bytes() == b"first"
+
+
+def test_采用是拷不是移(project: ProjectRef) -> None:
+    """候选要留着：用户过两天想换回上一张时得还找得到。"""
+    asset_dir(project)
+    staged = archive.stage_bytes(
+        project, asset_dir="characters/chitong", stem="赤瞳_渲染图", suffix=".png", data=b"png"
+    )
+
+    result = archive.adopt_file(
+        project,
+        source_path=staged,
+        target_path="characters/chitong/images/character_赤瞳_渲染图.png",
+        extra={"generation_id": "gen-1"},
+    )
+
+    assert project.absolute(staged).is_file()
+    assert project.absolute(result.target_path).read_bytes() == b"png"
+    entry = json.loads(
+        (project.absolute("characters/chitong") / archive.META_JSON).read_text(encoding="utf-8")
+    )["artifacts"][-1]
+    assert entry["source_path"] == staged
+    assert entry["generation_id"] == "gen-1"
+
+
+def test_要采用的产物没了就报清楚(project: ProjectRef) -> None:
+    asset_dir(project)
+
+    with pytest.raises(Conflict, match="要采用的产物不在了"):
+        archive.adopt_file(
+            project,
+            source_path="characters/chitong/tmp/没这张.png",
+            target_path="characters/chitong/images/x.png",
+        )

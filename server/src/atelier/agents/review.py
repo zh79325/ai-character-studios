@@ -102,20 +102,6 @@ def latest_spec(project: Session, ref: ProjectRef, character: Character) -> tupl
     raise Conflict(f"{character.name} 还没有设定内容可审，先在设定会话里聊出一版草稿")
 
 
-@dataclass(slots=True)
-class _Ask:
-    """喂给 `context.assemble` 的单条用户消息。
-
-    单次调用没有对话历史，但上下文的拼装顺序（提示词 → 定稿 → 项目记忆）跟会话完全一样，
-    没必要另写一套拼法。
-    """
-
-    content: str
-    turn_no: int = 1
-    role: str = "user"
-    folded: bool = False
-
-
 def _payload(
     project: Session, ref: ProjectRef, character: Character
 ) -> tuple[list[dict[str, str]], str]:
@@ -127,7 +113,7 @@ def _payload(
     )
     assembled = context.assemble(
         agent,
-        [_Ask(content=request)],
+        [context.Ask(content=request)],
         addendum=conv.addendum(project, REVIEWER),
         artifact_path=relative,
         artifact_text=spec,

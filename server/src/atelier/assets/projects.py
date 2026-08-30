@@ -679,6 +679,7 @@ def character_row(row: Character) -> dict[str, Any]:
         "dir_name": row.dir_name,
         "state": row.state,
         "spec_path": row.spec_path,
+        "render_path": row.render_path,
         "hard_constraints": [one for one in constraints or [] if isinstance(one, dict)],
         "gate_spec_confirmed_at": (
             row.gate_spec_confirmed_at.isoformat()

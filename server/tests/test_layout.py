@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -135,3 +136,40 @@ def test_art_bible_path_cannot_point_outside(tmp_path: Path) -> None:
     """art_bible 是 project.json 里的字段，用户能手改，越界得拦住。"""
     with pytest.raises(layout.LayoutError):
         layout.art_bible_path(tmp_path, "../art-bible.md")
+
+
+def test_一个素材只有一个tmp(tmp_path: Path) -> None:
+    """定稿在 images/ 下，历史却要落到素材的 tmp/ ——每个子目录各开一个 tmp/ 会让人找不到旧版。"""
+    asset = layout.ensure_asset_dirs(tmp_path / "characters" / "赤瞳")
+    final = asset / "images" / "赤瞳_渲染图.png"
+
+    assert layout.history_dir(final) == asset / "tmp"
+    # 已经在 tmp/ 里的文件就地退位，不再往上跳一级
+    assert layout.history_dir(asset / "tmp" / "候选.png") == asset / "tmp"
+
+
+def test_退位命名带版本号与时间戳(tmp_path: Path) -> None:
+    asset = layout.ensure_asset_dirs(tmp_path / "characters" / "赤瞳")
+    final = asset / "images" / "赤瞳_渲染图.png"
+
+    first = layout.next_version_path(final, datetime(2026, 8, 30, 12, 0, 0, tzinfo=UTC))
+    first.touch()
+    second = layout.next_version_path(final, datetime(2026, 8, 30, 12, 5, 0, tzinfo=UTC))
+
+    assert first.name == "赤瞳_渲染图_v1_20260830-120000.png"
+    assert second.name == "赤瞳_渲染图_v2_20260830-120500.png"
+    assert second.parent == asset / "tmp"
+
+
+def test_候选与退位版本共用编号(tmp_path: Path) -> None:
+    """两边都在 tmp/ 里，各排一套号的话文件名会撞。"""
+    asset = layout.ensure_asset_dirs(tmp_path / "characters" / "赤瞳")
+    now = datetime(2026, 8, 30, 12, 0, 0, tzinfo=UTC)
+
+    first = layout.next_tmp_path(asset, "赤瞳_渲染图", ".png", now)
+    first.touch()
+    second = layout.next_tmp_path(asset, "赤瞳_渲染图", ".png", now)
+
+    assert first.name == "赤瞳_渲染图_v1_20260830-120000.png"
+    assert second.name == "赤瞳_渲染图_v2_20260830-120000.png"
+    assert layout.tmp_dir(asset) == asset / "tmp"

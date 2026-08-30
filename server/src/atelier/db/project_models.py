@@ -72,6 +72,9 @@ class Character(ProjectBase):
     """相对项目目录的路径，如 `characters/赤瞳双尾兽`——项目目录整体搬走后仍然有效。"""
     state: Mapped[str] = mapped_column(String(32), default="S0_spec_drafting")
     spec_path: Mapped[str | None] = mapped_column(String(512), default=None)
+    render_path: Mapped[str | None] = mapped_column(String(512), default=None)
+    """定稿渲染图的相对路径。`generations` 里有全部候选，这里只记人采用的那一张——后续
+    每一步都拿它当参考图，每次都去台账里筛一遍不如把结论存在角色行上。"""
     hard_constraints: Mapped[dict[str, Any]] = mapped_column(default=dict)
     params: Mapped[dict[str, Any]] = mapped_column(default=dict)
     gate_spec_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)

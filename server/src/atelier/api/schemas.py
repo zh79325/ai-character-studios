@@ -378,6 +378,8 @@ class CharacterOut(Schema):
     state_label: str
     """状态的中文说法。前端不该自己维护一份状态码到人话的映射，两处总会对不齐。"""
     spec_path: str | None = None
+    render_path: str | None = None
+    """定稿渲染图。前端据此在列表里直接显缩略图。"""
     hard_constraints: list[ConstraintOut] = Field(default_factory=list)
     """最近一次评审翻译出来的硬约束。后续每张图对着它逐条判定。"""
     gate_spec_confirmed_at: str | None = None
@@ -411,6 +413,63 @@ class SpecReviewOut(Schema):
 
 class GateIn(Schema):
     note: str = Field(default="", max_length=2000)
+
+
+class AssetSpecOut(Schema):
+    """一张素材规格卡片。`card` 是原文，前端要能把模型写的那一字不改地展开给人看。"""
+
+    code: str
+    name: str = ""
+    category: str = ""
+    size: str = ""
+    format: str = ""
+    file_name: str = ""
+    description: str = ""
+    anchors: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    prompt: str = ""
+    negative_prompt: str = ""
+    card: str = ""
+
+
+class AssetSpecIn(Schema):
+    note: str = Field(default="", max_length=2000, description="不满意哪里，空着就是头一版")
+    field: str = Field(
+        default="", max_length=64, description="只改这一项（如 prompt / 尺寸），空着就是整张重做"
+    )
+
+
+class RenderIn(AssetSpecIn):
+    pass
+
+
+class GenerationOut(Schema):
+    """一条产物台账。`is_final` 为真就是人采用的那一张。"""
+
+    id: str
+    stage: str
+    variant: str | None = None
+    file_path: str
+    file_hash: str | None = None
+    is_final: bool
+    created_at: str
+    asset_spec: dict[str, Any] = Field(default_factory=dict)
+
+
+class RenderOut(Schema):
+    character_id: str
+    generation_id: str
+    file_path: str
+    """落在 `tmp/` 里的候选位。定稿位要等人采用之后才有。"""
+    width: int
+    height: int
+    spec: AssetSpecOut
+    params: dict[str, Any] = Field(default_factory=dict)
+    """生效参数快照：模型、请求尺寸与实际尺寸、耗时。可复现靠它。"""
+
+
+class RenderAdoptIn(GateIn):
+    generation_id: str = Field(min_length=1, description="要采用的那一张")
 
 
 class AdvanceIn(Schema):

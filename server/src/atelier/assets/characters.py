@@ -44,8 +44,12 @@ STATES: tuple[tuple[str, str], ...] = (
 
 SPEC_DRAFTING = STATES[0][0]
 SPEC_CONFIRMED = STATES[1][0]
+RENDER_GENERATED = STATES[2][0]
+RENDER_CONFIRMED = STATES[3][0]
 
 SPEC_SUFFIX = "角色设定.md"
+RENDER_SUFFIX = "渲染图"
+RENDER_DIR = "images"
 
 _ORDER = {code: index for index, (code, _) in enumerate(STATES)}
 _LABELS = dict(STATES)
@@ -233,6 +237,76 @@ def reject_spec(project: Session, character: Character, *, note: str) -> Charact
     return character
 
 
+# --------------------------------------------------------------------------- #
+# 门禁 2：渲染图定稿
+# --------------------------------------------------------------------------- #
+
+
+def render_target(character: Character, file_name: str = "") -> str:
+    """渲染图的定稿位。
+
+    优先用卡片里给的文件名——卡片是这一步的规格，文件名也是规格的一部分，平台另起一个名字
+    会让卡片与磁盘对不上。卡片没给就退回默认名，图总得有地方落。
+    """
+    stem = file_name.strip() or f"{character.name}_{RENDER_SUFFIX}.png"
+    return f"{character.dir_name}/{RENDER_DIR}/{layout.safe_dir_name(stem)}"
+
+
+def confirm_render(
+    project: Session,
+    ref: ProjectRef,
+    character: Character,
+    *,
+    render_path: str,
+    note: str = "",
+) -> Character:
+    """人工采用渲染图，推到 S3。
+
+    校的是磁盘上确实有这张图：门禁确认的是「我看到的这一张」，文件不在就说明归档那一步没
+    成，此时放行会让四视图拿着一个不存在的参考图开工。
+    """
+    require_state(character, RENDER_GENERATED, action="定稿渲染图")
+    if at_least(character, RENDER_CONFIRMED):
+        raise Conflict(f"{character.name} 的渲染图已经定稿过了")
+    if not render_path:
+        raise Conflict("没有指定要采用哪张渲染图")
+    if not ref.absolute(render_path).is_file():
+        raise Conflict(f"渲染图 {render_path} 不在磁盘上了，重新生成一张再定稿")
+
+    character.state = RENDER_CONFIRMED
+    character.gate_render_confirmed_at = datetime.now(UTC)
+    character.render_path = render_path
+    record_event(
+        project,
+        character.id,
+        "gate_render_confirmed",
+        note or f"人工采用 {character.name} 的渲染图",
+        {"render_path": render_path, "state": character.state, "note": note},
+    )
+    sync_meta(ref, character)
+    project.commit()
+    _log.info("gate_render_confirmed", id=character.id, render=render_path)
+    return character
+
+
+def reject_render(project: Session, character: Character, *, note: str) -> Character:
+    """渲染图驳回：状态停在 S2，理由记下来给下一轮重生用。"""
+    reason = note.strip()
+    if not reason:
+        raise Conflict("驳回要写清哪里不行，否则下一轮改不动")
+    record_event(
+        project,
+        character.id,
+        "gate_render_rejected",
+        reason,
+        {"state": character.state},
+        level="warning",
+    )
+    project.commit()
+    _log.info("gate_render_rejected", id=character.id)
+    return character
+
+
 def advance(project: Session, ref: ProjectRef, character: Character, state: str) -> Character:
     """把状态推到下一步。只允许往前，且只能一步一步走。
 
@@ -266,6 +340,10 @@ def advance(project: Session, ref: ProjectRef, character: Character, state: str)
 # --------------------------------------------------------------------------- #
 
 
+def _moment(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
 def _constraint_list(character: Character) -> list[dict[str, str]]:
     items = character.hard_constraints.get("items") if character.hard_constraints else None
     return [one for one in items if isinstance(one, dict)] if isinstance(items, list) else []
@@ -286,11 +364,9 @@ def sync_meta(ref: ProjectRef, character: Character) -> None:
         "name": character.name,
         "state": character.state,
         "spec_path": character.spec_path,
-        "gate_spec_confirmed_at": (
-            character.gate_spec_confirmed_at.isoformat()
-            if character.gate_spec_confirmed_at is not None
-            else None
-        ),
+        "render_path": character.render_path,
+        "gate_spec_confirmed_at": _moment(character.gate_spec_confirmed_at),
+        "gate_render_confirmed_at": _moment(character.gate_render_confirmed_at),
         "hard_constraints": _constraint_list(character),
     }
     archive.merge_meta(meta_path(ref, character), {"character": snapshot})

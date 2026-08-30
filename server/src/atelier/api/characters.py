@@ -1,36 +1,47 @@
-"""角色接口：建角色、自动评审、人工门禁、状态推进。
+"""角色接口：建角色、自动评审、人工门禁、生渲染图、状态推进。
 
-门禁 1 落在这里：设定没确认，后续每一步都进不去（`POST /advance` 直接 409）。这道拦阻不是
-另写一层校验，而是状态机本身——`characters.advance` 只允许一步一步往前，没过 S1 就推不到
-S2。API 只负责把它的 `Conflict` 翻成 409。
+两道人工门禁都落在这里，形状一致：评审/生成只给结果，confirm 才是放行。设定没确认，后续
+每一步都进不去（出卡片、生图、`POST /advance` 一律 409）。这道拦阻不是另写一层校验，而是
+状态机本身——`characters.require_state` 与 `advance` 只认状态，API 只负责把 `Conflict` 翻成 409。
 
 评审与门禁是两回事：`POST /review` 只给出裁决与理由，`POST /spec/confirm` 才是放行。哪怕
 裁决是 `APPROVE` 也得人按一下——自动裁决替人拍板，等于把责任推给一个看不见全局的模型。
 
-一次评审是**同步阻塞**的（`def` 而非 `async def`，FastAPI 放线程池跑）：用户按了「评审」就
-在等这一轮结果，拆成提交任务 + 轮询只是把复杂度转给前端。中途的增量走会话那条 SSE。
+评审与生图都是**同步阻塞**的（`def` 而非 `async def`，FastAPI 放线程池跑）：用户按了就在等
+这一轮结果，拆成提交任务 + 轮询只是把复杂度转给前端。中途的增量走会话那条 SSE。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, status
+from fastapi.responses import FileResponse
 
 from atelier.agents import conversation as engine
+from atelier.agents import render as painter
 from atelier.agents import review as reviewer
+from atelier.agents.parsing import AssetSpec
 from atelier.api.deps import CurrentProject, ProjectDb, RuntimeDb
 from atelier.api.schemas import (
     AdvanceIn,
+    AssetSpecIn,
+    AssetSpecOut,
     CharacterCreateIn,
     CharacterOut,
     ConstraintOut,
     GateIn,
+    GenerationOut,
+    RenderAdoptIn,
+    RenderIn,
+    RenderOut,
     SpecReviewIn,
     SpecReviewOut,
     TaskEventOut,
 )
-from atelier.assets import characters, projects
+from atelier.assets import characters, generations, projects
 from atelier.db import task_events
-from atelier.db.project_models import TaskEvent
+from atelier.db.project_models import Generation, TaskEvent
+from atelier.errors import NotFound
+from atelier.providers import image_gen
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 
@@ -136,6 +147,122 @@ def reject_spec(character_id: str, body: GateIn, project: ProjectDb) -> Characte
     驳回不是一个新阶段，是「这一步还没过」。理由留着，下一轮设定会话能看见上次为什么没过。
     """
     character = characters.reject_spec(
+        project, characters.get(project, character_id), note=body.note
+    )
+    return character_out(projects.character_row(character))
+
+
+def _spec_out(spec: AssetSpec) -> AssetSpecOut:
+    return AssetSpecOut.model_validate(spec.as_dict())
+
+
+def _generation_out(row: Generation) -> GenerationOut:
+    return GenerationOut(
+        id=row.id,
+        stage=row.stage,
+        variant=row.variant,
+        file_path=row.file_path,
+        file_hash=row.file_hash,
+        is_final=row.is_final,
+        created_at=row.created_at.isoformat(),
+        asset_spec=row.asset_spec,
+    )
+
+
+@router.post("/{character_id}/asset-spec", response_model=AssetSpecOut)
+def draft_asset_spec(
+    character_id: str,
+    body: AssetSpecIn,
+    project: ProjectDb,
+    runtime: RuntimeDb,
+    ref: CurrentProject,
+) -> AssetSpecOut:
+    """让 `prompt_smith` 出一张渲染图卡片，不生图。
+
+    卡片先给人看一眼是有必要的：卡片里的 prompt 就是这张图的全部依据，层序缺一截用户在图上只
+    能看出「不对」而看不出「哪里不对」。设定没确认就 409——它是翻译的底本。
+    """
+    character = characters.get(project, character_id)
+    spec = painter.make_spec(project, runtime, ref, character, note=body.note, field=body.field)
+    return _spec_out(spec)
+
+
+@router.post("/{character_id}/render", response_model=RenderOut)
+def render_character(
+    character_id: str,
+    body: RenderIn,
+    project: ProjectDb,
+    runtime: RuntimeDb,
+    ref: CurrentProject,
+) -> RenderOut:
+    """出一张渲染图：先拿卡片再生图，产物落 `tmp/`，状态推到 S2。
+
+    同步阻塞（`def` 而非 `async def`，FastAPI 放线程池跑）：用户按了就在等这张图，拆成提交
+    任务 + 轮询只是把复杂度转给前端。
+
+    `field` 给了就是「改某一项重生」：只把那一项发回给写手，其余字段与 prompt 的其他层原样留着。
+    """
+    character = characters.get(project, character_id)
+    result = painter.render(project, runtime, ref, character, note=body.note, field=body.field)
+    return RenderOut(
+        character_id=result.character_id,
+        generation_id=result.generation_id,
+        file_path=result.file_path,
+        width=result.width,
+        height=result.height,
+        spec=_spec_out(result.spec),
+        params=result.params,
+    )
+
+
+@router.get("/{character_id}/renders", response_model=list[GenerationOut])
+def list_renders(character_id: str, project: ProjectDb) -> list[GenerationOut]:
+    """渲染图的全部候选，新的在前。门禁上要在几张之间挑，就得能把过往那几张一并列出来。"""
+    characters.get(project, character_id)
+    rows = generations.candidates(project, target_ref=character_id, stage=painter.STAGE)
+    return [_generation_out(row) for row in rows]
+
+
+@router.get("/{character_id}/renders/{generation_id}/image")
+def read_render(
+    character_id: str, generation_id: str, project: ProjectDb, ref: CurrentProject
+) -> FileResponse:
+    """把图本体发出去。
+
+    不把图转 base64 塞进 JSON：一张 2048 的 png 动辒几 MB，进 JSON 再膨 33%，而浏览器对
+    `<img src>` 本来就会缓存与断点续传。
+    """
+    characters.get(project, character_id)
+    row = generations.get(project, generation_id)
+    if row is None or row.target_ref != character_id:
+        raise NotFound(f"产物 {generation_id} 不属于这个角色")
+    path = ref.absolute(row.file_path)
+    if not path.is_file():
+        raise NotFound(f"{row.file_path} 不在磁盘上了")
+    media = image_gen.MIME_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media, filename=path.name)
+
+
+@router.post("/{character_id}/render/confirm", response_model=CharacterOut)
+def confirm_render(
+    character_id: str, body: RenderAdoptIn, project: ProjectDb, ref: CurrentProject
+) -> CharacterOut:
+    """门禁 2：采用指定的那一张，拷到定稿位并推到 S3。
+
+    要指名 `generation_id`：默认采用「最新一张」在用户连生了几张之后就不是他指的那一张了。
+    """
+    character = characters.get(project, character_id)
+    row = generations.get(project, body.generation_id)
+    if row is None:
+        raise NotFound(f"产物 {body.generation_id} 不存在")
+    painter.adopt(project, ref, character, row, note=body.note)
+    return character_out(projects.character_row(character))
+
+
+@router.post("/{character_id}/render/reject", response_model=CharacterOut)
+def reject_render(character_id: str, body: GateIn, project: ProjectDb) -> CharacterOut:
+    """门禁 2 驳回：状态停在 S2，理由记进时间线给下一轮重生用。"""
+    character = characters.reject_render(
         project, characters.get(project, character_id), note=body.note
     )
     return character_out(projects.character_row(character))

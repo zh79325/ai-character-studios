@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 MEMORY_KINDS = ("preference", "taboo", "fact")
 
@@ -53,17 +55,58 @@ _NONE_WORDS = frozenset({"暂无", "无", "none", "n/a", "-", "—"})
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*(?P<title>.+?)\s*#*\s*$")
 _CONSTRAINT_RE = re.compile(r"^(?P<item>[^=:：]{1,60}?)\s*(?:=|→|:|：)\s*(?P<value>.+)$")
 
+ASSET_PREFIX = "ASSET-"
+
+# 卡片首行：`ASSET-CT-001 — 赤瞳 渲染图`。分隔符容错到短横线与冒号，模型并不总能打出破折号
+_ASSET_HEAD_RE = re.compile(
+    r"^[ \t>]*(?P<code>ASSET-[A-Za-z0-9]{1,16}-\d{1,4})\s*(?:[—–-]|[:：])?\s*(?P<name>.*?)\s*$"
+)
+
+_ASSET_KEY_RE = re.compile(
+    r"^[ \t>]*(?P<key>art\s*bible\s*锚点|类别|尺寸|格式|文件名|视觉描述|硬性约束"
+    r"|negative[_\s-]*prompt|prompt)\s*[:：]\s*(?P<value>.*)$",
+    re.I,
+)
+
+_ASSET_KEYS = {
+    "类别": "category",
+    "尺寸": "size",
+    "格式": "image_format",
+    "文件名": "file_name",
+    "视觉描述": "description",
+    "硬性约束": "constraints",
+    "negativeprompt": "negative_prompt",
+    "prompt": "prompt",
+}
+
+# 卡片上字段名 → 缺了该怎么告诉人。报英文字段名的话，用户得自己回去对模板
+_ASSET_LABELS = {
+    "category": "类别",
+    "size": "尺寸",
+    "file_name": "文件名",
+    "prompt": "prompt",
+    "negative_prompt": "negative_prompt",
+}
+
+_SIZE_RE = re.compile(r"(?P<width>\d{2,5})\s*[x×*]\s*(?P<height>\d{2,5})", re.I)
+_ITEM_SPLIT_RE = re.compile(r"[,，、;；]")
+
 
 def is_placeholder(text: str) -> bool:
     """模板占位符与「暂无」不算内容。
 
-    提示词里写的是 `<一行一条，或「暂无」>`，模型照抄回来的情况很常见；把它当结论存进
+    提示词里写的是 `<一行一条，或「暂无」>`，模型照搬回来的情况很常见；把它当结论存进
     记忆，用户下次就会看到 Agent 一本正经地复述一句尖括号。
+
+    卡片模板用的是大括号（`{宽}x{高}`），一并认下来：把 `{全局预设}` 当真值发给生图接口，
+    等于拿模板当提示词烧了一次额度。
     """
     stripped = text.strip().strip("`").strip()
     if not stripped or stripped.lower() in _NONE_WORDS:
         return True
-    return stripped.startswith("<") and stripped.endswith(">")
+    return (stripped.startswith("<") and stripped.endswith(">")) or (
+        stripped.startswith("{") and stripped.endswith("}")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +263,167 @@ def parse_turn(text: str) -> TurnOutput:
         drafts=parse_drafts(text),
         memories=parse_memories(text),
     )
+
+
+# --------------------------------------------------------------------------- #
+# 素材规格卡片
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class AssetSpec:
+    """一张图的规格卡片：既是生图入参，也是事后校图的依据。
+
+    原文一并留着（`text`）：字段拆开后方便程序用，但人回头排查“为什么这张图不对”时看的
+    是卡片本身。抽取过的结构与原文不一致时，原文才是证据。
+    """
+
+    code: str
+    name: str = ""
+    category: str = ""
+    width: int = 0
+    height: int = 0
+    image_format: str = ""
+    file_name: str = ""
+    description: str = ""
+    anchors: str = ""
+    constraints: tuple[str, ...] = ()
+    prompt: str = ""
+    negative_prompt: str = ""
+    text: str = ""
+
+    def gaps(self) -> tuple[str, ...]:
+        """这张卡片哪几项不能用，都齐了返回空元组。
+
+        不在这里报错而是把缺口列出来：一张卡片可能只少了尺寸，其余内容都能用，直接丢掉
+        等于让用户重新聊一遍。
+        """
+        missing: list[str] = []
+        if not self.category:
+            missing.append(_ASSET_LABELS["category"])
+        if self.width <= 0 or self.height <= 0:
+            missing.append(_ASSET_LABELS["size"])
+        if not self.file_name or "/" in self.file_name or "." not in self.file_name:
+            missing.append(_ASSET_LABELS["file_name"])
+        if not self.prompt:
+            missing.append(_ASSET_LABELS["prompt"])
+        if not self.negative_prompt:
+            missing.append(_ASSET_LABELS["negative_prompt"])
+        return tuple(missing)
+
+    def as_dict(self) -> dict[str, Any]:
+        """落 meta.json 与 `generations.asset_spec` 的形态，字段名与模板对得上。"""
+        return {
+            "code": self.code,
+            "name": self.name,
+            "category": self.category,
+            "size": f"{self.width}x{self.height}",
+            "format": self.image_format,
+            "file_name": self.file_name,
+            "description": self.description,
+            "anchors": self.anchors,
+            "constraints": list(self.constraints),
+            "prompt": self.prompt,
+            "negative_prompt": self.negative_prompt,
+            "card": self.text,
+        }
+
+
+def _asset_field(key: str) -> str | None:
+    flat = re.sub(r"[\s_-]", "", key).lower()
+    if flat.startswith("artbible"):
+        return "anchors"
+    return _ASSET_KEYS.get(flat)
+
+
+def _size_of(raw: str) -> tuple[int, int]:
+    match = _SIZE_RE.search(raw)
+    if match is None:
+        return 0, 0
+    return int(match.group("width")), int(match.group("height"))
+
+
+def _split_items(raw: str) -> tuple[str, ...]:
+    items = [one.strip() for one in _ITEM_SPLIT_RE.split(raw)]
+    return tuple(one for one in items if one and not is_placeholder(one))
+
+
+def _build_spec(fields: Mapping[str, str], text: str) -> AssetSpec | None:
+    def value(key: str) -> str:
+        raw = fields.get(key, "").strip().strip("`").strip()
+        return "" if is_placeholder(raw) else raw
+
+    width, height = _size_of(value("size"))
+    spec = AssetSpec(
+        code=fields["code"],
+        name=value("name"),
+        category=value("category").lower(),
+        width=width,
+        height=height,
+        image_format=value("image_format").lstrip(".").lower(),
+        file_name=value("file_name"),
+        description=value("description"),
+        anchors=value("anchors"),
+        constraints=_split_items(value("constraints")),
+        prompt=value("prompt"),
+        negative_prompt=value("negative_prompt"),
+        text=text,
+    )
+    # 既没 prompt 也没文件名，说明这行 ASSET-xxx 只是正文里提了一句编号，不是卡片
+    return spec if spec.prompt or spec.file_name else None
+
+
+def parse_asset_specs(text: str) -> tuple[AssetSpec, ...]:
+    """抽出全部素材规格卡片。四视图那一步一次就是四张。
+
+    允许续行：prompt 往往长得被模型自己折成好几行，只取第一行会把尾巴上的画质与风格层丢
+    掉。但**空行断开续行**：提示词工程师被允许在全部卡片之后另起一段提问题，那段话不能被接
+    到 negative_prompt 后面当成禁止词发出去。
+    """
+    cards: list[AssetSpec] = []
+    fields: dict[str, str] | None = None
+    lines: list[str] = []
+    field: str | None = None
+
+    def close() -> None:
+        nonlocal fields, lines, field
+        if fields is not None:
+            spec = _build_spec(fields, "\n".join(lines).strip())
+            if spec is not None:
+                cards.append(spec)
+        fields, lines, field = None, [], None
+
+    for raw in text.splitlines():
+        head = _ASSET_HEAD_RE.match(raw) if ASSET_PREFIX in raw else None
+        if head is not None:
+            close()
+            fields = {
+                "code": head.group("code"),
+                "name": head.group("name").strip().strip("—–-").strip(),
+            }
+            lines = [raw.strip()]
+            continue
+        if fields is None:
+            continue
+        if not raw.strip():
+            field = None
+            continue
+
+        match = _ASSET_KEY_RE.match(raw)
+        if match is not None:
+            name = _asset_field(match.group("key"))
+            if name is None:
+                continue
+            field = name
+            fields[name] = match.group("value").strip()
+            lines.append(raw.strip())
+            continue
+        if field is not None:
+            fields[field] = f"{fields[field]} {raw.strip()}".strip()
+            lines.append(raw.strip())
+
+    close()
+    return tuple(cards)
 
 
 # --------------------------------------------------------------------------- #

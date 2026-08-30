@@ -6,18 +6,31 @@
 
 区别只在**换候选之后要不要记住这次换**：会话有粘性绑定，换掉了得连原因一起落进会话行；单
 次调用无状态，换了就换了。这一点用 `reselect` 回调交给调用方，本模块不认识会话。
+
+生图与文本共用同一个循环，只有两处不同：计量口径（tokens 事后读 usage / calls 选中即预扣）
+与「怎么把请求发出去」。所以循环抽成 `_drive`，两条业务入口各自绑好自己的驱动与口径。
+预扣型口径失败时不退额：远程用量服务只认增量，没有回滚这一说，多扣一次总比少扣一次让人以
+为还有余量好。
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy.orm import Session
 
-from atelier.providers import router, text_chat
-from atelier.providers.base import CallOutcome, Decision, ProviderError, RetryableError
+from atelier.providers import image_gen, router, text_chat
+from atelier.providers.base import (
+    CallOutcome,
+    Candidate,
+    Decision,
+    ProviderError,
+    RetryableError,
+)
 from atelier.settings import get_settings
 
 _log = structlog.get_logger(__name__)
@@ -29,6 +42,9 @@ RETRY_BACKOFF_SECONDS = 1.5
 
 ChatFn = Callable[..., text_chat.ChatReply]
 """对话调用口。测试与离线冒烟用假实现替换，签名跟 `text_chat.complete` 一致。"""
+
+ImageFn = Callable[..., image_gen.ImageReply]
+"""生图调用口，签名跟 `image_gen.generate` 一致。"""
 
 Reselect = Callable[[ProviderError], Decision]
 """换候选：拿到上一次的失败原因，返回新的 Decision。返回 None 的余地不留——选不出来
@@ -50,18 +66,30 @@ def outcome_of(reply: text_chat.ChatReply) -> CallOutcome:
     )
 
 
-def call(
+def outcome_of_image(reply: image_gen.ImageReply) -> CallOutcome:
+    """生图的记账事实。
+
+    不写 used_delta：这一张在选候选时就已经按单价预扣过了，这里再报一次等于扣两遍。
+    """
+    return CallOutcome(
+        limit_kind="calls",
+        remaining=reply.remaining,
+        latency_ms=reply.latency_ms,
+    )
+
+
+def _drive[Reply](
     runtime: Session,
     agent_code: str,
     decision: Decision,
-    payload: Sequence[dict[str, str]],
-    chat: ChatFn,
+    invoke: Callable[[Candidate], Reply],
+    outcome: Callable[[Reply], CallOutcome],
     *,
-    project_code: str | None = None,
-    task_id: str | None = None,
-    on_delta: Callable[[str], None] | None = None,
-    reselect: Reselect | None = None,
-) -> text_chat.ChatReply:
+    limit_kind: str,
+    project_code: str | None,
+    task_id: str | None,
+    reselect: Reselect | None,
+) -> Reply:
     """发出去并记账。限流退避重试，其余失败换候选。
 
     成功记 `report_success`、彻底失败记 `report_failure`、重试途中记 `note_retryable`——
@@ -71,12 +99,11 @@ def call(
     retries = settings.provider_retry_attempts
     current = decision
     last_error: ProviderError | None = None
-    body = [dict(one) for one in payload]
 
     for switch in range(MAX_CANDIDATE_SWITCHES):
         for attempt in range(1, retries + 2):
             try:
-                reply = chat(current.candidate, body, on_delta=on_delta)
+                reply = invoke(current.candidate)
             except RetryableError as exc:
                 last_error = exc
                 router.note_retryable(runtime, agent_code, current, exc, attempt)
@@ -92,7 +119,7 @@ def call(
                     runtime,
                     agent_code,
                     current,
-                    outcome_of(reply),
+                    outcome(reply),
                     task_id=task_id,
                     project_code=project_code,
                 )
@@ -100,7 +127,13 @@ def call(
 
         assert last_error is not None  # noqa: S101 - 走到这儿必然有异常
         router.report_failure(
-            runtime, agent_code, current, last_error, task_id=task_id, project_code=project_code
+            runtime,
+            agent_code,
+            current,
+            last_error,
+            limit_kind=limit_kind,
+            task_id=task_id,
+            project_code=project_code,
         )
         if switch == MAX_CANDIDATE_SWITCHES - 1 or reselect is None:
             break
@@ -110,10 +143,38 @@ def call(
     raise last_error if last_error is not None else ProviderError("没有可用候选")
 
 
+def call(
+    runtime: Session,
+    agent_code: str,
+    decision: Decision,
+    payload: Sequence[dict[str, str]],
+    chat: ChatFn,
+    *,
+    project_code: str | None = None,
+    task_id: str | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    reselect: Reselect | None = None,
+) -> text_chat.ChatReply:
+    """发一轮对话。"""
+    body = [dict(one) for one in payload]
+    return _drive(
+        runtime,
+        agent_code,
+        decision,
+        lambda candidate: chat(candidate, body, on_delta=on_delta),
+        outcome_of,
+        limit_kind="tokens",
+        project_code=project_code,
+        task_id=task_id,
+        reselect=reselect,
+    )
+
+
 def select(
     runtime: Session,
     agent_code: str,
     *,
+    limit_kind: str = "tokens",
     project_code: str | None = None,
     task_id: str | None = None,
 ) -> Decision:
@@ -125,7 +186,7 @@ def select(
     return router.select_candidate(
         runtime,
         agent_code,
-        limit_kind="tokens",
+        limit_kind=limit_kind,
         task_id=task_id,
         project_code=project_code,
     )
@@ -154,3 +215,60 @@ def run(
     )
     _log.info("oneshot_call", agent=agent_code, task=task_id, label=decision.candidate.label)
     return reply
+
+
+def draw(
+    runtime: Session,
+    agent_code: str,
+    prompt: str,
+    generate: ImageFn,
+    *,
+    negative_prompt: str = "",
+    width: int = image_gen.DEFAULT_SIZE,
+    height: int = image_gen.DEFAULT_SIZE,
+    seed: int | None = None,
+    references: Sequence[str | Path] = (),
+    project_code: str | None = None,
+    task_id: str | None = None,
+) -> image_gen.ImageReply:
+    """出一张图：选候选、调、失败换人再调。
+
+    额度口径是 `calls`，选中即按单价预扣——生图的消耗在调用前就知道，不像 token 要事后
+    读回来。
+    """
+    picked = select(
+        runtime, agent_code, limit_kind="calls", project_code=project_code, task_id=task_id
+    )
+    reply = _drive(
+        runtime,
+        agent_code,
+        picked,
+        lambda candidate: generate(
+            candidate,
+            prompt,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            seed=seed,
+            references=references,
+        ),
+        outcome_of_image,
+        limit_kind="calls",
+        project_code=project_code,
+        task_id=task_id,
+        reselect=lambda _: select(
+            runtime, agent_code, limit_kind="calls", project_code=project_code, task_id=task_id
+        ),
+    )
+    _log.info(
+        "image_call",
+        agent=agent_code,
+        task=task_id,
+        label=picked.candidate.label,
+        size=reply.size_text,
+    )
+    return reply
+
+
+def label_of(decision: Decision) -> Any:
+    return decision.candidate.label

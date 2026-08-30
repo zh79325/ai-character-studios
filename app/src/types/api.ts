@@ -292,6 +292,8 @@ export interface Character {
   /** 状态的人话说法，直接显示；`state` 留给逻辑判断。 */
   state_label: string
   spec_path: string | null
+  /** 人采用的那一张渲染图；null 表示门禁 2 还没过。候选在 `/renders` 里。 */
+  render_path: string | null
   /** 评审抽出的约束清单，后续每一步生图都得守住它。 */
   hard_constraints: Constraint[]
   /** 人工门禁按下的时刻；null 表示这一关还没过。 */
@@ -326,6 +328,51 @@ export interface TaskEvent {
   event: string
   message: string
   payload: Record<string, unknown>
+}
+
+/**
+ * 一张素材规格卡片。
+ *
+ * `card` 是模型写的原文，要一字不改展开给人看：分字段是平台按格式抽的，抽漏了的那句
+ * 往往正是图不对的原因。
+ */
+export interface AssetSpec {
+  code: string
+  name: string
+  category: string
+  size: string
+  format: string
+  file_name: string
+  description: string
+  anchors: string
+  constraints: string[]
+  prompt: string
+  negative_prompt: string
+  card: string
+}
+
+/** 一条产物台账。`is_final` 为真就是人采用的那一张。 */
+export interface Generation {
+  id: string
+  stage: string
+  variant: string | null
+  file_path: string
+  file_hash: string | null
+  is_final: boolean
+  created_at: string
+  /** 当时的卡片与参数快照，半年后想复现这张图靠它。 */
+  asset_spec: Record<string, unknown>
+}
+
+/** 一次渲染图生成的结果。产物落在 `tmp/`，定稿位要等人按门禁。 */
+export interface RenderResult {
+  character_id: string
+  generation_id: string
+  file_path: string
+  width: number
+  height: number
+  spec: AssetSpec
+  params: Record<string, unknown>
 }
 
 // --------------------------------------------------------------------------- //

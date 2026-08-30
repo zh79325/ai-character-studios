@@ -68,6 +68,20 @@ class MessageLike(Protocol):
     folded: bool
 
 
+@dataclass(slots=True)
+class Ask:
+    """单次调用的那一条用户消息。
+
+    评审、提示词翻译这类一问一答的 Agent 没有对话历史，但上下文的拼装顺序（提示词 → 定稿
+    → 项目记忆）跟会话完全一样，没必要另写一套拼法。
+    """
+
+    content: str
+    turn_no: int = 1
+    role: str = "user"
+    folded: bool = False
+
+
 class MemoryLike(Protocol):
     conversation_id: str
     summary: str

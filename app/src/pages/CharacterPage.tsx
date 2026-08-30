@@ -7,6 +7,9 @@
  *
  * 「改某一项重生」「换方向重生」不在这里直接发消息：卡片只把拟好的话递上来，用户在会话里过目
  * 后自己发。平台替用户开口，说错了却算在用户头上。
+ *
+ * 渲染图那张卡片要等门禁 1 过了才出现：设定是它的底本，没定稿就没有可翻译的东西，提前摆上
+ * 按钮只会让用户按一下拿到 409。
  */
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
@@ -17,6 +20,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { listCharacterEvents, readCharacter } from '@/api/characters'
 import { ApiError } from '@/api/client'
 import ChatPanel, { type Handoff } from '@/components/ChatPanel'
+import RenderGateCard from '@/components/RenderGateCard'
 import SpecGateCard from '@/components/SpecGateCard'
 import type { TaskEvent } from '@/types/api'
 
@@ -74,6 +78,7 @@ export default function CharacterPage() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {row?.dir_name ?? ''}
             {row?.spec_path ? ` · 定稿 ${row.spec_path}` : ' · 还没有定稿'}
+            {row?.render_path ? ` · 渲染图 ${row.render_path}` : ''}
           </Typography.Text>
         </Space>
       </Card>
@@ -89,9 +94,16 @@ export default function CharacterPage() {
 
       <Row gutter={16}>
         <Col span={14}>
-          {row && (
-            <SpecGateCard character={row} conversationId={conversationId} onHandoff={setHandoff} />
-          )}
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {row && (
+              <SpecGateCard
+                character={row}
+                conversationId={conversationId}
+                onHandoff={setHandoff}
+              />
+            )}
+            {row && row.gate_spec_confirmed_at !== null && <RenderGateCard character={row} />}
+          </Space>
         </Col>
         <Col span={10}>
           <EventTimeline events={events.data ?? []} loading={events.isLoading} />

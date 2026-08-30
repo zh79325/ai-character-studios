@@ -313,6 +313,7 @@ def make_model(
     sort_no: int = 0,
     enabled: bool = True,
     params: dict[str, Any] | None = None,
+    capabilities: list[str] | None = None,
     limit: tuple[str, int, str] | None = None,
 ) -> ProviderModel:
     """挂一个模型到 provider 下，可顺带绑 Agent 与配额度。
@@ -322,7 +323,7 @@ def make_model(
     provider_model = ProviderModel(
         provider_code=provider.code,
         model_id=model_id,
-        capabilities=["text"],
+        capabilities=capabilities or ["text"],
         sort_no=sort_no,
         enabled=enabled,
         params=params or {},
@@ -344,3 +345,25 @@ def make_model(
         )
     session.commit()
     return provider_model
+
+
+def bind_image_model(
+    session: Session,
+    agent_code: str,
+    *,
+    code: str = "ark",
+    model_id: str = "doubao-seedream-5.0-lite",
+    driver: str = "ark_image",
+    priority: int = 100,
+    limit: tuple[str, int, str] | None = None,
+) -> ProviderModel:
+    """给某个生图 Agent 备一个可用候选。额度口径是 `calls`，选中即预扣。"""
+    provider = make_provider(session, code, priority=priority, driver=driver)
+    return make_model(
+        session,
+        provider,
+        model_id,
+        agent_code=agent_code,
+        capabilities=["t2i"],
+        limit=limit,
+    )

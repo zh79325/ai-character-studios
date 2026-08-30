@@ -130,6 +130,16 @@ class CallOutcome:
     reported_at: datetime | None = None
 
 
+def auth_headers(candidate: Candidate) -> dict[str, str]:
+    """鉴权头。风格配在 provider 上，所有驱动共用这一份判断。
+
+    各驱动各写一遍的话，新加一种鉴权风格时必然只改到其中一个，另一个继续按老规矩发。
+    """
+    if candidate.auth_style == "x-api-key":
+        return {"x-api-key": candidate.api_key}
+    return {"Authorization": f"Bearer {candidate.api_key}"}
+
+
 def parse_remaining(headers: Mapping[str, str], limit_kind: str) -> int | None:
     """从响应头读供应商报告的剩余额度，读不到返回 None（视为无限额）。"""
     lowered = {k.lower(): v for k, v in headers.items()}
