@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from atelier.agents.definitions import CAPABILITIES
 from atelier.db.config_models import AssetCategory, ConfigBase, ModelCatalog, WorkflowDef
 from atelier.db.seed import _prune, _upsert
+from atelier.providers import period
 from atelier.settings import get_settings
 
 MODEL_CATALOG_PK = ("vendor", "plan", "model_id")
@@ -90,6 +91,30 @@ def test_model_catalog_carries_no_credentials() -> None:
     for row in _seeds("model_catalog.json"):
         assert "api_key" not in row
         assert row["base_url"].startswith("https://")
+
+
+def test_every_catalog_row_belongs_to_a_preset() -> None:
+    """没归组的行进不了新建账号的下拉，用户就只能手工抄一遍端点与 driver。"""
+    for row in _seeds("model_catalog.json"):
+        assert row["preset_code"], row["model_id"]
+        assert row["limit_kind"] in {"tokens", "calls", "credits"}, row["model_id"]
+        assert period.normalize(row["default_period"]) == row["default_period"], row["model_id"]
+
+
+def test_one_preset_means_one_endpoint_and_one_key() -> None:
+    """同一预设内 base_url 与 key 前缀必须一致。
+
+    套餐不同就是两个账号（方舟 Coding / Agent 的 key 不通用），归错组会拿一把 key
+    去打另一个端点，而那条路往往不报错只是不走套餐额度、另行计费。
+    """
+    by_preset: dict[str, list[dict[str, Any]]] = {}
+    for row in _seeds("model_catalog.json"):
+        by_preset.setdefault(row["preset_code"], []).append(row)
+
+    for code, rows in by_preset.items():
+        assert len({r["base_url"] for r in rows}) == 1, code
+        assert len({r["key_prefix"] for r in rows}) == 1, code
+        assert len({(r["vendor"], r["plan"]) for r in rows}) == 1, code
 
 
 def test_asset_categories_and_workflows_have_character() -> None:

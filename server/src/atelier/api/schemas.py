@@ -216,6 +216,37 @@ class UsageBoardOut(Schema):
 
 
 # --------------------------------------------------------------------------- #
+# 新建账号的预设
+# --------------------------------------------------------------------------- #
+
+
+class PresetModelOut(Schema):
+    """预设里的一个模型。额度数字不给默认值：套餐买了多少只有用户自己知道。"""
+
+    model_id: str
+    capabilities: list[str]
+    driver: str
+    api_path: str | None
+    limit_kind: str
+    default_period: str
+    remark: str | None
+
+
+class ProviderPresetOut(Schema):
+    """一个套餐一份预设。`code` 是建议值，同一套餐开两个账号得各起一个。"""
+
+    code: str
+    vendor: str
+    plan: str
+    label: str
+    base_url: str
+    driver: str
+    auth_style: str
+    key_prefix: str | None
+    models: list[PresetModelOut]
+
+
+# --------------------------------------------------------------------------- #
 # 导入导出
 # --------------------------------------------------------------------------- #
 

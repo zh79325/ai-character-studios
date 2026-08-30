@@ -6,11 +6,21 @@ import type {
   Provider,
   ProviderIn,
   ProviderPatch,
+  ProviderPreset,
   UsageBoard,
 } from '@/types/api'
 
 export function listProviders(): Promise<Provider[]> {
   return request<Provider[]>('/api/providers')
+}
+
+/**
+ * 新建账号可选的套餐预设，来自配置库的型号目录。
+ *
+ * 只是表单初值，不建账号；它随 seeds 进 Git，不会因人而异，缓存久一点没风险。
+ */
+export function listPresets(): Promise<ProviderPreset[]> {
+  return request<ProviderPreset[]>('/api/providers/presets')
 }
 
 export function createProvider(payload: ProviderIn): Promise<Provider> {

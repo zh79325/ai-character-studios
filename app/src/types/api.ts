@@ -84,6 +84,39 @@ export interface ProviderIn {
 /** PATCH 只改传进来的字段：api_key 传空串是清空，不传是不动。 */
 export type ProviderPatch = Partial<Omit<ProviderIn, 'code' | 'models'>>
 
+/** 预设里的一个模型。额度数字没有默认值，套餐买了多少只有用户自己知道。 */
+export interface PresetModel {
+  model_id: string
+  capabilities: string[]
+  driver: string
+  api_path: string | null
+  /** 这个模型按什么计量：`tokens` / `calls` / `credits`。 */
+  limit_kind: string
+  /** 建议的额度窗口，如 `day+11H`（每天 11 点重置）。 */
+  default_period: string
+  remark: string | null
+}
+
+/**
+ * 一个套餐一份预设，来自配置库的型号目录。
+ *
+ * 只是新建表单的初值：选完仍走 `POST /api/providers`，所以预设错了当场能改。
+ */
+export interface ProviderPreset {
+  /** 建议的账号标识；同一套餐开两个号得各起一个。 */
+  code: string
+  vendor: string
+  plan: string
+  /** 下拉里显示的那行字，如 `火山方舟 · Coding Plan`。 */
+  label: string
+  base_url: string
+  driver: string
+  auth_style: string
+  /** key 的前缀提示；填错 key 往往不报错，只是不走套餐额度。 */
+  key_prefix: string | null
+  models: PresetModel[]
+}
+
 export interface Provider {
   code: string
   name: string

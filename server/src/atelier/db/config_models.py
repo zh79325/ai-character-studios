@@ -21,10 +21,13 @@ class ConfigBase(DeclarativeBase):
 
 
 class ModelCatalog(ConfigBase):
-    """常见供应商、套餐与模型清单，仅作填 provider 配置时的候选提示，不参与路由。
+    """常见供应商、套餐与模型清单，既是填 provider 配置时的候选提示，也是新建账号的预设来源。
 
     同一供应商的不同套餐（如方舟 Coding Plan / Agent Plan）key 与端点完全隔离，
     因此 plan 参与唯一键；同一套餐内不同模型的 driver 与 api_path 也可不同。
+
+    `preset_code` 把同一套餐的几行归成一个预设：新建账号时选它，端点、driver、模型清单
+    与计量口径一次填齐，用户只补 key、优先级与额度数字。它不参与路由，路由只看 providers。
     """
 
     __tablename__ = "model_catalog"
@@ -33,9 +36,12 @@ class ModelCatalog(ConfigBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     vendor: Mapped[str] = mapped_column(String(64))
     plan: Mapped[str] = mapped_column(String(64), default="")
+    preset_code: Mapped[str] = mapped_column(String(64), default="")
     driver: Mapped[str] = mapped_column(String(32))
     model_id: Mapped[str] = mapped_column(String(128))
     capabilities: Mapped[list[str]] = mapped_column(default=list)
+    limit_kind: Mapped[str] = mapped_column(String(16), default="tokens")
+    default_period: Mapped[str] = mapped_column(String(32), default="day")
     base_url: Mapped[str | None] = mapped_column(String(255), default=None)
     api_path: Mapped[str | None] = mapped_column(String(255), default=None)
     auth_style: Mapped[str] = mapped_column(String(16), default="bearer")

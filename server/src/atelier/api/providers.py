@@ -11,7 +11,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Query, Response, status
 
 from atelier.api import provider_ops as ops
-from atelier.api.deps import RuntimeDb
+from atelier.api.deps import ConfigDb, RuntimeDb
 from atelier.api.portable import build_portable, parse_portable
 from atelier.api.schemas import (
     ImportRequest,
@@ -21,15 +21,30 @@ from atelier.api.schemas import (
     ProviderIn,
     ProviderOut,
     ProviderPatch,
+    ProviderPresetOut,
     UsageBoardOut,
 )
+from atelier.providers import presets as presets_mod
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 
 # --------------------------------------------------------------------------- #
-# 额度看板与整包导入导出：路径写在 /{code} 之前，否则会被当成 code 吃掉
+# 额度看板、预设与整包导入导出：路径写在 /{code} 之前，否则会被当成 code 吃掉
 # --------------------------------------------------------------------------- #
+
+
+@router.get("/presets", response_model=list[ProviderPresetOut])
+def list_presets(session: ConfigDb) -> list[ProviderPresetOut]:
+    """新建账号时可选的套餐预设。
+
+    只给初值，不建账号：选完预设仍走 `POST /api/providers`，校验与落库只有那一条路。
+    额度数字不在这里给默认值，拍一个不存在的上限比不限量更坑人。
+    """
+    return [
+        ProviderPresetOut.model_validate(one, from_attributes=True)
+        for one in presets_mod.list_presets(session)
+    ]
 
 
 @router.get("/usage", response_model=UsageBoardOut)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from atelier.db.config_models import ModelCatalog
 from atelier.db.runtime_models import ProviderModel
 from atelier.providers import router as provider_router
 from atelier.providers import usage
@@ -254,3 +255,126 @@ def test_clear_breaker_and_reset_usage(client: TestClient, session: Session) -> 
     cleared = client.delete(f"/api/providers/ark/models/{model.id}/usage")
     assert cleared.json() == {"cleared": 1}
     assert usage.peek(session, model, "tokens").used == 0
+
+
+# --------------------------------------------------------------------------- #
+# 新建账号的预设
+# --------------------------------------------------------------------------- #
+
+
+def _catalog(cfg_session: Session) -> None:
+    cfg_session.add_all(
+        [
+            ModelCatalog(
+                vendor="火山方舟",
+                plan="Coding Plan",
+                preset_code="ark-coding",
+                driver="openai_compat",
+                model_id="glm-5.3",
+                capabilities=["text"],
+                limit_kind="tokens",
+                default_period="day+11H",
+                base_url="https://ark.cn-beijing.volces.com",
+                api_path="/api/coding/v3",
+                key_prefix=None,
+            ),
+            ModelCatalog(
+                vendor="阿里百炼",
+                plan="Token Plan 个人版",
+                preset_code="bailian-token",
+                driver="dashscope_mm",
+                model_id="qwen-image-2.0",
+                capabilities=["t2i", "i2i"],
+                limit_kind="calls",
+                default_period="day+11H",
+                base_url="https://token-plan.cn-beijing.maas.aliyuncs.com",
+                api_path="/api/v1/services/aigc/multimodal-generation/generation",
+                key_prefix="sk-sp-",
+            ),
+        ]
+    )
+    cfg_session.commit()
+
+
+def test_presets_carry_everything_but_the_key(client: TestClient, cfg_session: Session) -> None:
+    """预设要把端点、driver、模型与计量口径都带齐，用户只剩 key、优先级与额度数字要填。"""
+    _catalog(cfg_session)
+
+    rows = client.get("/api/providers/presets").json()
+    assert {row["code"] for row in rows} == {"ark-coding", "bailian-token"}
+
+    one = next(row for row in rows if row["code"] == "bailian-token")
+    assert one["label"] == "阿里百炼 · Token Plan 个人版"
+    assert one["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com"
+    assert one["key_prefix"] == "sk-sp-"
+
+    model = one["models"][0]
+    assert model["model_id"] == "qwen-image-2.0"
+    assert model["capabilities"] == ["t2i", "i2i"]
+    assert model["driver"] == "dashscope_mm"
+    assert (model["limit_kind"], model["default_period"]) == ("calls", "day+11H")
+    assert "api_key" not in model and "api_key" not in one
+
+
+def test_presets_do_not_create_anything(client: TestClient, cfg_session: Session) -> None:
+    """看一眼预设不该凭空建出账号——建账号是用户按「保存」那一下。"""
+    _catalog(cfg_session)
+
+    assert client.get("/api/providers/presets").status_code == 200
+    assert client.get("/api/providers").json() == []
+
+
+def test_preset_code_is_not_swallowed_by_the_code_route(client: TestClient) -> None:
+    """/presets 得排在 /{code} 前面，否则它会被当成一个叫 presets 的账号去查。"""
+    body = client.get("/api/providers/presets")
+    assert body.status_code == 200
+    assert body.json() == []
+
+
+def test_a_preset_lands_through_the_ordinary_create(
+    client: TestClient, cfg_session: Session
+) -> None:
+    """预设只是初值：填完 key 与额度后走的仍是 POST /api/providers 那一条路。"""
+    _catalog(cfg_session)
+    preset = next(
+        row for row in client.get("/api/providers/presets").json() if row["code"] == "ark-coding"
+    )
+
+    payload = {
+        "code": preset["code"],
+        "name": preset["label"],
+        "base_url": preset["base_url"],
+        "driver": preset["driver"],
+        "auth_style": preset["auth_style"],
+        "api_key": "sk-mine",
+        "priority": 10,
+        "models": [
+            {
+                "model_id": m["model_id"],
+                "capabilities": m["capabilities"],
+                "driver": m["driver"],
+                "api_path": m["api_path"],
+                "limits": [
+                    {
+                        "limit_kind": m["limit_kind"],
+                        "max_value": 1_800_000,
+                        "period_expr": m["default_period"],
+                    }
+                ],
+            }
+            for m in preset["models"]
+        ],
+    }
+
+    created = client.post("/api/providers", json=payload)
+    assert created.status_code == 201
+
+    body = created.json()
+    assert body["base_url"] == "https://ark.cn-beijing.volces.com"
+    assert body["models"][0]["endpoint"].endswith("/api/coding/v3")
+    limit = body["models"][0]["limits"][0]
+    assert (limit["limit_kind"], limit["max_value"], limit["period_expr"]) == (
+        "tokens",
+        1_800_000,
+        "day+11H",
+    )

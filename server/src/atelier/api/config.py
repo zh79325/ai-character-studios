@@ -59,9 +59,12 @@ class ModelCatalogOut(Schema):
     id: int
     vendor: str
     plan: str
+    preset_code: str
     driver: str
     model_id: str
     capabilities: list[str]
+    limit_kind: str
+    default_period: str
     base_url: str | None
     api_path: str | None
     auth_style: str

@@ -1,16 +1,41 @@
 /**
  * provider 表单。
  *
+ * 新建时先选一个套餐预设：端点、driver、鉴权头与模型清单都是供应商定死的事实，逐项手填只是
+ * 抄一遍还容易抄错。用户只剩三样东西要填——key、优先级、每个模型的额度数字。预设只给初值，
+ * 保存走的仍是 `POST /api/providers`，所以预设不对当场就能改；「自定义」则完全手填。
+ *
  * api_key 的语义要写清楚：编辑时留空 = 不动原来的（PATCH 不传该字段），
  * 想清空得点「清空 key」——否则用户没法区分「我没改」和「我要删」。
  */
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { App, Button, Drawer, Form, Input, InputNumber, Select, Space, Switch } from 'antd'
-import { useEffect } from 'react'
+import {
+  Alert,
+  App,
+  Button,
+  Checkbox,
+  Drawer,
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
+import { useEffect, useState } from 'react'
 
-import { options as fetchOptions } from '@/api/config'
-import { createProvider, patchProvider } from '@/api/providers'
+import { agents as fetchAgents, options as fetchOptions } from '@/api/config'
+import { createProvider, listPresets, patchProvider } from '@/api/providers'
+import { type ModelRow, pickedModels, rowsFromPreset } from '@/lib/presets'
 import type { Provider, ProviderIn, ProviderPatch } from '@/types/api'
+
+/** 预设下拉里的「自己填」那一项。 */
+const CUSTOM = '__custom__'
+
+const UNITS: Record<string, string> = { tokens: 'token', calls: '次', credits: '积分' }
 
 interface Props {
   open: boolean
@@ -20,7 +45,9 @@ interface Props {
   onSaved: () => void
 }
 
+/** 表单里的一份账号。`preset` 只影响初值，不会提交给后端。 */
 interface FormValues {
+  preset: string
   code: string
   name: string
   base_url: string
@@ -31,6 +58,7 @@ interface FormValues {
   enabled: boolean
   verify_ssl: boolean
   remark?: string
+  models: ModelRow[]
 }
 
 export default function ProviderDrawer({ open, provider, onClose, onSaved }: Props) {
@@ -38,10 +66,25 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
   const [form] = Form.useForm<FormValues>()
   const opts = useQuery({ queryKey: ['options'], queryFn: fetchOptions, staleTime: Infinity })
   const isNew = provider === null
+  const presets = useQuery({
+    queryKey: ['provider-presets'],
+    queryFn: listPresets,
+    staleTime: Infinity,
+    enabled: open && isNew,
+  })
+  const agentList = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => fetchAgents(),
+    staleTime: Infinity,
+    enabled: open && isNew,
+  })
+  const [picked, setPicked] = useState(CUSTOM)
 
   useEffect(() => {
     if (!open) return
+    setPicked(CUSTOM)
     form.setFieldsValue({
+      preset: CUSTOM,
       code: provider?.code ?? '',
       name: provider?.name ?? '',
       base_url: provider?.base_url ?? '',
@@ -52,16 +95,52 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
       enabled: provider?.enabled ?? true,
       verify_ssl: provider?.verify_ssl ?? true,
       remark: provider?.remark ?? '',
+      models: [],
     })
   }, [open, provider, form])
+
+  const chosen = presets.data?.find((one) => one.code === picked) ?? null
+
+  /** 选中一个套餐：把既定事实填进表单，额度数字与 key 留给用户。 */
+  const applyPreset = (code: string) => {
+    setPicked(code)
+    if (code === CUSTOM) {
+      form.setFieldsValue({ models: [] })
+      return
+    }
+    const preset = presets.data?.find((one) => one.code === code)
+    if (!preset) return
+
+    form.setFieldsValue({
+      code: preset.code,
+      name: preset.label,
+      base_url: preset.base_url,
+      driver: preset.driver,
+      auth_style: preset.auth_style as FormValues['auth_style'],
+      // 不绑 Agent 的模型永远轮不到，所以按能力先绑上，用户再减
+      models: rowsFromPreset(preset, agentList.data ?? []),
+    })
+  }
 
   const save = useMutation({
     mutationFn: async (values: FormValues) => {
       if (provider === null) {
-        const payload: ProviderIn = { ...values, remark: values.remark || null, models: [] }
+        const payload: ProviderIn = {
+          code: values.code,
+          name: values.name,
+          base_url: values.base_url,
+          api_key: values.api_key,
+          enabled: values.enabled,
+          priority: values.priority,
+          driver: values.driver,
+          auth_style: values.auth_style,
+          verify_ssl: values.verify_ssl,
+          remark: values.remark || null,
+          models: pickedModels(values.models ?? []),
+        }
         return createProvider(payload)
       }
-      const { code: _code, api_key, ...rest } = values
+      const { code: _code, api_key, preset: _preset, models: _models, ...rest } = values
       const patch: ProviderPatch = { ...rest, remark: values.remark || null }
       // 留空表示不动原来的 key，非空才带上
       if (api_key) patch.api_key = api_key
@@ -84,6 +163,14 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
     onError: (err: Error) => message.error(err.message),
   })
 
+  const periodOptions = Object.entries(opts.data?.period_examples ?? {}).map(([expr, hint]) => ({
+    value: expr,
+    label: `${expr} — ${hint}`,
+  }))
+
+  /** 额度输入框后面那个单位：没它的话「1800000」到底是 token 还是次数得猜。 */
+  const unitOf = (kind: string) => UNITS[kind] ?? kind
+
   return (
     <Drawer
       open={open}
@@ -105,6 +192,34 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
       }
     >
       <Form form={form} layout="vertical" requiredMark="optional">
+        {isNew && (
+          <Form.Item
+            name="preset"
+            label="用哪个套餐"
+            extra="选一个就把端点、driver 与模型清单填齐，你只要补 key、优先级与额度"
+          >
+            <Select
+              loading={presets.isLoading}
+              onChange={applyPreset}
+              options={[
+                ...(presets.data ?? []).map((one) => ({
+                  value: one.code,
+                  label: `${one.label}（${one.models.length} 个模型）`,
+                })),
+                { value: CUSTOM, label: '自定义（端点与模型自己填）' },
+              ]}
+            />
+          </Form.Item>
+        )}
+        {chosen?.key_prefix && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`这个套餐的 key 以 ${chosen.key_prefix} 开头`}
+            description="填错了往往不报错，只是不走套餐额度而另行计费。"
+          />
+        )}
         <Form.Item
           name="code"
           label="账号标识"
@@ -177,7 +292,92 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
         <Form.Item name="remark" label="备注">
           <Input.TextArea rows={2} placeholder="到期时间、限额说明之类" />
         </Form.Item>
+
+        {isNew && chosen !== null && <ModelRows unit={unitOf} periodOptions={periodOptions} />}
       </Form>
     </Drawer>
+  )
+}
+
+/**
+ * 预设带出的模型清单：一行一个，只要填额度数字。
+ *
+ * 模型名、driver、api_path 与计量口径都不给改：那是供应商定的，改了只会报 404。真要改
+ * 得建完在模型抽屉里改，那里每一项都能改。
+ */
+function ModelRows({
+  unit,
+  periodOptions,
+}: {
+  unit: (kind: string) => string
+  periodOptions: { value: string; label: string }[]
+}) {
+  return (
+    <>
+      <Typography.Text strong>模型与额度</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+        额度留空就是不限量——不限量只是不拦，真用完了供应商那边依旧报错。不想用的模型把前面的勾
+        取消，不会建进去。
+      </Typography.Paragraph>
+      <Form.List name="models">
+        {(fields) => (
+          <>
+            {fields.map((field) => (
+              <ModelRowItem
+                key={field.key}
+                name={field.name}
+                unit={unit}
+                periodOptions={periodOptions}
+              />
+            ))}
+          </>
+        )}
+      </Form.List>
+    </>
+  )
+}
+
+function ModelRowItem({
+  name,
+  unit,
+  periodOptions,
+}: {
+  name: number
+  unit: (kind: string) => string
+  periodOptions: { value: string; label: string }[]
+}) {
+  const form = Form.useFormInstance<FormValues>()
+  const row = Form.useWatch(['models', name], form) as ModelRow | undefined
+  if (!row) return null
+
+  return (
+    <Space align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+      <Form.Item name={[name, 'picked']} valuePropName="checked" style={{ marginBottom: 0 }}>
+        <Checkbox />
+      </Form.Item>
+      <Space direction="vertical" size={0} style={{ width: 210 }}>
+        <Tooltip title={row.remark ?? ''}>
+          <Typography.Text style={{ fontSize: 13 }}>{row.model_id}</Typography.Text>
+        </Tooltip>
+        <Space size={4}>
+          {row.capabilities.map((one) => (
+            <Tag key={one} style={{ fontSize: 11, lineHeight: '16px', marginInlineEnd: 2 }}>
+              {one}
+            </Tag>
+          ))}
+        </Space>
+      </Space>
+      <Form.Item name={[name, 'max_value']} style={{ marginBottom: 0, width: 150 }}>
+        <InputNumber
+          min={0}
+          style={{ width: '100%' }}
+          addonAfter={unit(row.limit_kind)}
+          placeholder="不限量"
+        />
+      </Form.Item>
+      <Form.Item name={[name, 'period_expr']} style={{ marginBottom: 0, width: 190 }}>
+        <Select showSearch options={periodOptions} />
+      </Form.Item>
+    </Space>
   )
 }
