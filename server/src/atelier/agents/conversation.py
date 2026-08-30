@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 import uuid
@@ -115,6 +116,8 @@ class ContextInputs:
     addendum: str | None = None
     artifact_path: str | None = None
     artifact_text: str | None = None
+    config_path: str | None = None
+    config_text: str | None = None
     project_memories: list[ProjectMemory] = field(default_factory=list)
     memory: ConversationMemory | None = None
     messages: list[Message] = field(default_factory=list)
@@ -258,6 +261,44 @@ def _default_spec_path(character: Character) -> str:
     return f"{character.dir_name}/{character.name}{DEFAULT_SPEC_SUFFIX}"
 
 
+def config_snapshot(ref: ProjectRef) -> str:
+    """`project.json` 里归 Agent 改的那几段，原样序列化给它看。
+
+    只给这几个键，不给整份：`code` 与 `art_bible` 是平台的账，摆进上下文只会让 Agent 觉得
+    自己也能改。给现值而不是给一句「保持原样」，是因为改设定的会话要说清「哪一处改了」，
+    没有现值它只能整份重写，那正是这套流程要避免的事。
+    """
+    config = projects.read_config(ref.dir)
+    dumped = config.model_dump(mode="json")
+    kept = {key: dumped[key] for key in archive.MERGED_CONFIG_KEYS if key in dumped}
+    return json.dumps(kept, ensure_ascii=False, indent=2)
+
+
+def allowed_draft_targets(
+    project: Session, ref: ProjectRef, conversation: Conversation
+) -> tuple[str, ...]:
+    """这场会话准许写哪些定稿位。
+
+    立项会话只碰项目根上那两份；角色会话只碰自己那个角色目录。不设这道栅栏的话，`spec_writer`
+    声明一句 `[草稿开始: art-bible.md]` 就能把整个项目的视觉真相顶掉——它自己未必是故意的，
+    但用户在草稿面板上看到的只是「一份 art-bible.md 的改动」，很容易顺手确认。
+    """
+    if conversation.target_kind == "project":
+        config = projects.read_config(ref.dir)
+        return (config.art_bible, layout.PROJECT_JSON)
+    character = _character(project, conversation.target_ref)
+    return (f"{character.dir_name}/",)
+
+
+def _check_allowed(
+    project: Session, ref: ProjectRef, conversation: Conversation, relative: str
+) -> None:
+    allowed = allowed_draft_targets(project, ref, conversation)
+    if any(relative == one or (one.endswith("/") and relative.startswith(one)) for one in allowed):
+        return
+    raise Conflict(f"这场会话只能写 {'、'.join(allowed)}，{relative} 不在它的职责范围内")
+
+
 def resolve_draft_path(
     project: Session, ref: ProjectRef, conversation: Conversation, raw: str
 ) -> str:
@@ -265,7 +306,8 @@ def resolve_draft_path(
 
     Agent 只会写文件名（提示词里就是 `{角色名}角色设定.md`），角色会话下要把它归到该角色
     的目录里去，否则一堆设定文档全落在项目根上。越界的路径直接由 `resolve_inside` 拦住：
-    模型写出 `../../.ssh/config` 不该有任何机会落地。
+    模型写出 `../../.ssh/config` 不该有任何机会落地。路径合法之后还要过一道职责白名单——
+    在项目目录里不等于是这场会话该改的东西。
     """
     candidate = raw.strip().replace("\\", "/").lstrip("/")
     if not candidate:
@@ -278,7 +320,9 @@ def resolve_draft_path(
     target = layout.resolve_inside(ref.dir, candidate)
     if target == ref.dir.resolve():
         raise Conflict("草稿的落盘位置不能是项目目录本身")
-    return ref.relative(target)
+    relative = ref.relative(target)
+    _check_allowed(project, ref, conversation, relative)
+    return relative
 
 
 # --------------------------------------------------------------------------- #
@@ -299,11 +343,15 @@ def _addendum(project: Session, agent_code: str) -> str | None:
 def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> ContextInputs:
     agent = get_agent(conversation.agent_code)
     artifact_path, artifact_text = artifact_of(project, ref, conversation)
+    # 只有立项会话改得动 project.json，角色会话看见它也用不上，白占预算
+    is_project = conversation.target_kind == "project"
     return ContextInputs(
         agent=agent,
         addendum=_addendum(project, conversation.agent_code),
         artifact_path=artifact_path,
         artifact_text=artifact_text,
+        config_path=layout.PROJECT_JSON if is_project else None,
+        config_text=config_snapshot(ref) if is_project else None,
         project_memories=enabled_memories(project),
         memory=memory_of(project, conversation.id),
         messages=messages_of(project, conversation.id),
@@ -318,6 +366,8 @@ def _assemble(inputs: ContextInputs) -> context.Assembled:
         addendum=inputs.addendum,
         artifact_path=inputs.artifact_path,
         artifact_text=inputs.artifact_text,
+        config_path=inputs.config_path,
+        config_text=inputs.config_text,
         project_memories=inputs.project_memories,
         memory=inputs.memory,
         recent_turns=settings.recent_turns,
@@ -618,6 +668,19 @@ def _apply_progress(memory: ConversationMemory | None, progress: parsing.Progres
 # --------------------------------------------------------------------------- #
 # 草稿
 # --------------------------------------------------------------------------- #
+
+
+def draft_warnings(ref: ProjectRef, target_path: str, content: str) -> list[str]:
+    """这份草稿沉下去之前该让用户知道的事。
+
+    不拦沉淀，只摆到台面上：写一半先存下来、回头接着聊是正当的用法，但 art bible 里没填的
+    那几节、project.json 里不会生效的那几键，得在按确认之前就看得见。
+    """
+    if target_path.rsplit("/", 1)[-1] == layout.PROJECT_JSON:
+        return archive.config_patch_warnings(ref, content)
+    if target_path == projects.read_config(ref.dir).art_bible:
+        return projects.art_bible_gaps(content)
+    return []
 
 
 def _store_drafts(

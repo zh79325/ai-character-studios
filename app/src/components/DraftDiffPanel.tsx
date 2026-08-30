@@ -189,6 +189,20 @@ function DiffView({ conversationId, draft }: { conversationId: string; draft: Dr
           description="它是照旧版定稿改的，之间那份被别处改过。直接沉淀会盖掉别人的修改，所以后端会拒收——让 Agent 照当前定稿再拟一版。"
         />
       )}
+      {diff.data.warnings.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="沉下去会留这几处空"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {diff.data.warnings.map((one) => (
+                <li key={one}>{one}</li>
+              ))}
+            </ul>
+          }
+        />
+      )}
       <div
         style={{
           border: '1px solid #f0f0f0',

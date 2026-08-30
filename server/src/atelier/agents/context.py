@@ -4,6 +4,7 @@
 
 1. Agent 提示词（工程级 system + 项目级附加指令）
 2. 目标当前定稿全文（`art-bible.md` 或 `{角色名}角色设定.md`，没有则跳过）
+   外加项目配置现状（`project.json` 里 Agent 能改的那几段），立项会话要照它做增量调整
 3. 项目长期记忆（用户偏好、口味、明确禁忌）
 4. 会话记忆：滚动摘要 + 已拍板结论 + 待确认问题
 5. 最近 N 轮原文
@@ -32,6 +33,7 @@ MIN_KEEP_MESSAGES = 2
 """
 
 SECTION_ARTIFACT = "## 当前定稿全文（{path}）"
+SECTION_PROJECT_CONFIG = "## 项目配置现状（{path}，只有这几个键归你改）"
 SECTION_PROJECT_MEMORY = "## 项目长期记忆（用户明确表达过的，务必遵守）"
 SECTION_CONV_SUMMARY = "## 本次会话已压缩的前情摘要"
 SECTION_DECISIONS = "## 已拍板结论"
@@ -135,6 +137,8 @@ def context_block(
     *,
     artifact_path: str | None,
     artifact_text: str | None,
+    config_path: str | None = None,
+    config_text: str | None = None,
     project_memories: Sequence[ProjectMemoryLike] = (),
     memory: MemoryLike | None = None,
 ) -> str:
@@ -144,6 +148,12 @@ def context_block(
     if artifact_path is not None:
         body = (artifact_text or "").strip() or NO_ARTIFACT
         parts.append(f"{SECTION_ARTIFACT.format(path=artifact_path)}\n\n{body}")
+
+    # 配置现状只给能改的那几段：Agent 看得见现值才谈得上「只改这一处」，看得见键名才不会
+    # 自己发明一个平台不认识的键——那种建议合并时会被静默丢掉，用户以为改了其实没改。
+    if config_path is not None and (config_text or "").strip():
+        section = SECTION_PROJECT_CONFIG.format(path=config_path)
+        parts.append(f"{section}\n\n```json\n{(config_text or '').strip()}\n```")
 
     enabled = [m for m in project_memories if m.enabled and m.content.strip()]
     if enabled:
@@ -189,6 +199,8 @@ def assemble(
     addendum: str | None = None,
     artifact_path: str | None = None,
     artifact_text: str | None = None,
+    config_path: str | None = None,
+    config_text: str | None = None,
     project_memories: Sequence[ProjectMemoryLike] = (),
     memory: MemoryLike | None = None,
     recent_turns: int = 8,
@@ -199,6 +211,8 @@ def assemble(
     block = context_block(
         artifact_path=artifact_path,
         artifact_text=artifact_text,
+        config_path=config_path,
+        config_text=config_text,
         project_memories=project_memories,
         memory=memory,
     )

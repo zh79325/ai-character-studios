@@ -209,6 +209,17 @@ def test_diff给两份全文交前端渲染(client: TestClient, talk: str, proje
     assert "湿滑金属" in body["draft"]
 
 
+def test_diff顺手带上没写完的地方(client: TestClient, talk: str) -> None:
+    """这一屏是用户按下沉淀前看的最后一眼，缺的节得就在这里说，往后没机会了。"""
+    draft_id = send(client, talk, "拟一版")["draft_ids"][0]  # type: ignore[index]
+
+    body = client.get(f"/api/conversations/{talk}/drafts/{draft_id}/diff").json()
+
+    # 剧本里的草稿只写了一句话，六节里的其余几节都还空着
+    assert len(body["warnings"]) > 0
+    assert any("风格禁止项" in one for one in body["warnings"])
+
+
 def test_别的会话的草稿看不到(client: TestClient, talk: str) -> None:
     send(client, talk, "拟一版")
     other = client.post(

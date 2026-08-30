@@ -324,6 +324,7 @@ def read_diff(
         current=current,
         draft=draft.content,
         stale=_is_stale(ref, draft),
+        warnings=engine.draft_warnings(ref, draft.target_path, draft.content),
     )
 
 

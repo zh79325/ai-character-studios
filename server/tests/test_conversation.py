@@ -403,6 +403,76 @@ def test_草稿路径越不出项目目录(project_db: Session, project: Project
         engine.resolve_draft_path(project_db, project, conversation, "../../.ssh/config")
 
 
+def test_立项会话看得见项目配置现状(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """看不见现值，改设定的会话只能整份重写；看不见键名，它会发明平台静默丢弃的键。"""
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat("知道了。")
+
+    send(project_db, session, project, conversation, "把评审改严", chat)
+
+    system = chat.system_of_last
+    assert "项目配置现状" in system
+    assert "review_mode" in system
+    # 平台自己的账不摆进去，免得 Agent 以为这两个键也归它改
+    assert '"code"' not in system
+
+
+def test_角色会话不看项目配置(project_db: Session, project: ProjectRef, session: Session) -> None:
+    """角色会话改不了项目配置，摆进去只是白占上下文预算。"""
+    bind_text_model(session, WRITER)
+    make_character(project_db)
+    conversation = engine.start(
+        project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
+    )
+    chat = ScriptedChat("知道了。")
+
+    send(project_db, session, project, conversation, "写设定", chat)
+
+    assert "项目配置现状" not in chat.system_of_last
+
+
+def test_立项会话只写得了项目根上那两份(project_db: Session, project: ProjectRef) -> None:
+    """路径在项目目录内不等于归这场会话管：立项 Agent 顺手改角色设定，是越权而不是帮忙。"""
+    conversation = start_project_talk(project_db)
+
+    assert engine.resolve_draft_path(project_db, project, conversation, "art-bible.md")
+    assert engine.resolve_draft_path(project_db, project, conversation, layout.PROJECT_JSON)
+    with pytest.raises(Conflict, match="不在它的职责范围内"):
+        engine.resolve_draft_path(
+            project_db, project, conversation, "characters/赤瞳/赤瞳角色设定.md"
+        )
+
+
+def test_角色会话改不了别的角色(project_db: Session, project: ProjectRef) -> None:
+    """带目录的路径不再被归位，所以这里真的会写到别人头上，得有一道白名单拦着。"""
+    make_character(project_db)
+    conversation = engine.start(
+        project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
+    )
+
+    assert engine.resolve_draft_path(project_db, project, conversation, "赤瞳角色设定.md")
+    with pytest.raises(Conflict, match="不在它的职责范围内"):
+        engine.resolve_draft_path(project_db, project, conversation, "characters/蓝羽/设定.md")
+    with pytest.raises(Conflict, match="不在它的职责范围内"):
+        engine.resolve_draft_path(
+            project_db, project, conversation, "characters/赤瞳/../art-bible.md"
+        )
+
+
+def test_草稿里的空洞在确认之前就摆出来(project: ProjectRef) -> None:
+    """art bible 缺的节会一路传进每一张图的 prompt，得在按下沉淀之前说。"""
+    gaps = engine.draft_warnings(project, "art-bible.md", "# 规范\n\n## 1 视觉身份一句话\n\n冷。\n")
+    assert any("色彩系统" in one for one in gaps)
+
+    ignored = engine.draft_warnings(project, layout.PROJECT_JSON, '{"code": "别的"}')
+    assert any("忽略" in one for one in ignored)
+
+    # 角色设定文档没有这类结构约定，别硬凑提醒
+    assert engine.draft_warnings(project, "characters/赤瞳/赤瞳角色设定.md", "# 赤瞳\n") == []
+
+
 # --------------------------------------------------------------------------- #
 # 确认沉淀
 # --------------------------------------------------------------------------- #

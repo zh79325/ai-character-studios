@@ -169,6 +169,42 @@ def test_配置草稿顶层必须是对象(project: ProjectRef) -> None:
         commit(project, layout.PROJECT_JSON, "[1, 2, 3]")
 
 
+def test_枚举外的值是拒收而不是服务器出错(project: ProjectRef) -> None:
+    """模型往 review_mode 里写一个自己发明的词很常见，那是一次拒收，不该在介面上弹 500。"""
+    with pytest.raises(Conflict, match="合并后不合法"):
+        commit(project, layout.PROJECT_JSON, json.dumps({"review_mode": "随便看看"}))
+
+
+# --------------------------------------------------------------------------- #
+# 配置草稿的事前提醒
+# --------------------------------------------------------------------------- #
+
+
+def test_改得动的键不报提醒(project: ProjectRef) -> None:
+    patch = json.dumps({"style": {"art_style": "国风写实"}, "defaults": {"image_size": 1024}})
+
+    assert archive.config_patch_warnings(project, patch) == []
+
+
+def test_不认识的键要先说一声(project: ProjectRef) -> None:
+    """合并时它是静默丢掉的，不说用户会以为那一行建议已经生效。"""
+    patch = json.dumps({"style": {"art_style": "国风"}, "code": "hijacked", "自创键": 1})
+
+    warnings = archive.config_patch_warnings(project, patch)
+
+    assert len(warnings) == 1
+    assert "code" in warnings[0] and "自创键" in warnings[0]
+    assert "忽略" in warnings[0]
+
+
+def test_沉下去会被拒的草稿提前就能看出来(project: ProjectRef) -> None:
+    assert "JSON" in archive.config_patch_warnings(project, "{这不是 json")[0]
+    assert (
+        "合并后不合法"
+        in archive.config_patch_warnings(project, json.dumps({"review_mode": "随便"}))[0]
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 素材台账
 # --------------------------------------------------------------------------- #

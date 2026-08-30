@@ -543,6 +543,64 @@ def forbidden_terms(text: str) -> list[str]:
     return terms
 
 
+ART_BIBLE_SECTIONS: tuple[tuple[int, str], ...] = (
+    (1, "视觉身份一句话"),
+    (2, "氛围与光照"),
+    (3, "形状语言"),
+    (4, "色彩系统"),
+    (5, "资产标准"),
+    (6, FORBIDDEN_SECTION),
+)
+"""一份能用的 art bible 必须有的六节。下游真的按节抽内容，缺一节就是一处抽不到。"""
+
+
+def _section_bodies(text: str) -> dict[str, list[str]]:
+    """按二级标题切段，键是标题行原文。"""
+    bodies: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        if raw.strip().startswith("##"):
+            current = raw.strip()
+            bodies[current] = []
+            continue
+        if current is not None:
+            bodies[current].append(raw)
+    return bodies
+
+
+def _has_content(lines: list[str]) -> bool:
+    """这一节除了注释与表格分隔线之外还剩下东西吗。"""
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("<!--") or set(line) <= set("|-: "):
+            continue
+        return True
+    return False
+
+
+def art_bible_gaps(text: str) -> list[str]:
+    """这份 art bible 还差哪几处，一条一句人话。
+
+    给的是提醒而不是禁止：写到一半先沉下去、回头接着聊是正当的用法，但留着 `待填`
+    的那几节会直接被 `prompt_smith` 拼进 prompt、被 `vision_reviewer` 当标准用，用户得在
+    按确认之前就看见这件事。
+    """
+    if not text.strip():
+        return ["这份 art bible 还是空的"]
+
+    bodies = _section_bodies(text)
+    gaps: list[str] = []
+    for number, name in ART_BIBLE_SECTIONS:
+        heading = next((key for key in bodies if name in key), None)
+        if heading is None:
+            gaps.append(f"缺「{number} {name}」一节")
+        elif not _has_content(bodies[heading]):
+            gaps.append(f"「{number} {name}」下面是空的")
+        elif PLACEHOLDER in "\n".join(bodies[heading]):
+            gaps.append(f"「{number} {name}」里还留着「{PLACEHOLDER}」")
+    return gaps
+
+
 # --------------------------------------------------------------------------- #
 # 目录扫描
 # --------------------------------------------------------------------------- #

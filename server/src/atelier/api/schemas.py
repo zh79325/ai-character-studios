@@ -489,6 +489,8 @@ class DiffOut(Schema):
     current: str
     draft: str
     stale: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    """沉下去之前该知道的事（art bible 还空着的节、不会生效的配置键），不拦只提醒。"""
 
 
 class ProjectMemoryOut(Schema):

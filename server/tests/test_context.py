@@ -112,6 +112,35 @@ def test_没有目标文件时整段不出现() -> None:
     assert "当前定稿全文" not in assembled.messages[0].content
 
 
+def test_配置现状接在定稿后面() -> None:
+    """立项会话要改 project.json，看不见现值就只能整份重写。"""
+    assembled = context.assemble(
+        agent(),
+        [],
+        artifact_path="art-bible.md",
+        artifact_text="# 视觉规范",
+        config_path="project.json",
+        config_text='{\n  "style": {"art_style": "赛博朋克"}\n}',
+        project_memories=[FakeProjectMemory("fact", "目标平台是 PC")],
+    )
+    system = assembled.messages[0].content
+
+    positions = [
+        system.index("当前定稿全文"),
+        system.index("项目配置现状"),
+        system.index("项目长期记忆"),
+    ]
+    assert positions == sorted(positions)
+    assert "赛博朋克" in system
+
+
+def test_没给配置就不出这一段() -> None:
+    """角色会话改不到 project.json，把它摆进上下文只是白占预算。"""
+    assembled = context.assemble(agent(), [], config_path="project.json", config_text="  ")
+
+    assert "项目配置现状" not in assembled.messages[0].content
+
+
 def test_空的会话记忆不产生空段落() -> None:
     assembled = context.assemble(agent(), [], memory=FakeMemory())
     system = assembled.messages[0].content

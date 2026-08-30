@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 
 from atelier.assets import layout, projects
 from atelier.assets.projects import ProjectRef
@@ -119,8 +120,38 @@ def _merge_project_json(ref: ProjectRef, content: str) -> str:
         else:
             merged[key] = value
 
-    updated = projects.ProjectConfig.model_validate(merged)
+    try:
+        updated = projects.ProjectConfig.model_validate(merged)
+    except ValidationError as exc:
+        # 合并后站不住脚就是一次拒收，不是平台出错：Agent 往 `review_mode` 里写了一个
+        # 枚举外的值这种事，得拿人话告诉用户，而不是介面上弹一个 500。
+        raise Conflict(
+            f"草稿里的 {layout.PROJECT_JSON} 合并后不合法：{exc.errors()[0]['msg']}"
+        ) from exc
     return json.dumps(updated.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
+
+
+def config_patch_warnings(ref: ProjectRef, content: str) -> list[str]:
+    """这份 `project.json` 草稿里有哪几处沉下去不会生效。
+
+    在确认之前就说：不认识的键合并时是静默丢掉的，用户会以为那一行建议已经生效。
+    """
+    try:
+        patch = json.loads(content)
+    except json.JSONDecodeError as exc:
+        return [f"不是合法 JSON（第 {exc.lineno} 行：{exc.msg}），沉淀会被拒"]
+    if not isinstance(patch, dict):
+        return ["顶层必须是对象，沉淀会被拒"]
+
+    warnings: list[str] = []
+    ignored = [key for key in patch if key not in MERGED_CONFIG_KEYS]
+    if ignored:
+        warnings.append(f"「{'、'.join(ignored)}」不在平台允许 Agent 改的键里，沉淀时会被忽略")
+    try:
+        _merge_project_json(ref, content)
+    except Conflict as exc:
+        warnings.append(str(exc))
+    return warnings
 
 
 def _meta_dir(ref: ProjectRef, target: Path) -> Path | None:

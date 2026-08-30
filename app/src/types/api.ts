@@ -387,6 +387,8 @@ export interface Diff {
   current: string
   draft: string
   stale: boolean
+  /** 这份草稿沉下去会留下的空洞或不生效之处；只是提醒，不拦沉淀。 */
+  warnings: string[]
 }
 
 export interface ProjectMemoryItem {
