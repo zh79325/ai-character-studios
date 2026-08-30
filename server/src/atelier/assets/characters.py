@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,10 +47,16 @@ SPEC_DRAFTING = STATES[0][0]
 SPEC_CONFIRMED = STATES[1][0]
 RENDER_GENERATED = STATES[2][0]
 RENDER_CONFIRMED = STATES[3][0]
+VIEWS_GENERATED = STATES[4][0]
+VIEWS_CONFIRMED = STATES[5][0]
 
 SPEC_SUFFIX = "角色设定.md"
 RENDER_SUFFIX = "渲染图"
 RENDER_DIR = "images"
+VIEWS_DIR = RENDER_DIR
+ASSET_CATEGORY = "character"
+"""文件名的类别段。定稿名统一是 `{类别}_{角色}_{变体}.{ext}`，四张视图的名字由平台拼
+（卡片只给了渲染图那一张的文件名），所以类别段得在代码里有一个口径。"""
 
 _ORDER = {code: index for index, (code, _) in enumerate(STATES)}
 _LABELS = dict(STATES)
@@ -206,7 +213,7 @@ def confirm_spec(
             "spec_path": character.spec_path,
             "state": character.state,
             "note": note,
-            "hard_constraints": len(_constraint_list(character)),
+            "hard_constraints": len(hard_constraints(character)),
         },
     )
     sync_meta(ref, character)
@@ -307,6 +314,71 @@ def reject_render(project: Session, character: Character, *, note: str) -> Chara
     return character
 
 
+# --------------------------------------------------------------------------- #
+# S4/S5：四视图
+# --------------------------------------------------------------------------- #
+
+
+def views_target(character: Character, variant: str, suffix: str = ".png") -> str:
+    """某一个视角的定稿位。
+
+    名字里不带版本也不带时间戳：下游引用的是「这个角色的正面图」，带版本号的话每次换定稿
+    都要改一遍引用。想知道它是哪一版，看 `meta.json` 里这一条的 `source_path`。
+    """
+    stem = f"{ASSET_CATEGORY}_{character.name}_{variant}{suffix}"
+    return f"{character.dir_name}/{VIEWS_DIR}/{layout.safe_dir_name(stem)}"
+
+
+def view_paths(character: Character) -> dict[str, str]:
+    """已定稿的四张视图：`{变体: 相对路径}`。还没定稿就是空字典。
+
+    台账里每个变体那一行 `is_final` 才是原始事实，这里存的是结论副本——理由跟 `render_path`
+    一样：建模、绑骨每一步都要拿它当输入，每次去台账里筛一遍不如把结论存在角色行上。
+    """
+    stored = character.params.get("views") if character.params else None
+    if not isinstance(stored, dict):
+        return {}
+    return {str(key): str(value) for key, value in stored.items() if isinstance(value, str)}
+
+
+def confirm_views(
+    project: Session,
+    ref: ProjectRef,
+    character: Character,
+    *,
+    paths: Mapping[str, str],
+    note: str = "",
+) -> Character:
+    """四张视图定稿，推到 S5。
+
+    这一步不是第三道人工门禁，而是「人选输入」：建模只吃定稿位上的那四张，所以得有人指明让
+    哪几张上位。四个视角一个都不能少：缺一张就会让建模拿三张去猜第四个面，而猜出来的那一
+    面要到绑骨之后才看得出不对。
+    """
+    require_state(character, VIEWS_GENERATED, action="定稿四视图")
+    if at_least(character, VIEWS_CONFIRMED):
+        raise Conflict(f"{character.name} 的四视图已经定稿过了")
+    if not paths:
+        raise Conflict("没有指定要采用哪几张视图")
+    missing = [relative for relative in paths.values() if not ref.absolute(relative).is_file()]
+    if missing:
+        raise Conflict(f"视图 {missing[0]} 不在磁盘上了，重新生一批再定稿")
+
+    character.state = VIEWS_CONFIRMED
+    character.params = {**character.params, "views": dict(paths)}
+    record_event(
+        project,
+        character.id,
+        "views_confirmed",
+        note or f"人工采用 {character.name} 的四视图",
+        {"views": dict(paths), "state": character.state, "note": note},
+    )
+    sync_meta(ref, character)
+    project.commit()
+    _log.info("views_confirmed", id=character.id, views=len(paths))
+    return character
+
+
 def advance(project: Session, ref: ProjectRef, character: Character, state: str) -> Character:
     """把状态推到下一步。只允许往前，且只能一步一步走。
 
@@ -344,9 +416,19 @@ def _moment(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _constraint_list(character: Character) -> list[dict[str, str]]:
+def hard_constraints(character: Character) -> list[dict[str, str]]:
+    """硬性约束清单（`spec_reviewer` 抽出来的可数项）。
+
+    开成公共的：四视图的背面图要把附属结构的数量强制注入 prompt，拿的就是这份清单。
+    """
     items = character.hard_constraints.get("items") if character.hard_constraints else None
-    return [one for one in items if isinstance(one, dict)] if isinstance(items, list) else []
+    if not isinstance(items, list):
+        return []
+    return [
+        {str(key): str(value) for key, value in one.items()}
+        for one in items
+        if isinstance(one, dict)
+    ]
 
 
 def meta_path(ref: ProjectRef, character: Character) -> Path:
@@ -365,8 +447,9 @@ def sync_meta(ref: ProjectRef, character: Character) -> None:
         "state": character.state,
         "spec_path": character.spec_path,
         "render_path": character.render_path,
+        "views": view_paths(character),
         "gate_spec_confirmed_at": _moment(character.gate_spec_confirmed_at),
         "gate_render_confirmed_at": _moment(character.gate_render_confirmed_at),
-        "hard_constraints": _constraint_list(character),
+        "hard_constraints": hard_constraints(character),
     }
     archive.merge_meta(meta_path(ref, character), {"character": snapshot})

@@ -380,6 +380,8 @@ class CharacterOut(Schema):
     spec_path: str | None = None
     render_path: str | None = None
     """定稿渲染图。前端据此在列表里直接显缩略图。"""
+    view_paths: dict[str, str] = Field(default_factory=dict)
+    """定稿的四视图 `{视角: 相对路径}`。没定稿就是空的，建模那一步吃的就是这四张。"""
     hard_constraints: list[ConstraintOut] = Field(default_factory=list)
     """最近一次评审翻译出来的硬约束。后续每张图对着它逐条判定。"""
     gate_spec_confirmed_at: str | None = None
@@ -470,6 +472,92 @@ class RenderOut(Schema):
 
 class RenderAdoptIn(GateIn):
     generation_id: str = Field(min_length=1, description="要采用的那一张")
+
+
+# --------------------------------------------------------------------------- #
+# 四视图
+# --------------------------------------------------------------------------- #
+
+
+class ViewsIn(Schema):
+    variants: list[str] = Field(
+        default_factory=list,
+        description="只生这几个视角（front/right/back/left），空着就是四个都生",
+    )
+    seed: int | None = Field(default=None, description="四张共用一个种子，不给就交给供应商随机")
+
+
+class ViewImageOut(Schema):
+    """一个视角出来的一张候选。"""
+
+    variant: str
+    label: str
+    generation_id: str
+    file_path: str
+    """落在 `tmp/` 里的候选位。定稿位要等人选完输入才有。"""
+
+    width: int
+    height: int
+    problems: list[str] = Field(default_factory=list)
+    """机器量出来的问题（背景不纯、尺寸不对）。不为空也照样给图：判定归评审与人工。"""
+
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ViewFailureOut(Schema):
+    variant: str
+    label: str
+    reason: str
+
+
+class ViewSetOut(Schema):
+    character_id: str
+    state: str
+    state_label: str
+    images: list[ViewImageOut] = Field(default_factory=list)
+    failures: list[ViewFailureOut] = Field(default_factory=list)
+    """没出来的那几个视角。一个失败不拖累其他三个，用户重生那一张就行。"""
+
+    references: list[str] = Field(default_factory=list)
+    """两张参考图：姿势模版与定稿渲染图。"""
+
+    size_complaint: str | None = None
+    ok: bool
+
+
+class ViewReviewIn(Schema):
+    mode: Literal["full", "lean", "solo"] | None = Field(
+        default=None, description="盖掉项目的 review_mode，只对这一次生效"
+    )
+    regenerate: bool = Field(
+        default=False, description="REJECT 时要不要自动重生被点名的那几张（要花额度）"
+    )
+
+
+class ViewVerdictOut(Schema):
+    variants: list[str]
+    decision: str
+    sections: dict[str, list[str]] = Field(default_factory=dict)
+    text: str
+    """裁决全文。卡片上原样展示——摘一句话用户判断不了该不该定稿。"""
+
+
+class ViewReviewOut(Schema):
+    character_id: str
+    mode: str
+    decision: str
+    """整批结论，取最严那一档。`solo` 没审就是空串。"""
+
+    approved: bool
+    attempt: int
+    regenerated: int
+    manual: bool
+    skipped: bool
+    verdicts: list[ViewVerdictOut] = Field(default_factory=list)
+
+
+class ViewsAdoptIn(GateIn):
+    picks: dict[str, str] = Field(description="`{视角: generation_id}`，四个视角一个都不能少")
 
 
 class AdvanceIn(Schema):

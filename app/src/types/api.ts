@@ -294,6 +294,8 @@ export interface Character {
   spec_path: string | null
   /** 人采用的那一张渲染图；null 表示门禁 2 还没过。候选在 `/renders` 里。 */
   render_path: string | null
+  /** 定稿的四视图 `{视角: 相对路径}`。空对象表示还没定稿，建模吃的就是这四张。 */
+  view_paths: Record<string, string>
   /** 评审抽出的约束清单，后续每一步生图都得守住它。 */
   hard_constraints: Constraint[]
   /** 人工门禁按下的时刻；null 表示这一关还没过。 */
@@ -373,6 +375,67 @@ export interface RenderResult {
   height: number
   spec: AssetSpec
   params: Record<string, unknown>
+}
+
+/** 四视图里的一张。`problems` 是机器量出来的病，空数组就是白底与画幅都过了。 */
+export interface ViewImage {
+  /** `front` / `right` / `back` / `left`。定稿时要拿它当键。 */
+  variant: string
+  /** 视角的人话说法，直接显。 */
+  label: string
+  generation_id: string
+  file_path: string
+  width: number
+  height: number
+  problems: string[]
+  /** 生效参数快照：模型、请求尺寸与实际尺寸。 */
+  params: Record<string, unknown>
+}
+
+/** 没画出来的那一个视角。其他三张照旧留着，重生只重这一张。 */
+export interface ViewFailure {
+  variant: string
+  label: string
+  reason: string
+}
+
+/** 一批四视图的结果。四张齐了才会推到 S4。 */
+export interface ViewSet {
+  character_id: string
+  state: string
+  state_label: string
+  images: ViewImage[]
+  failures: ViewFailure[]
+  /** 传进去的两张参考图：姿势模版在前，定稿渲染图在后。 */
+  references: string[]
+  /** 四张画幅不一致时的说明。不拦，但建模前得让人看见。 */
+  size_complaint: string | null
+  /** 四个角度都在且机器没量出问题。 */
+  ok: boolean
+}
+
+/** 一次调用的看图裁决，以及它审的是哪几个视角。 */
+export interface ViewVerdict {
+  variants: string[]
+  decision: string
+  sections: Record<string, string[]>
+  /** 裁决全文，原样展示。 */
+  text: string
+}
+
+/** 一轮四视图评审的结果。裁决只能拦不能放行，定稿仍要人来选。 */
+export interface ViewReview {
+  character_id: string
+  /** `full` 每张一次、`lean` 整批一次、`solo` 不审。 */
+  mode: string
+  decision: string
+  approved: boolean
+  attempt: number
+  regenerated: number
+  manual: boolean
+  /** `solo` 模式根本没调用评审。 */
+  skipped: boolean
+  verdicts: ViewVerdict[]
 }
 
 // --------------------------------------------------------------------------- //

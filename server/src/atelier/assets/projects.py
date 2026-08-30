@@ -673,6 +673,8 @@ def character_row(row: Character) -> dict[str, Any]:
     列表与详情共用这一份：两处各拼一遍的话，加字段时总会只加到其中一边。
     """
     constraints = row.hard_constraints.get("items") if row.hard_constraints else None
+    stored = row.params.get("views") if row.params else None
+    adopted = stored if isinstance(stored, dict) else {}
     return {
         "id": row.id,
         "name": row.name,
@@ -680,6 +682,9 @@ def character_row(row: Character) -> dict[str, Any]:
         "state": row.state,
         "spec_path": row.spec_path,
         "render_path": row.render_path,
+        "view_paths": {
+            str(key): str(value) for key, value in adopted.items() if isinstance(value, str)
+        },
         "hard_constraints": [one for one in constraints or [] if isinstance(one, dict)],
         "gate_spec_confirmed_at": (
             row.gate_spec_confirmed_at.isoformat()

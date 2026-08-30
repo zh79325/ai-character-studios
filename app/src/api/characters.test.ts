@@ -10,16 +10,20 @@ import {
   advanceCharacter,
   confirmRender,
   confirmSpec,
+  confirmViews,
   createCharacter,
   draftAssetSpec,
+  generateViews,
   listCharacterEvents,
   listRenders,
+  listViews,
   readCharacter,
   rejectRender,
   rejectSpec,
   renderCharacter,
   renderImageUrl,
   reviewSpec,
+  reviewViews,
 } from './characters'
 import { resetBaseUrl } from './client'
 
@@ -179,6 +183,56 @@ describe('门禁 2', () => {
       url: 'http://127.0.0.1:62066/api/characters/c1/render/reject',
       method: 'POST',
       body: { note: '尾巴粘在一起了' },
+    })
+  })
+})
+
+describe('四视图', () => {
+  it('不指定视角就是四个角度都生', async () => {
+    await generateViews('c1')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/views',
+      method: 'POST',
+      body: { variants: [], seed: null },
+    })
+  })
+
+  it('只重生被点名的那几张，不把已认可的也换掉', async () => {
+    await generateViews('c1', ['back'])
+    expect(onlyCall().body).toEqual({ variants: ['back'], seed: null })
+  })
+
+  it('候选列表是只读的', async () => {
+    await listViews('c1')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/views',
+      method: 'GET',
+    })
+  })
+
+  it('评审默认不自动重生：花额度得用户说了算', async () => {
+    await reviewViews('c1')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/views/review',
+      method: 'POST',
+      body: { mode: null, regenerate: false },
+    })
+  })
+
+  it('粒度可以盖这一次，不用改项目配置', async () => {
+    await reviewViews('c1', 'full', true)
+    expect(onlyCall().body).toEqual({ mode: 'full', regenerate: true })
+  })
+
+  it('定稿四个视角要逐个指名，不默认各取最新', async () => {
+    await confirmViews('c1', { front: 'g1', right: 'g2', back: 'g3', left: 'g4' }, '就这一组')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/c1/views/confirm',
+      method: 'POST',
+      body: {
+        picks: { front: 'g1', right: 'g2', back: 'g3', left: 'g4' },
+        note: '就这一组',
+      },
     })
   })
 })

@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -147,7 +147,7 @@ def call(
     runtime: Session,
     agent_code: str,
     decision: Decision,
-    payload: Sequence[dict[str, str]],
+    payload: Sequence[Mapping[str, Any]],
     chat: ChatFn,
     *,
     project_code: str | None = None,
@@ -195,7 +195,7 @@ def select(
 def run(
     runtime: Session,
     agent_code: str,
-    payload: Sequence[dict[str, str]],
+    payload: Sequence[Mapping[str, Any]],
     chat: ChatFn,
     *,
     project_code: str | None = None,

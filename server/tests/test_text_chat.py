@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -226,3 +228,58 @@ def test_非文本驱动直接拒绝() -> None:
     """配错了 Agent 绑定，早报比把请求发出去再报好。"""
     with pytest.raises(ProviderError, match="不是文本驱动"):
         text_chat.complete(candidate(driver="meshy"), MESSAGES)
+
+
+# --------------------------------------------------------------------------- #
+# 带图的消息
+# --------------------------------------------------------------------------- #
+
+
+def test_带图消息是先文字后图(tmp_path: Path) -> None:
+    """先说按什么口径判再递图。反过来的话它已经自己描述完一遍了。"""
+    path = tmp_path / "正面.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    message = text_chat.vision_message("看看尾巴分不分离", [path])
+
+    assert message["role"] == "user"
+    parts = message["content"]
+    assert parts[0] == {"type": "text", "text": "看看尾巴分不分离"}
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    # 四视图要判细节，不能压成低精度让它猜
+    assert parts[1]["image_url"]["detail"] == "high"
+
+
+def test_多张图按给的顺序排(tmp_path: Path) -> None:
+    """整批评审时图的顺序就是视角的顺序，乱了就对不上哪张是背面。"""
+    first = tmp_path / "a.png"
+    first.write_bytes(b"a")
+    second = tmp_path / "b.webp"
+    second.write_bytes(b"b")
+
+    parts = text_chat.vision_message("四张一起看", [first, "https://oss.invalid/c.png", second])[
+        "content"
+    ]
+
+    assert [one["type"] for one in parts] == ["text", "image_url", "image_url", "image_url"]
+    assert parts[1]["image_url"]["url"].startswith("data:image/png")
+    # 网址原样传，不必把字节拉下来再发一遍
+    assert parts[2]["image_url"]["url"] == "https://oss.invalid/c.png"
+    assert parts[3]["image_url"]["url"].startswith("data:image/webp")
+
+
+def test_带图消息能直接进请求体(tmp_path: Path) -> None:
+    """分段是协议自己的形态，驱动不再翻译一道。"""
+    path = tmp_path / "正面.jpg"
+    path.write_bytes(b"jpg")
+    message = text_chat.vision_message("审一下", [path])
+
+    payload = text_chat.build_payload(candidate(), [message], stream=False)
+
+    assert payload["messages"][0]["content"][0]["text"] == "审一下"
+
+
+def test_图不在了当场就报(tmp_path: Path) -> None:
+    with pytest.raises(ProviderError, match="参考图不存在"):
+        text_chat.vision_message("审一下", [tmp_path / "没有这张.png"])

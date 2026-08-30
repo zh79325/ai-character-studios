@@ -10,6 +10,11 @@ dashscope_mm）不走文本，随 A9 落各自的驱动。
 
 流式与非流式共用同一条路径：给了 `on_delta` 就开 `stream=True` 边收边回调，最后仍然
 返回同一个 `ChatReply`。这样上层（会话引擎）不必写两套记账逻辑。
+
+消息的 `content` 既可以是一句话，也可以是「文字 + 图」的分段列表——看图评审（四视图的
+`vision_reviewer`）走的就是后者。分段是 OpenAI 兼容协议自己的形态，两家都认，所以本模块只
+把类型放宽到 `Any` 并提供一个拼分段的 `vision_message`，不另立一套私有结构：私有结构迟早
+要在驱动里再翻译回来，等于同一件事写两遍。
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -31,6 +37,7 @@ from atelier.providers.base import (
     classify_failure,
     parse_remaining,
 )
+from atelier.providers.image_gen import reference_ref
 
 __all__ = [
     "CHAT_PATH",
@@ -40,6 +47,7 @@ __all__ = [
     "build_payload",
     "chat_url",
     "complete",
+    "vision_message",
 ]
 
 _log = structlog.get_logger(__name__)
@@ -53,6 +61,9 @@ DEFAULT_TIMEOUT = 120.0
 """长回答（art-bible 六节全文）几十秒是常态，超时给足；连接阶段单独卡短。"""
 
 CONNECT_TIMEOUT = 10.0
+
+IMAGE_DETAIL = "high"
+"""看图精度。四视图评审要判「双尾是不是分离」这种细节，压成低精度等于让它猜。"""
 
 _DONE = "[DONE]"
 
@@ -87,7 +98,7 @@ def chat_url(candidate: Candidate) -> str:
 
 def build_payload(
     candidate: Candidate,
-    messages: Sequence[Mapping[str, str]],
+    messages: Sequence[Mapping[str, Any]],
     *,
     stream: bool,
     temperature: float | None = None,
@@ -115,6 +126,29 @@ def build_payload(
     return payload
 
 
+def vision_message(
+    text: str,
+    images: Sequence[str | Path],
+    *,
+    role: str = "user",
+    detail: str = IMAGE_DETAIL,
+) -> dict[str, Any]:
+    """拼一条带图的消息：先文字后图。
+
+    文字在前是有意的——要先告诉它看什么、按什么口径判，再把图递过去。反过来的话它已经
+    自己描述完一遍了，后面的要求往往只能拿来套自己的描述。
+
+    图得连字节一起发（本地文件转 data URL），这事 `image_gen.reference_ref` 已经在做，直接
+    用它：同一份 MIME 白名单写两遍，下一次添格式时必然只改到一边。
+    """
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    parts.extend(
+        {"type": "image_url", "image_url": {"url": reference_ref(one), "detail": detail}}
+        for one in images
+    )
+    return {"role": role, "content": parts}
+
+
 def _usage_of(data: Mapping[str, Any]) -> tuple[int | None, int | None, int | None]:
     usage = data.get("usage")
     if not isinstance(usage, dict):
@@ -129,7 +163,7 @@ def _usage_of(data: Mapping[str, Any]) -> tuple[int | None, int | None, int | No
 
 def complete(
     candidate: Candidate,
-    messages: Sequence[Mapping[str, str]],
+    messages: Sequence[Mapping[str, Any]],
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,

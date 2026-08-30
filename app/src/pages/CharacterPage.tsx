@@ -22,6 +22,7 @@ import { ApiError } from '@/api/client'
 import ChatPanel, { type Handoff } from '@/components/ChatPanel'
 import RenderGateCard from '@/components/RenderGateCard'
 import SpecGateCard from '@/components/SpecGateCard'
+import ViewsGateCard from '@/components/ViewsGateCard'
 import type { TaskEvent } from '@/types/api'
 
 const WRITER = 'spec_writer'
@@ -79,6 +80,9 @@ export default function CharacterPage() {
             {row?.dir_name ?? ''}
             {row?.spec_path ? ` · 定稿 ${row.spec_path}` : ' · 还没有定稿'}
             {row?.render_path ? ` · 渲染图 ${row.render_path}` : ''}
+            {row && Object.keys(row.view_paths).length > 0
+              ? ` · 四视图 ${Object.keys(row.view_paths).length} 张已定稿`
+              : ''}
           </Typography.Text>
         </Space>
       </Card>
@@ -103,6 +107,7 @@ export default function CharacterPage() {
               />
             )}
             {row && row.gate_spec_confirmed_at !== null && <RenderGateCard character={row} />}
+            {row && row.gate_render_confirmed_at !== null && <ViewsGateCard character={row} />}
           </Space>
         </Col>
         <Col span={10}>

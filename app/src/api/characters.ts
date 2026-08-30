@@ -15,6 +15,8 @@ import type {
   RenderResult,
   SpecReview,
   TaskEvent,
+  ViewReview,
+  ViewSet,
 } from '@/types/api'
 
 export function createCharacter(name: string): Promise<Character> {
@@ -126,5 +128,60 @@ export function rejectRender(id: string, note: string): Promise<Character> {
   return request<Character>(`/api/characters/${encodeURIComponent(id)}/render/reject`, {
     method: 'POST',
     body: { note },
+  })
+}
+
+/**
+ * 出一批四视图：后端拿姿势模版与定稿渲染图当参考图，四张并发。
+ *
+ * `variants` 空着就是四个角度都生；只给几个就是重生那几张——评审驳回往往只有背面不合格，四
+ * 张全重来会把用户已经认可的三张也换掉。四张 4K 图几十秒是应该的，这里不设超时。
+ */
+export function generateViews(
+  id: string,
+  variants: string[] = [],
+  seed: number | null = null,
+): Promise<ViewSet> {
+  return request<ViewSet>(`/api/characters/${encodeURIComponent(id)}/views`, {
+    method: 'POST',
+    body: { variants, seed },
+  })
+}
+
+/** 四视图的全部候选，新的在前。`variant` 告诉前端这一张是哪个面。 */
+export function listViews(id: string): Promise<Generation[]> {
+  return request<Generation[]>(`/api/characters/${encodeURIComponent(id)}/views`)
+}
+
+/**
+ * 让 `vision_reviewer` 看图裁决。粒度跟项目的 `review_mode` 走，`mode` 能盖这一次。
+ *
+ * `regenerate` 默认关：REJECT 后自动重生要花额度，该不该花得用户说了算。裁决只能拦不能放行，
+ * 所以前端不许拿 `approved` 自动去调定稿。
+ */
+export function reviewViews(
+  id: string,
+  mode: string | null = null,
+  regenerate = false,
+): Promise<ViewReview> {
+  return request<ViewReview>(`/api/characters/${encodeURIComponent(id)}/views/review`, {
+    method: 'POST',
+    body: { mode, regenerate },
+  })
+}
+
+/**
+ * 人选输入：把指名的四张拷进定稿位并推到 S5。
+ *
+ * 四个视角要逐个指名：建模吃的是一整组图，默认取「每个面最新那张」就不是他在界面上挑的那一组。
+ */
+export function confirmViews(
+  id: string,
+  picks: Record<string, string>,
+  note: string,
+): Promise<Character> {
+  return request<Character>(`/api/characters/${encodeURIComponent(id)}/views/confirm`, {
+    method: 'POST',
+    body: { picks, note },
   })
 }
