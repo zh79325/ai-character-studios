@@ -16,6 +16,8 @@ import { currentProject } from '@/api/projects'
 interface Props {
   /** 真则立项没收口时不放行：素材目录都还没铺，进去只会看到一片空。 */
   requireReady?: boolean
+  /** 假则不出项目抬头卡：页面自己把项目名、代号、路径摆进更省地方的位置。 */
+  header?: boolean
   children: ReactNode
 }
 
@@ -29,7 +31,7 @@ export function useCurrentProject() {
   })
 }
 
-export default function ProjectFrame({ requireReady = false, children }: Props) {
+export default function ProjectFrame({ requireReady = false, header = true, children }: Props) {
   const navigate = useNavigate()
   const current = useCurrentProject()
 
@@ -54,21 +56,23 @@ export default function ProjectFrame({ requireReady = false, children }: Props) 
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" loading={current.isLoading}>
-        <Space direction="vertical" size={2}>
-          <Space size={8}>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {current.data?.name ?? '…'}
-            </Typography.Title>
-            <Tag>{current.data?.code}</Tag>
-            {drafting && <Tag color="processing">立项中</Tag>}
-            {current.data?.missing && <Tag color="error">目录不在</Tag>}
+      {header && (
+        <Card size="small" loading={current.isLoading}>
+          <Space direction="vertical" size={2}>
+            <Space size={8}>
+              <Typography.Title level={5} style={{ margin: 0 }}>
+                {current.data?.name ?? '…'}
+              </Typography.Title>
+              <Tag>{current.data?.code}</Tag>
+              {drafting && <Tag color="processing">立项中</Tag>}
+              {current.data?.missing && <Tag color="error">目录不在</Tag>}
+            </Space>
+            <Typography.Text type="secondary" copyable={{ text: current.data?.dir_path ?? '' }}>
+              {current.data?.dir_path ?? ''}
+            </Typography.Text>
           </Space>
-          <Typography.Text type="secondary" copyable={{ text: current.data?.dir_path ?? '' }}>
-            {current.data?.dir_path ?? ''}
-          </Typography.Text>
-        </Space>
-      </Card>
+        </Card>
+      )}
       {requireReady && drafting ? (
         <Card>
           <Empty description="这个项目还在立项中，先把名字与代号定下来">

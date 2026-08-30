@@ -28,7 +28,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import {
   ensureConversation,
@@ -58,6 +58,16 @@ interface Props {
    * 但那是回看，不是管理。
    */
   managed?: boolean
+  /**
+   * 草稿挤到边上的窄栏，对话占满剩下的宽度。
+   *
+   * 立项对焦这一页的主体就是聊，草稿只是聊出来的副产物，摆得跟对话一样大只会抢位置。
+   */
+  draftsAside?: boolean
+  /** 摆在待办栏最上面的一小块（如项目抬头）：看一眼的东西不值得单占一行卡片。 */
+  status?: ReactNode
+  /** 摆在待办栏最后的那一项（如立项收口）：它也是聊到最后该做的事，不另开一块地方摆。 */
+  todo?: ReactNode
 }
 
 /**
@@ -81,12 +91,17 @@ export default function ChatPanel({
   onActiveChange,
   handoff = null,
   managed = false,
+  draftsAside = false,
+  status = null,
+  todo = null,
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState<string | null>(null)
+  /** 已经发出去、还没回到会话详情里的那句话。 */
+  const [pending, setPending] = useState<string | null>(null)
   const [showFolded, setShowFolded] = useState(false)
   const stop = useRef<(() => void) | null>(null)
 
@@ -169,15 +184,21 @@ export default function ChatPanel({
         setStreaming(null)
       }
     },
-    onSuccess: (turn) => {
-      setInput('')
-      void queryClient.invalidateQueries({ queryKey: ['conversation', chosen] })
+    onSuccess: async (turn) => {
+      // 等详情真拉回来再抖掉那句话，不然气泡会先消失一下再出现
+      await queryClient.invalidateQueries({ queryKey: ['conversation', chosen] })
+      setPending(null)
       void queryClient.invalidateQueries({ queryKey: ['conversations'] })
       if (turn.folded_turns.length > 0) {
         toast.info(`上下文快满了，第 ${turn.folded_turns.join('、')} 轮已折进摘要，原文还在`)
       }
     },
-    onError: (err: Error) => toast.error(err.message),
+    // 发失败不能让用户重新敲一遍：把话送回输入框（除非他已经又敲了新的）
+    onError: (err: Error, content) => {
+      setPending(null)
+      setInput((prev) => (prev === '' ? content : prev))
+      toast.error(err.message)
+    },
   })
 
   const conversation = detail.data?.conversation
@@ -199,41 +220,27 @@ export default function ChatPanel({
   const submit = () => {
     const content = input.trim()
     if (!content || send.isPending) return
+    // 先清输入框、先把话摆上去：点完发送还看见自己那段字蹲在输入框里，像没发出去
+    setInput('')
+    setPending(content)
     send.mutate(content)
   }
 
   return (
-    <Row gutter={16}>
-      <Col span={13}>
-        <Card
-          size="small"
-          title={
-            managed ? (
-              <Space size={8}>
-                <Typography.Text strong style={{ fontSize: 13 }}>
-                  对焦
-                </Typography.Text>
-                {mine.length > 1 && (
-                  <Select
-                    size="small"
-                    style={{ minWidth: 220 }}
-                    placeholder="历史会话"
-                    value={chosen ?? undefined}
-                    loading={list.isLoading}
-                    onChange={setActive}
-                    options={mine.map((one) => ({
-                      value: one.id,
-                      label: conversationLabel(one),
-                    }))}
-                  />
-                )}
-              </Space>
-            ) : (
-              <Space>
+    <Layout aside={draftsAside}>
+      <Card
+        size="small"
+        title={
+          managed ? (
+            <Space size={8}>
+              <Typography.Text strong style={{ fontSize: 13 }}>
+                对焦
+              </Typography.Text>
+              {mine.length > 1 && (
                 <Select
                   size="small"
                   style={{ minWidth: 220 }}
-                  placeholder="还没有会话"
+                  placeholder="历史会话"
                   value={chosen ?? undefined}
                   loading={list.isLoading}
                   onChange={setActive}
@@ -242,119 +249,171 @@ export default function ChatPanel({
                     label: conversationLabel(one),
                   }))}
                 />
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  loading={open.isPending}
-                  onClick={() => open.mutate()}
-                >
-                  新会话
-                </Button>
-              </Space>
-            )
-          }
-          extra={
-            foldedCount > 0 && (
-              <Space size={6}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  已折起 {foldedCount} 条
-                </Typography.Text>
-                <Switch size="small" checked={showFolded} onChange={setShowFolded} />
-              </Space>
-            )
-          }
-        >
-          {chosen === null ? (
-            preparing ? (
-              <Empty image={null} description="正在接上这个项目的对焦会话……">
-                <Spin />
-              </Empty>
-            ) : (
-              <Empty
-                image={null}
-                description={`开一场会话，让 ${agentCode} 陪你把这份定稿聊清楚。它写出来的内容会先当草稿，你确认了才落盘。`}
-              >
-                <Button type="primary" loading={open.isPending} onClick={() => open.mutate()}>
-                  开始
-                </Button>
-              </Empty>
-            )
+              )}
+            </Space>
           ) : (
-            <Space direction="vertical" size={10} style={{ width: '100%' }}>
-              {conversation && (
-                <Space size={6} wrap>
-                  <Tag color="blue">{conversation.bound_provider_label}</Tag>
-                  {conversation.rebind_count > 0 && (
-                    <Tag color="orange" title={conversation.rebind_reason ?? undefined}>
-                      换过 {conversation.rebind_count} 次服务商
-                    </Tag>
-                  )}
-                  {frozen && <Tag>只读</Tag>}
-                </Space>
-              )}
-              {detail.data?.memory.summary && (
-                <Alert
-                  type="info"
-                  message="前几轮的摘要"
-                  description={
-                    <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                      <span>{detail.data.memory.summary}</span>
-                      {detail.data.memory.open_questions.length > 0 && (
-                        <span>还没定：{detail.data.memory.open_questions.join('；')}</span>
-                      )}
-                    </Space>
-                  }
-                />
-              )}
-              <MessageList
-                messages={shown}
-                streaming={streaming}
-                loading={detail.isLoading}
-                briefing={detail.data?.briefing ?? ''}
-                briefingBlank={detail.data?.briefing_blank ?? false}
-              />
-              <Input.TextArea
-                value={input}
-                rows={3}
-                disabled={frozen}
-                placeholder={
-                  frozen
-                    ? '这场会话已经收尾了，开一场新的接着聊'
-                    : '说清你要什么。Enter 发送，Shift+Enter 换行'
-                }
-                onChange={(event) => setInput(event.target.value)}
-                onPressEnter={(event) => {
-                  if (event.shiftKey) return
-                  event.preventDefault()
-                  submit()
-                }}
+            <Space>
+              <Select
+                size="small"
+                style={{ minWidth: 220 }}
+                placeholder="还没有会话"
+                value={chosen ?? undefined}
+                loading={list.isLoading}
+                onChange={setActive}
+                options={mine.map((one) => ({
+                  value: one.id,
+                  label: conversationLabel(one),
+                }))}
               />
               <Button
-                type="primary"
-                block
-                loading={send.isPending}
-                disabled={frozen}
-                onClick={submit}
+                size="small"
+                icon={<PlusOutlined />}
+                loading={open.isPending}
+                onClick={() => open.mutate()}
               >
-                发送
+                新会话
               </Button>
             </Space>
-          )}
-        </Card>
-      </Col>
-      <Col span={11}>
+          )
+        }
+        extra={
+          foldedCount > 0 && (
+            <Space size={6}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                已折起 {foldedCount} 条
+              </Typography.Text>
+              <Switch size="small" checked={showFolded} onChange={setShowFolded} />
+            </Space>
+          )
+        }
+      >
         {chosen === null ? (
-          <Card size="small" title="待确认的改动">
-            <Empty image={null} description="会话产出的定稿会在这里等你过目。" />
-          </Card>
+          preparing ? (
+            <Empty image={null} description="正在接上这个项目的对焦会话……">
+              <Spin />
+            </Empty>
+          ) : (
+            <Empty
+              image={null}
+              description={`开一场会话，让 ${agentCode} 陪你把这份定稿聊清楚。它写出来的内容会先当草稿，你确认了才落盘。`}
+            >
+              <Button type="primary" loading={open.isPending} onClick={() => open.mutate()}>
+                开始
+              </Button>
+            </Empty>
+          )
         ) : (
-          <DraftDiffPanel
-            conversationId={chosen}
-            drafts={detail.data?.drafts ?? []}
-            frozen={frozen}
-          />
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {conversation && (
+              <Space size={6} wrap>
+                <Tag color="blue">{conversation.bound_provider_label}</Tag>
+                {conversation.rebind_count > 0 && (
+                  <Tag color="orange" title={conversation.rebind_reason ?? undefined}>
+                    换过 {conversation.rebind_count} 次服务商
+                  </Tag>
+                )}
+                {frozen && <Tag>只读</Tag>}
+              </Space>
+            )}
+            {detail.data?.memory.summary && (
+              <Alert
+                type="info"
+                message="前几轮的摘要"
+                description={
+                  <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                    <span>{detail.data.memory.summary}</span>
+                    {detail.data.memory.open_questions.length > 0 && (
+                      <span>还没定：{detail.data.memory.open_questions.join('；')}</span>
+                    )}
+                  </Space>
+                }
+              />
+            )}
+            <MessageList
+              messages={shown}
+              pending={pending}
+              streaming={streaming}
+              loading={detail.isLoading}
+              briefing={detail.data?.briefing ?? ''}
+              briefingBlank={detail.data?.briefing_blank ?? false}
+              height={draftsAside ? 560 : 420}
+            />
+            <Input.TextArea
+              value={input}
+              rows={3}
+              disabled={frozen || send.isPending}
+              placeholder={
+                frozen
+                  ? '这场会话已经收尾了，开一场新的接着聊'
+                  : send.isPending
+                    ? '等设计师回这一轮，回完再接着说'
+                    : '说清你要什么。Enter 发送，Shift+Enter 换行'
+              }
+              onChange={(event) => setInput(event.target.value)}
+              onPressEnter={(event) => {
+                if (event.shiftKey) return
+                event.preventDefault()
+                submit()
+              }}
+            />
+            <Button
+              type="primary"
+              block
+              loading={send.isPending}
+              disabled={frozen || send.isPending}
+              onClick={submit}
+            >
+              {send.isPending ? '等回话' : '发送'}
+            </Button>
+          </Space>
         )}
-      </Col>
+      </Card>
+      {chosen === null ? (
+        <Card size="small" title="待办">
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {status}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              会话产出的定稿会在这里等你过目。
+            </Typography.Text>
+            {todo}
+          </Space>
+        </Card>
+      ) : (
+        <DraftDiffPanel
+          conversationId={chosen}
+          drafts={detail.data?.drafts ?? []}
+          frozen={frozen}
+          compact={draftsAside}
+          header={status}
+          footer={todo}
+        />
+      )}
+    </Layout>
+  )
+}
+
+/**
+ * 对话与草稿的排布。
+ *
+ * `aside` 真时草稿收成一条固定窄栏，对话吃掉剩下的宽度；假时两边各占一半，草稿里的 diff
+ * 才有地方铺开。
+ */
+function Layout({ aside, children }: { aside: boolean; children: [ReactNode, ReactNode] }) {
+  const [chat, drafts] = children
+
+  if (aside) {
+    return (
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{chat}</div>
+        <div style={{ width: 300, flex: '0 0 300px' }}>{drafts}</div>
+      </div>
+    )
+  }
+
+  return (
+    <Row gutter={16}>
+      <Col span={13}>{chat}</Col>
+      <Col span={11}>{drafts}</Col>
     </Row>
   )
 }
@@ -372,18 +431,24 @@ const BUBBLE: Record<string, { background: string; align: string }> = {
 
 function MessageList({
   messages,
+  pending,
   streaming,
   loading,
   briefing,
   briefingBlank,
+  height,
 }: {
   messages: Message[]
+  /** 本轮刚发出去的那句：先摆成气泡，不等落库后才看见。 */
+  pending: string | null
   streaming: string | null
   loading: boolean
   /** 开场提示：项目现状与接下来该说什么。后端现算，摆在历史消息前面。 */
   briefing: string
   /** 真则这只是一句号召，项目还没有任何东西可总结。 */
   briefingBlank: boolean
+  /** 消息区高度：这一页越是以聊为主，就该给得越高。 */
+  height: number
 }) {
   const box = useRef<HTMLDivElement>(null)
 
@@ -391,15 +456,16 @@ function MessageList({
     // 新内容一到就贴到底部，不然生成中的字会长到看不见的地方去
     const node = box.current
     if (node) node.scrollTop = node.scrollHeight
-  }, [messages, streaming])
+  }, [messages, pending, streaming])
 
   // 一句号召摆成气泡，看着像 AI 已经先开口说过话了；铺成居中大字才是「这一屏在等你说」
-  const hero = briefingBlank && messages.length === 0 && streaming === null
+  const hero =
+    briefingBlank && messages.length === 0 && pending === null && streaming === null
   if (hero) {
     return (
       <div
         style={{
-          height: 420,
+          height,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -414,7 +480,7 @@ function MessageList({
   }
 
   return (
-    <div ref={box} style={{ height: 420, overflowY: 'auto', padding: '4px 2px' }}>
+    <div ref={box} style={{ height, overflowY: 'auto', padding: '4px 2px' }}>
       {loading && <Spin />}
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         {briefing !== '' && !briefingBlank && (
@@ -461,6 +527,23 @@ function MessageList({
             </div>
           )
         })}
+        {pending !== null && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div
+              style={{
+                maxWidth: '86%',
+                background: BUBBLE.user!.background,
+                borderRadius: 8,
+                padding: '8px 12px',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: 13,
+              }}
+            >
+              {pending}
+            </div>
+          </div>
+        )}
         {streaming !== null && (
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
             <div

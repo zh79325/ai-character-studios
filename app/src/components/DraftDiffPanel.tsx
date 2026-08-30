@@ -14,7 +14,6 @@ import {
   Button,
   Card,
   Checkbox,
-  Empty,
   Popconfirm,
   Segmented,
   Space,
@@ -22,7 +21,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { commitConversation, discardConversation, readDiff } from '@/api/conversations'
 import { collapseUnchanged, diffLines, diffStat } from '@/lib/diff'
@@ -33,11 +32,24 @@ interface Props {
   drafts: Draft[]
   /** 会话已经沉淀或丢弃过，只能看不能再动。 */
   frozen?: boolean
+  /** 挤在窄栏里：按钮改成竖排块级，diff 只留一小段能滚。 */
+  compact?: boolean
+  /** 排在草稿前面的一小块（如项目抬头）。 */
+  header?: ReactNode
+  /** 排在草稿后面的其他待办（如立项收口）。 */
+  footer?: ReactNode
 }
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
 
-export default function DraftDiffPanel({ conversationId, drafts, frozen = false }: Props) {
+export default function DraftDiffPanel({
+  conversationId,
+  drafts,
+  frozen = false,
+  compact = false,
+  header = null,
+  footer = null,
+}: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<string | null>(null)
@@ -82,79 +94,106 @@ export default function DraftDiffPanel({ conversationId, drafts, frozen = false 
     onError: (err: Error) => message.error(err.message),
   })
 
-  if (drafts.length === 0) {
-    return (
-      <Card size="small" title="待确认的改动">
-        <Empty
-          image={null}
-          description="这一轮还没有产出草稿。Agent 写出的定稿会先在这里等你过目，确认之前磁盘一个字节都不会动。"
-        />
-      </Card>
-    )
-  }
-
   const canCommit =
     selected.length > 0 && !frozen && !drafts.some((d) => d.stale && selected.includes(d.id))
 
-  return (
-    <Card
-      size="small"
-      title={`待确认的改动（${drafts.length}）`}
-      extra={
-        <Space>
-          <Popconfirm
-            title="丢掉全部草稿？"
-            description="库里的草稿会标成弃用，磁盘上的定稿保持原样。"
-            okText="丢掉"
-            cancelText="算了"
-            onConfirm={() => discard.mutate()}
-          >
-            <Button danger disabled={frozen} loading={discard.isPending}>
-              丢弃草稿
-            </Button>
-          </Popconfirm>
-          <Popconfirm
-            title={`把 ${selected.length} 份写进项目目录？`}
-            description="现有定稿会先挪进同级 tmp/ 留底，再写入新版本。"
-            okText="沉淀"
-            cancelText="再看看"
-            onConfirm={() => commit.mutate()}
-          >
-            <Button type="primary" disabled={!canCommit} loading={commit.isPending}>
-              确认沉淀（{selected.length}）
-            </Button>
-          </Popconfirm>
-        </Space>
-      }
+  const discardBtn = (
+    <Popconfirm
+      title="丢掉全部草稿？"
+      description="库里的草稿会标成弃用，磁盘上的定稿保持原样。"
+      okText="丢掉"
+      cancelText="算了"
+      onConfirm={() => discard.mutate()}
     >
+      <Button danger block={compact} disabled={frozen} loading={discard.isPending}>
+        丢弃草稿
+      </Button>
+    </Popconfirm>
+  )
+  const commitBtn = (
+    <Popconfirm
+      title={`把 ${selected.length} 份写进项目目录？`}
+      description="现有定稿会先挪进同级 tmp/ 留底，再写入新版本。"
+      okText="沉淀"
+      cancelText="再看看"
+      onConfirm={() => commit.mutate()}
+    >
+      <Button type="primary" block={compact} disabled={!canCommit} loading={commit.isPending}>
+        确认沉淀（{selected.length}）
+      </Button>
+    </Popconfirm>
+  )
+  const actions = compact ? (
+    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      {commitBtn}
+      {discardBtn}
+    </Space>
+  ) : (
+    <Space>
+      {discardBtn}
+      {commitBtn}
+    </Space>
+  )
+
+  return (
+    <Card size="small" title="待办" extra={drafts.length > 0 && !compact ? actions : undefined}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        {drafts.length > 1 && (
-          <Segmented
-            value={current?.id}
-            onChange={(value) => setActive(String(value))}
-            options={drafts.map((draft) => ({
-              value: draft.id,
-              label: draft.target_path.split('/').pop() ?? draft.target_path,
-            }))}
-          />
+        {header}
+        {drafts.length === 0 ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Agent 写出的定稿会先在这里等你过目，确认之前磁盘一个字节都不会动。
+          </Typography.Text>
+        ) : (
+          <>
+            {drafts.length > 1 && (
+              <Segmented
+                value={current?.id}
+                onChange={(value) => setActive(String(value))}
+                options={drafts.map((draft) => ({
+                  value: draft.id,
+                  label: draft.target_path.split('/').pop() ?? draft.target_path,
+                }))}
+              />
+            )}
+            <Checkbox.Group
+              value={selected}
+              onChange={(value) => setPicked(value as string[])}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                wordBreak: 'break-all',
+              }}
+              options={drafts.map((draft) => ({
+                value: draft.id,
+                label: draft.stale
+                  ? `${draft.target_path}（基线已变，沉淀会被拒）`
+                  : draft.target_path,
+                disabled: draft.stale || frozen,
+              }))}
+            />
+            {current && (
+              <DiffView conversationId={conversationId} draft={current} compact={compact} />
+            )}
+            {compact && actions}
+          </>
         )}
-        <Checkbox.Group
-          value={selected}
-          onChange={(value) => setPicked(value as string[])}
-          style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-          options={drafts.map((draft) => ({
-            value: draft.id,
-            label: draft.stale ? `${draft.target_path}（基线已变，沉淀会被拒）` : draft.target_path,
-            disabled: draft.stale || frozen,
-          }))}
-        />
-        {current && <DiffView conversationId={conversationId} draft={current} />}
+        {footer}
       </Space>
     </Card>
   )
 }
 
-function DiffView({ conversationId, draft }: { conversationId: string; draft: Draft }) {
+function DiffView({
+  conversationId,
+  draft,
+  compact,
+}: {
+  conversationId: string
+  draft: Draft
+  /** 窄栏里只留一小扇窗，并去掉行号：两道行号能吃掉大半个宽度。 */
+  compact: boolean
+}) {
   const [opened, setOpened] = useState<number[]>([])
   const diff = useQuery({
     queryKey: ['draft-diff', conversationId, draft.id],
@@ -207,7 +246,7 @@ function DiffView({ conversationId, draft }: { conversationId: string; draft: Dr
         style={{
           border: '1px solid #f0f0f0',
           borderRadius: 6,
-          maxHeight: 420,
+          maxHeight: compact ? 240 : 420,
           overflow: 'auto',
           fontFamily: MONO,
           fontSize: 12.5,
@@ -231,7 +270,9 @@ function DiffView({ conversationId, draft }: { conversationId: string; draft: Dr
               ⋯ 未改动的 {chunk.lines.length} 行，点开看
             </div>
           ) : (
-            chunk.lines.map((line, seq) => <DiffRow key={`${index}-${seq}`} line={line} />)
+            chunk.lines.map((line, seq) => (
+              <DiffRow key={`${index}-${seq}`} line={line} compact={compact} />
+            ))
           ),
         )}
       </div>
@@ -246,15 +287,25 @@ const TINT: Record<string, string> = {
 }
 const SIGN: Record<string, string> = { added: '+', removed: '-', same: ' ' }
 
-function DiffRow({ line }: { line: ReturnType<typeof diffLines>[number] }) {
+function DiffRow({
+  line,
+  compact,
+}: {
+  line: ReturnType<typeof diffLines>[number]
+  compact: boolean
+}) {
   return (
     <div style={{ display: 'flex', background: TINT[line.kind], whiteSpace: 'pre-wrap' }}>
-      <span style={{ width: 44, textAlign: 'right', paddingRight: 8, color: '#bfbfbf' }}>
-        {line.currentNo ?? ''}
-      </span>
-      <span style={{ width: 44, textAlign: 'right', paddingRight: 8, color: '#bfbfbf' }}>
-        {line.draftNo ?? ''}
-      </span>
+      {!compact && (
+        <>
+          <span style={{ width: 44, textAlign: 'right', paddingRight: 8, color: '#bfbfbf' }}>
+            {line.currentNo ?? ''}
+          </span>
+          <span style={{ width: 44, textAlign: 'right', paddingRight: 8, color: '#bfbfbf' }}>
+            {line.draftNo ?? ''}
+          </span>
+        </>
+      )}
       <span style={{ width: 16, color: '#8c8c8c' }}>{SIGN[line.kind]}</span>
       <span style={{ flex: 1, paddingRight: 12, wordBreak: 'break-word' }}>{line.text || ' '}</span>
     </div>

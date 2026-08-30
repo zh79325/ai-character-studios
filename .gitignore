@@ -56,3 +56,4 @@ unity/Builds/
 unity/**/*.csproj
 unity/**/*.sln
 unity/**/*.userprefs
+.qoder/.plans/

@@ -1,26 +1,24 @@
 /**
  * 项目首页 = 立项对焦页。
  *
- * 打开项目先落在这里，因为「这个项目要什么」是所有后续工作的前提。立项中就在这儿把它聊出来
- * 并收口；已立项也还在这儿聊——项目要求本来就会随着做下去而改，改完照样是这场对话的产物。
+ * 这一页只有一件事：跟设计师聊「这个项目要什么」。所以整页就是那个对话框，边上一条窄栏放待办，
+ * 项目抬头也摆在那条窄栏里，其余入口都在顶栏菜单里，不在这儿再摆一遍。
  *
- * 名字与代号不由用户凭空填：设计师聊出轮廓后会给几组建议（`[项目命名建议]`），用户点一条
- * 进表单或自己重写，再点「完成立项」，后端这时才铺目录骨架与 git 规则。
+ * 「完成立项」就是这条待办里最后一项：名字与代号不由用户凭空填，设计师聊出轮廓后会给几组建议
+ * （`[项目命名建议]`），用户点一条进表单或自己重写，提交后后端才铺目录骨架与 git 规则。
  *
  * 对焦会话由系统管（`managed`）：进页就接上这个项目还开着的那场，没有就开一场，开场先报一遍
- * 项目现状。用户在这页要做的只有一件事：说自己想要什么。
+ * 项目现状。
  */
-import { CheckCircleOutlined, RightOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App, Button, Card, Col, Empty, Form, Input, Row, Space, Tag, Typography } from 'antd'
+import { App, Button, Form, Input, Modal, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
 import { readConversation } from '@/api/conversations'
 import { finalizeProject } from '@/api/projects'
 import ChatPanel from '@/components/ChatPanel'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
-import { DESIGN_ENTRIES, designPath } from '@/lib/design'
 import type { NamingOption, ProjectList } from '@/types/api'
 
 export default function ProjectPage() {
@@ -36,25 +34,50 @@ export default function ProjectPage() {
   })
 
   return (
-    <ProjectFrame>
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        {drafting ? <FinalizePanel naming={detail.data?.naming ?? []} /> : <NextSteps />}
-        <ChatPanel
-          agentCode="game_designer"
-          targetKind="project"
-          title="立项对焦"
-          managed
-          onActiveChange={setConversation}
-        />
-      </Space>
+    <ProjectFrame header={false}>
+      <ChatPanel
+        agentCode="game_designer"
+        targetKind="project"
+        title="立项对焦"
+        managed
+        draftsAside
+        status={<ProjectStatus />}
+        todo={drafting ? <FinalizeTodo naming={detail.data?.naming ?? []} /> : null}
+        onActiveChange={setConversation}
+      />
     </ProjectFrame>
   )
 }
 
-/** 立项收口面板：选一组名字与代号，落下目录骨架。 */
-function FinalizePanel({ naming }: { naming: NamingOption[] }) {
+/** 待办栏抬头：项目名、代号、阶段与目录，一眼能看完就不单占一张卡片。 */
+function ProjectStatus() {
+  const current = useCurrentProject()
+  const project = current.data
+
+  return (
+    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+      <Space size={6} wrap>
+        <Typography.Text strong>{project?.name ?? '…'}</Typography.Text>
+        {project && <Tag>{project.code}</Tag>}
+        {project?.stage === 'drafting' && <Tag color="processing">立项中</Tag>}
+        {project?.missing && <Tag color="error">目录不在</Tag>}
+      </Space>
+      <Typography.Text
+        type="secondary"
+        style={{ fontSize: 12, wordBreak: 'break-all' }}
+        copyable={{ text: project?.dir_path ?? '' }}
+      >
+        {project?.dir_path ?? ''}
+      </Typography.Text>
+    </Space>
+  )
+}
+
+/** 待办里的立项收口：选一组名字与代号，落下目录骨架。 */
+function FinalizeTodo({ naming }: { naming: NamingOption[] }) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
   const [form] = Form.useForm<{ name: string; code: string }>()
 
   const finalize = useMutation({
@@ -65,44 +88,52 @@ function FinalizePanel({ naming }: { naming: NamingOption[] }) {
       queryClient.setQueryData(['projects'], fresh)
       // 代号变了等于换了个项目身份，缓存里跟项目有关的东西一律重取
       void queryClient.invalidateQueries()
+      setOpen(false)
     },
     onError: (err: Error) => message.error(err.message),
   })
 
   return (
-    <Card size="small" title="立项收口">
-      <Row gutter={16}>
-        <Col span={14}>
-          {naming.length === 0 ? (
-            <Empty
-              image={null}
-              description="先跟设计师聊题材与美术方向，聊出轮廓后他会给几组名字与代号建议；你也可以直接自己填。"
-            />
-          ) : (
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        聊定了就收口：定下名字与代号，铺出素材目录。
+      </Typography.Text>
+      <Button block icon={<CheckCircleOutlined />} onClick={() => setOpen(true)}>
+        完成立项
+        {naming.length > 0 && `（${naming.length} 组建议）`}
+      </Button>
+      <Modal
+        open={open}
+        title="完成立项"
+        okText="完成立项"
+        cancelText="再聊聊"
+        confirmLoading={finalize.isPending}
+        onCancel={() => setOpen(false)}
+        onOk={() => form.submit()}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {naming.length > 0 && (
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                设计师给的建议，点一条填进右边表单：
+                设计师给的建议，点一条填进表单：
               </Typography.Text>
               {naming.map((one) => (
-                <Card
+                <Typography.Link
                   key={`${one.name}/${one.code}`}
-                  size="small"
-                  hoverable
                   onClick={() => form.setFieldsValue({ name: one.name, code: one.code })}
                 >
-                  <Space size={8} wrap>
+                  <Space size={6} wrap>
                     <Typography.Text strong>{one.name}</Typography.Text>
                     {one.code ? <Tag>{one.code}</Tag> : <Tag color="warning">代号待你填</Tag>}
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       {one.reason}
                     </Typography.Text>
                   </Space>
-                </Card>
+                </Typography.Link>
               ))}
             </Space>
           )}
-        </Col>
-        <Col span={10}>
           <Form
             form={form}
             layout="vertical"
@@ -120,6 +151,7 @@ function FinalizePanel({ naming }: { naming: NamingOption[] }) {
               name="code"
               label="项目代号"
               extra="会进日志、提示词与外部接口参数，所以只收小写英文、数字、- 和 _"
+              style={{ marginBottom: 0 }}
               rules={[
                 { required: true, message: '得给个代号' },
                 { pattern: /^[a-z0-9][a-z0-9_-]*$/, message: '只能用小写英文、数字、- 和 _' },
@@ -127,60 +159,13 @@ function FinalizePanel({ naming }: { naming: NamingOption[] }) {
             >
               <Input placeholder="chitong" />
             </Form.Item>
-            <Button
-              type="primary"
-              block
-              icon={<CheckCircleOutlined />}
-              htmlType="submit"
-              loading={finalize.isPending}
-            >
-              完成立项
-            </Button>
-            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>
-              点下去才铺素材目录、`.gitignore` 与 `.gitattributes`（图片与模型走 LFS）；
-              聊出来的视觉规范不会被覆盖。
-            </Typography.Paragraph>
           </Form>
-        </Col>
-      </Row>
-    </Card>
-  )
-}
-
-/** 已立项后的推荐操作：各类素材设计的入口。 */
-function NextSteps() {
-  const navigate = useNavigate()
-
-  return (
-    <Card size="small" title="接下来做什么">
-      <Row gutter={[12, 12]}>
-        {DESIGN_ENTRIES.map((entry) => (
-          <Col key={entry.slug} span={6}>
-            <Card
-              size="small"
-              hoverable
-              onClick={() => navigate(designPath(entry.slug))}
-              style={{ height: '100%' }}
-            >
-              <Space direction="vertical" size={2}>
-                <Space size={6}>
-                  <Typography.Text strong>{entry.label}</Typography.Text>
-                  {entry.ready ? <RightOutlined /> : <Tag>即将开放</Tag>}
-                </Space>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {entry.hint}
-                </Typography.Text>
-              </Space>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginTop: 12 }}
-        message="想调整项目要求就接着在下面聊，聊出来的规范确认后照样会沉淀进视觉规范与项目配置。"
-      />
-    </Card>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            提交后才铺素材目录、`.gitignore` 与 `.gitattributes`（图片与模型走 LFS）；
+            聊出来的视觉规范不会被覆盖。
+          </Typography.Text>
+        </Space>
+      </Modal>
+    </Space>
   )
 }
