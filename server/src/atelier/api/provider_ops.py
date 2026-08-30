@@ -226,6 +226,8 @@ def upsert_model(session: Session, provider: Provider, payload: ModelIn) -> Prov
     replace_agents(session, model, payload.agents)
     replace_limits(session, model, payload.limits)
     session.commit()
+    # session 是 expire_on_commit=False，limits 走 relationship 缓存，不主动作废就会返回旧额度
+    session.expire(model, ["limits"])
     return model
 
 
@@ -259,6 +261,7 @@ def update_model(session: Session, model: ProviderModel, payload: ModelIn) -> Pr
     replace_agents(session, model, payload.agents)
     replace_limits(session, model, payload.limits)
     session.commit()
+    session.expire(model, ["limits"])
     return model
 
 
