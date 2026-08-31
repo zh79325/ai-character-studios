@@ -18,6 +18,18 @@ if TYPE_CHECKING:
     from atelier.providers.text_chat import ChatReply
 
 _SECRET_KEYS = frozenset({"api_key", "authorization", "access_token", "secret", "token"})
+# 写在正文中间的 base64 也要拦：用户直接粘一个 data URL 进消息是完全可能的
+_DATA_URL = re.compile(r"data:([\w.+/-]*);base64,([A-Za-z0-9+/=]+)")
+
+
+def _asset_note(mime: str, encoded: str) -> str:
+    """只留 MIME、字节数与摘要，让同一张图在不同记录里能对上号。"""
+    try:
+        raw = base64.b64decode(encoded, validate=False)
+    except ValueError:
+        raw = encoded.encode()
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    return f"[data URL omitted: mime={mime or 'unknown'}, bytes={len(raw)}, sha256={digest}]"
 
 
 def _safe_value(value: Any) -> Any:
@@ -29,15 +41,8 @@ def _safe_value(value: Any) -> Any:
         }
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_safe_value(item) for item in value]
-    if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
-        header, encoded = value.split(",", 1)
-        mime = header.removeprefix("data:").removesuffix(";base64")
-        try:
-            raw = base64.b64decode(encoded, validate=False)
-        except ValueError:
-            raw = encoded.encode()
-        digest = hashlib.sha256(raw).hexdigest()
-        return f"[data URL omitted: mime={mime}, bytes={len(raw)}, sha256={digest}]"
+    if isinstance(value, str) and ";base64," in value:
+        return _DATA_URL.sub(lambda hit: _asset_note(hit.group(1), hit.group(2)), value)
     if isinstance(value, Path):
         return str(value)
     return value
@@ -48,6 +53,45 @@ def _code_block(content: str, language: str) -> str:
     longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}{language}\n{content}\n{fence}\n"
+
+
+def _text_of(part: Any) -> str | None:
+    """取多模态片段里的纯文本；不是文本片段就返回空。"""
+    if isinstance(part, str):
+        return part
+    if isinstance(part, Mapping) and part.get("type") in (None, "text"):
+        text = part.get("text")
+        return text if isinstance(text, str) else None
+    return None
+
+
+def _part_digest(index: int, part: Any) -> str:
+    """非文本片段只留一行统计：图片、音频整段落盘会把审计文件撑爆。"""
+    kind = str(part.get("type") or "unknown") if isinstance(part, Mapping) else type(part).__name__
+    raw = json.dumps(part, ensure_ascii=False, default=str)
+    line = f"- 片段 {index}：{kind}，原文 {len(raw)} 字（已省略）"
+    # data URL 已经被 _safe_value 洗成摘要，抬到行上比让人去 JSON 里扬得快
+    assets = re.findall(r"\[data URL omitted: ([^\]]*)\]", json.dumps(_safe_value(part)))
+    if assets:
+        line += "，" + "；".join(assets)
+    return line + "\n"
+
+
+def _content_body(content: Any) -> str:
+    """文本原样呈现，其余模态只统计：审计要能看清说了什么，不是存一份请求副本。"""
+    if isinstance(content, str):
+        return _code_block(_safe_value(content), "text")
+    if not isinstance(content, Sequence):
+        return _code_block(json.dumps(_safe_value(content), ensure_ascii=False), "json")
+
+    pieces: list[str] = []
+    for index, part in enumerate(content, start=1):
+        text = _text_of(part)
+        if text is None:
+            pieces.append(_part_digest(index, part))
+        else:
+            pieces.append(_code_block(_safe_value(text), "text"))
+    return "\n".join(pieces)
 
 
 @dataclass(slots=True)
@@ -92,13 +136,14 @@ class TurnAudit:
     ) -> None:
         """在调用 LLM 前写入实际消息；第一次写同时创建文件头。"""
         self._calls += 1
-        payload = json.dumps(_safe_value(messages), ensure_ascii=False, indent=2)
+        body = "".join(
+            self._message_section(index, message) for index, message in enumerate(messages, start=1)
+        )
         section = (
             f"\n## 调用 {self._calls}：{purpose}\n\n"
             f"- Provider：{candidate.label}\n"
             f"- Model：{candidate.model_id}\n\n"
-            "### Request\n\n"
-            f"{_code_block(payload, 'json')}"
+            f"### Request\n{body}"
         )
         if self._calls == 1:
             header = (
@@ -112,6 +157,16 @@ class TurnAudit:
             self._write(header + section, exclusive=True)
         else:
             self._write(section)
+
+    def _message_section(self, index: int, message: Mapping[str, Any]) -> str:
+        """一条消息一节：小标题报 role，正文原样放，读的时候不用先在脑子里解 JSON。"""
+        rest = dict(message)
+        role = str(rest.pop("role", "unknown"))
+        section = f"\n#### {self._calls}.{index} {role}\n\n{_content_body(rest.pop('content', ''))}"
+        if rest:
+            extra = json.dumps(_safe_value(rest), ensure_ascii=False, indent=2)
+            section += f"\n其他字段：\n\n{_code_block(extra, 'json')}"
+        return section
 
     def write_response(self, reply: ChatReply) -> None:
         """模型完整返回后追加正文与用量。"""

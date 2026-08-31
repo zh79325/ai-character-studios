@@ -187,6 +187,25 @@ def test_请求先落盘再调模型_回答之后才追加(
     assert "- Total tokens：30" in final
 
 
+def test_请求按消息逐条分节而不是一坨JSON(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """审计是给人读的：每条消息自己一节，正文原样摆着，不必先去解转义。"""
+    enable_audit(project)
+    conversation = start_project_talk(project_db)
+
+    send(project_db, session, project, conversation, "开聊", ScriptedChat("好的。"))
+
+    text = audit_files(project.dir)[0].read_text(encoding="utf-8")
+    request = text.split("### Response")[0]
+    assert "#### 1.1 system" in request
+    assert "#### 1.2 user" in request
+    assert request.index("#### 1.1 system") < request.index("#### 1.2 user")
+    # 纯文本正文不再包成 JSON：看不到 role 字段，也看不到 \n 转义
+    assert '"role"' not in request
+    assert "\\n" not in request
+
+
 def test_同一轮的折叠调用与主回答按顺序进同一个文件(
     project_db: Session,
     project: ProjectRef,
@@ -205,6 +224,9 @@ def test_同一轮的折叠调用与主回答按顺序进同一个文件(
 
     text = audit_files(project.dir)[-1].read_text(encoding="utf-8")
     assert text.index("## 调用 1：上下文折叠") < text.index("## 调用 2：主回答")
+    # 节号跟着调用序号走，两段 Request 混不到一起
+    assert "#### 1.1 " in text
+    assert "#### 2.1 " in text
     assert "前情摘要" in text
     assert "第二轮回答" in text
 
@@ -236,6 +258,30 @@ def test_失败与中断都留下错误和已经收到的片段(
     assert "已经出了半句" in text
 
 
+def audit_recorder(project: ProjectRef, conversation_id: str, turn_no: int) -> Any:
+    return engine.audit.TurnAudit.create(
+        project.dir,
+        conversation_id=conversation_id,
+        turn_no=turn_no,
+        target="project",
+        agent_code=DESIGNER,
+    )
+
+
+def fake_candidate() -> Candidate:
+    return Candidate(
+        provider_model_id=1,
+        provider_code="bailian",
+        provider_name="bailian 账号",
+        model_id="qwen-plus",
+        driver="openai_compat",
+        endpoint="https://example.invalid/v1",
+        api_key="sk-secret",
+        priority=100,
+        sort_no=0,
+    )
+
+
 def test_审计不写凭证与图片正文(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
@@ -249,36 +295,63 @@ def test_审计不写凭证与图片正文(
         return ChatReply(content="看到了。")
 
     send(project_db, session, project, conversation, f"看这张图 {image}", chat)
-    audit_path = audit_files(project.dir)[0]
-    # 直接验记录器本身：会话上下文目前只有纯文本，凭证与图片是它必须挡住的两类输入
-    audit = engine.audit.TurnAudit.create(
-        project.dir,
-        conversation_id=conversation.id,
-        turn_no=99,
-        target="project",
-        agent_code=DESIGNER,
-    )
+    sent = audit_files(project.dir)[0].read_text(encoding="utf-8")
+    # 粘在正文中间的 data URL 也得洗掉，否则 base64 跟着项目目录同步出去
+    assert "data URL omitted" in sent
+    assert "aGVsbG8=" not in sent
+    assert sent.count("### Response") == 1
+
+    # 再直接验记录器本身：消息字段上的凭证与多模态片段里的图片是它必须挡住的
+    audit = audit_recorder(project, conversation.id, 99)
     audit.write_request(
         "主回答",
-        Candidate(
-            provider_model_id=1,
-            provider_code="bailian",
-            provider_name="bailian 账号",
-            model_id="qwen-plus",
-            driver="openai_compat",
-            endpoint="https://example.invalid/v1",
-            api_key="sk-secret",
-            priority=100,
-            sort_no=0,
-        ),
+        fake_candidate(),
         [
             {"role": "system", "api_key": "sk-secret", "content": "守规矩"},
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image}}]},
         ],
     )
 
-    assert "sk-secret" not in audit.path.read_text(encoding="utf-8")
-    assert "***" in audit.path.read_text(encoding="utf-8")
-    assert "data URL omitted" in audit.path.read_text(encoding="utf-8")
-    assert "aGVsbG8=" not in audit.path.read_text(encoding="utf-8")
-    assert audit_path.read_text(encoding="utf-8").count("### Response") == 1
+    text = audit.path.read_text(encoding="utf-8")
+    assert "sk-secret" not in text
+    assert "***" in text
+    assert "aGVsbG8=" not in text
+    # 多模态消息仍然单独一节，图片只留 MIME、字节数与摘要
+    assert "#### 1.2 user" in text
+    assert "mime=image/png, bytes=5, sha256=" in text
+
+
+def test_多模态片段只记统计不把文件撑爆(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """图片一进去就是几百 KB，整段落盘审计文件就没法看了。"""
+    enable_audit(project)
+    conversation = start_project_talk(project_db)
+    audit = audit_recorder(project, conversation.id, 7)
+    image = "data:image/png;base64," + "QUJD" * 20000
+
+    audit.write_request(
+        "主回答",
+        fake_candidate(),
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "按这张参考图改服饰"},
+                    {"type": "image_url", "image_url": {"url": image}},
+                    {"type": "input_audio", "input_audio": {"data": "AAAA" * 20000}},
+                ],
+            }
+        ],
+    )
+
+    text = audit.path.read_text(encoding="utf-8")
+    # 文本片段照旧看得见，图片与音频只剩一行
+    assert "按这张参考图改服饰" in text
+    assert "- 片段 2：image_url" in text
+    assert "mime=image/png" in text
+    assert "- 片段 3：input_audio" in text
+    assert "QUJD" not in text
+    assert "AAAA" not in text
+    # 两份几十 KB 的载荷进来，文件仍然是一屏能读完的量
+    assert len(text) < 1000
