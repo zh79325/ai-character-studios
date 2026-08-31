@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -182,27 +183,30 @@ class _Progress:
     message: str = ""
     downloaded: int = 0
     total: int = 0
-    started_at: float | None = None
-    """开装时间戳（time.monotonic），算下载速率与剩余时间用。"""
-    start_bytes: int = 0
-    """本次首个进度回调时已下的字节（断点续传基线），速率只算此后新增的。"""
-    baselined: bool = field(default=False, repr=False)
+    samples: deque[tuple[float, int]] = field(default_factory=deque, repr=False)
+    """最近若干个 (时刻, 已下字节) 采样点，只留最近一个窗口，用来算实时速率。"""
     thread: threading.Thread | None = field(default=None, repr=False)
 
 
 _progress: dict[str, _Progress] = {}
 _lock = threading.Lock()
 
+# 速率只看最近这段时间：整段会话平均会把开头列文件/建连的死时间算进去，
+# 导致剩余时间虚高还越算越长。用滑动窗口才灵敏、剩余时间会真的往下走。
+_RATE_WINDOW = 8.0  # 秒
+
 
 def _rate_bytes(prog: _Progress | None) -> float | None:
-    """本次会话平均下载速率（字节/秒）。速率只算基线之后新增的，还没新增返回 None。"""
-    if prog is None or prog.status != "running" or prog.started_at is None:
+    """最近一个窗口内的下载速率（字节/秒）。采样不足或没新增就返回 None。"""
+    if prog is None or prog.status != "running" or len(prog.samples) < 2:
         return None
-    elapsed = time.monotonic() - prog.started_at
-    fresh = prog.downloaded - prog.start_bytes  # 本次会话新下的
-    if elapsed <= 0 or fresh <= 0:
+    t0, b0 = prog.samples[0]
+    t1, b1 = prog.samples[-1]
+    span = t1 - t0
+    delta = b1 - b0
+    if span <= 0 or delta <= 0:
         return None
-    return fresh / elapsed
+    return delta / span
 
 
 def _eta_seconds(prog: _Progress | None) -> int | None:
@@ -252,11 +256,13 @@ def _install_worker(plugin: Plugin) -> None:
             prog = _progress.get(plugin.id)
             if prog is None:
                 return
-            if not prog.baselined:  # 第一次回调把已续传的字节定为速率基线
-                prog.start_bytes = done
-                prog.baselined = True
             prog.downloaded = done
             prog.total = total
+            now = time.monotonic()
+            prog.samples.append((now, done))
+            cutoff = now - _RATE_WINDOW  # 掐掉窗口外的老采样，但至少留两个好算速率
+            while len(prog.samples) > 2 and prog.samples[0][0] < cutoff:
+                prog.samples.popleft()
 
     try:
         plugin.install(on_progress)
@@ -294,9 +300,7 @@ def start_install(plugin_id: str) -> dict:
             prog = _progress.get(plugin_id)
             if not (prog and prog.status == "running"):
                 thread = threading.Thread(target=_install_worker, args=(plugin,), daemon=True)
-                _progress[plugin_id] = _Progress(
-                    status="running", started_at=time.monotonic(), thread=thread
-                )
+                _progress[plugin_id] = _Progress(status="running", thread=thread)
                 thread.start()
     return _status_dict(plugin)
 
