@@ -8,7 +8,7 @@ import ProjectFrame from '@/components/ProjectFrame'
 
 export default function ArtBiblePage() {
   return (
-    <ProjectFrame>
+    <ProjectFrame breadcrumb={[{ label: '视觉规范' }]}>
       <ArtBibleEditor />
     </ProjectFrame>
   )

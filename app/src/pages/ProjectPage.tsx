@@ -75,7 +75,7 @@ export default function ProjectPage() {
         : ''
 
   return (
-    <ProjectFrame header={false}>
+    <ProjectFrame>
       <ChatPanel
         agentCode="game_designer"
         targetKind="project"

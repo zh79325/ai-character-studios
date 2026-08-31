@@ -6,7 +6,7 @@ import ProjectConfigForm from '@/components/ProjectConfigForm'
 
 export default function ProjectConfigPage() {
   return (
-    <ProjectFrame requireReady>
+    <ProjectFrame requireReady breadcrumb={[{ label: '项目配置' }]}>
       <ProjectConfigForm />
     </ProjectFrame>
   )

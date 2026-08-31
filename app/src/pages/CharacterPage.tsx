@@ -11,24 +11,21 @@
  * 渲染图那张卡片要等门禁 1 过了才出现：设定是它的底本，没定稿就没有可翻译的东西，提前摆上
  * 按钮只会让用户按一下拿到 409。
  */
-import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Empty, Row, Space, Tag, Timeline, Typography } from 'antd'
+import { Card, Col, Empty, Row, Space, Timeline, Typography } from 'antd'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { listCharacterEvents, readCharacter } from '@/api/characters'
 import { ApiError } from '@/api/client'
 import ChatPanel, { type Handoff } from '@/components/chat'
+import ProjectFrame from '@/components/ProjectFrame'
 import RenderGateCard from '@/components/RenderGateCard'
 import SpecGateCard from '@/components/SpecGateCard'
 import ViewsGateCard from '@/components/ViewsGateCard'
 import type { TaskEvent } from '@/types/api'
 
 const WRITER = 'spec_writer'
-
-/** 第一句话给个样子：设定要的几项一次说全，比来回追问快。 */
-const SPEC_STARTER = '这个角色叫…，定位是…，外形特征：…，性格与气质：…，出场场景在…'
 
 /** 事件级别 → 时间线颜色。`warning` 是「审出问题」，不是出错。 */
 const LEVEL_COLORS: Record<string, string> = {
@@ -56,71 +53,59 @@ export default function CharacterPage() {
 
   if (character.error instanceof ApiError && character.error.status === 404) {
     return (
-      <Card>
-        <Empty description="这个角色不在当前项目里。可能是切过项目，或者它已经被移出。">
-          <Typography.Link onClick={() => navigate('/project')}>回到当前项目</Typography.Link>
-        </Empty>
-      </Card>
+      <ProjectFrame breadcrumb={[{ label: '角色设计', path: '/design/characters' }]}>
+        <Card>
+          <Empty description="这个角色不在当前项目里。可能是切过项目，或者它已经被移出。">
+            <Typography.Link onClick={() => navigate('/project')}>回到当前项目</Typography.Link>
+          </Empty>
+        </Card>
+      </ProjectFrame>
     )
   }
 
   const row = character.data
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" loading={character.isLoading}>
-        <Space direction="vertical" size={2}>
-          <Space size={8}>
-            <Typography.Link onClick={() => navigate('/project')}>
-              <ArrowLeftOutlined /> 角色素材
-            </Typography.Link>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {row?.name ?? '…'}
-            </Typography.Title>
-            {row && <Tag color="blue">{row.state_label}</Tag>}
-          </Space>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {row?.dir_name ?? ''}
-            {row?.spec_path ? ` · 定稿 ${row.spec_path}` : ' · 还没有定稿'}
-            {row?.render_path ? ` · 渲染图 ${row.render_path}` : ''}
-            {row && Object.keys(row.view_paths).length > 0
-              ? ` · 四视图 ${Object.keys(row.view_paths).length} 张已定稿`
-              : ''}
-          </Typography.Text>
-        </Space>
-      </Card>
+    <ProjectFrame
+      requireReady
+      breadcrumb={[
+        { label: '角色设计', path: '/design/characters' },
+        { label: row?.name ?? '角色' },
+      ]}
+    >
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <ChatPanel
+          agentCode={WRITER}
+          targetKind="character"
+          targetRef={id}
+          title={row ? `${row.name} 设定对焦` : undefined}
+          onActiveChange={setConversationId}
+          handoff={handoff}
+          heading="设定对焦"
+          who="设定作者"
+          starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
+        />
 
-      <ChatPanel
-        agentCode={WRITER}
-        targetKind="character"
-        targetRef={id}
-        title={row ? `${row.name} 设定对焦` : undefined}
-        onActiveChange={setConversationId}
-        handoff={handoff}
-        heading="设定对焦"
-        who="设定作者"
-        starters={[SPEC_STARTER]}
-      />
-
-      <Row gutter={16}>
-        <Col span={14}>
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            {row && (
-              <SpecGateCard
-                character={row}
-                conversationId={conversationId}
-                onHandoff={setHandoff}
-              />
-            )}
-            {row && row.gate_spec_confirmed_at !== null && <RenderGateCard character={row} />}
-            {row && row.gate_render_confirmed_at !== null && <ViewsGateCard character={row} />}
-          </Space>
-        </Col>
-        <Col span={10}>
-          <EventTimeline events={events.data ?? []} loading={events.isLoading} />
-        </Col>
-      </Row>
-    </Space>
+        <Row gutter={16}>
+          <Col span={14}>
+            <Space direction="vertical" size={16} style={{ width: '100%' }}>
+              {row && (
+                <SpecGateCard
+                  character={row}
+                  conversationId={conversationId}
+                  onHandoff={setHandoff}
+                />
+              )}
+              {row && row.gate_spec_confirmed_at !== null && <RenderGateCard character={row} />}
+              {row && row.gate_render_confirmed_at !== null && <ViewsGateCard character={row} />}
+            </Space>
+          </Col>
+          <Col span={10}>
+            <EventTimeline events={events.data ?? []} loading={events.isLoading} />
+          </Col>
+        </Row>
+      </Space>
+    </ProjectFrame>
   )
 }
 

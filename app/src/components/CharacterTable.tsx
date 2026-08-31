@@ -1,18 +1,27 @@
 /**
- * 当前项目的角色素材，按磁盘分组分层展示。
- *
- * 列表来自项目自带的库，切项目天然隔离；分组只是 characters/ 下的文件夹，磁盘是它们的
- * 真相（空分组没有库行可依），所以分组树直接读盘。左边选中分组、右边只列直属该分组的角色。
- *
- * 新建角色/分组都落在「当前选中的分组」下。重名（同分组同名）先弹确认再带 overwrite 覆盖：
+ * 当前项目的角色列表。表格支持按关键字和所属目录过滤，新建角色/分组默认落在当前筛选目录下；
+ * 筛选全部目录时默认落在根目录。
  * 覆盖是删旧目录（含素材）重建，后端仍兜底 409。
  *
  * 「扫描目录」是给「用户直接把角色目录拷进来」这条路准备的：只认领带 `.model.json` 的目录，
  * 只报告消失的目录而不删——目录可能只是还没拷过来。
  */
-import { FolderAddOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { FolderOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App, Button, Card, Input, Modal, Space, Table, Tag, Tree, Typography } from 'antd'
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Input,
+  Modal,
+  Space,
+  Table,
+  Tag,
+  Tree,
+  TreeSelect,
+  Typography,
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -23,8 +32,8 @@ import type { Character, ScanResult } from '@/types/api'
 
 const STAGE_COLORS = ['default', 'blue', 'cyan', 'geekblue', 'purple', 'gold', 'orange', 'green']
 
-/** 根分组用一个不会跟真实分组路径撞的哨兵 key（真实分组路径不以 `/` 开头）。 */
-const ROOT_KEY = '/'
+const ALL_GROUPS = '*'
+const ROOT_GROUP = '/'
 
 /**
  * 阶段名按 `S0_spec_drafting` 这样的形式排，序号越大越靠后，颜色跟着往后走。
@@ -47,21 +56,25 @@ function targetDir(group: string, name: string): string {
   return ['characters', ...(group ? [group] : []), name].join('/')
 }
 
-type TreeNode = { key: string; title: string; children: TreeNode[] }
+type DirectoryNode = {
+  key: string
+  value: string
+  title: string
+  children: DirectoryNode[]
+}
 
-/** 把一批分组路径（含各层）拼成嵌套树，中间层缺失的自动补齐。 */
-function buildTree(paths: Iterable<string>): TreeNode[] {
-  const roots: TreeNode[] = []
-  const index = new Map<string, TreeNode>()
-  for (const path of paths) {
-    if (!path) continue
+/** 将 `玩家角色/主角` 这类路径转换为目录树。 */
+function buildDirectoryTree(paths: Iterable<string>): DirectoryNode[] {
+  const roots: DirectoryNode[] = []
+  const index = new Map<string, DirectoryNode>()
+  for (const path of [...paths].sort()) {
     let prefix = ''
     let siblings = roots
     for (const part of path.split('/')) {
       prefix = prefix ? `${prefix}/${part}` : part
       let node = index.get(prefix)
       if (!node) {
-        node = { key: prefix, title: part, children: [] }
+        node = { key: prefix, value: prefix, title: part, children: [] }
         index.set(prefix, node)
         siblings.push(node)
       }
@@ -76,10 +89,12 @@ export default function CharacterTable() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [lastScan, setLastScan] = useState<ScanResult | null>(null)
-  const [currentGroup, setCurrentGroup] = useState('')
+  const [directoryFilter, setDirectoryFilter] = useState(ALL_GROUPS)
+  const [keyword, setKeyword] = useState('')
   const [naming, setNaming] = useState(false)
   const [name, setName] = useState('')
   const [grouping, setGrouping] = useState(false)
+  const [managedGroup, setManagedGroup] = useState('')
   const [groupName, setGroupName] = useState('')
 
   const rows = useQuery({ queryKey: ['characters'], queryFn: () => listCharacters() })
@@ -90,19 +105,37 @@ export default function CharacterTable() {
     void queryClient.invalidateQueries({ queryKey: ['character-groups'] })
   }
 
-  const treeData = useMemo(() => {
+  const directoryTreeData = useMemo(() => {
     const paths = new Set<string>(groups.data ?? [])
     for (const row of rows.data ?? []) {
-      const group = groupOf(row.dir_name)
-      if (group) paths.add(group)
+      const path = groupOf(row.dir_name)
+      if (path) paths.add(path)
     }
-    return [{ key: ROOT_KEY, title: '角色（根）', children: buildTree(paths) }]
+    return [
+      { key: ALL_GROUPS, value: ALL_GROUPS, title: '全部目录', children: [] },
+      {
+        key: ROOT_GROUP,
+        value: '',
+        title: '根目录',
+        children: buildDirectoryTree(paths),
+      },
+    ]
   }, [groups.data, rows.data])
 
-  const visibleRows = (rows.data ?? []).filter((row) => groupOf(row.dir_name) === currentGroup)
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase()
+  const visibleRows = (rows.data ?? []).filter((row) => {
+    const matchesDirectory =
+      directoryFilter === ALL_GROUPS || groupOf(row.dir_name) === directoryFilter
+    const matchesKeyword =
+      normalizedKeyword === '' ||
+      row.name.toLocaleLowerCase().includes(normalizedKeyword) ||
+      row.dir_name.toLocaleLowerCase().includes(normalizedKeyword)
+    return matchesDirectory && matchesKeyword
+  })
+  const targetGroup = directoryFilter === ALL_GROUPS ? '' : directoryFilter
 
   const runCreate = (overwrite: boolean) =>
-    createCharacter(name.trim(), currentGroup, overwrite).then((row) => {
+    createCharacter(name.trim(), targetGroup, overwrite).then((row) => {
       setNaming(false)
       setName('')
       refreshAll()
@@ -118,7 +151,7 @@ export default function CharacterTable() {
   const submitCharacter = () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    const clash = (rows.data ?? []).some((row) => row.dir_name === targetDir(currentGroup, trimmed))
+    const clash = (rows.data ?? []).some((row) => row.dir_name === targetDir(targetGroup, trimmed))
     if (clash) {
       Modal.confirm({
         title: `「${trimmed}」在该分组已存在`,
@@ -134,18 +167,21 @@ export default function CharacterTable() {
   }
 
   const group = useMutation({
-    mutationFn: () => {
-      const sub = groupName.trim()
-      return createGroup(currentGroup ? `${currentGroup}/${sub}` : sub)
-    },
-    onSuccess: () => {
-      setGrouping(false)
+    mutationFn: (path: string) => createGroup(path),
+    onSuccess: (nextGroups, path) => {
       setGroupName('')
-      void queryClient.invalidateQueries({ queryKey: ['character-groups'] })
+      setManagedGroup(path)
+      queryClient.setQueryData(['character-groups'], nextGroups)
       message.success('分组建好了')
     },
     onError: (err: Error) => message.error(err.message),
   })
+
+  const submitGroup = () => {
+    const sub = groupName.trim()
+    if (!sub) return
+    group.mutate(managedGroup ? `${managedGroup}/${sub}` : sub)
+  }
 
   const scan = useMutation({
     mutationFn: scanProject,
@@ -195,21 +231,52 @@ export default function CharacterTable() {
       width: 180,
       render: (at: string) => at.replace('T', ' ').slice(0, 19),
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 110,
+      render: (_, row) => (
+        <Button type="primary" size="small" onClick={() => navigate(`/characters/${row.id}`)}>
+          开始设计
+        </Button>
+      ),
+    },
   ]
 
-  const groupLabel = currentGroup || '根'
+  const groupLabel = targetGroup || '根'
 
   return (
-    <Card
-      size="small"
-      title="角色素材"
-      extra={
-        <Space>
-          <Button icon={<FolderAddOutlined />} onClick={() => setGrouping(true)}>
-            新建分组
-          </Button>
+    <Card size="small" title="角色列表">
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            value={keyword}
+            placeholder="按角色名或目录搜索"
+            style={{ width: 240 }}
+            onChange={(event) => setKeyword(event.target.value)}
+          />
+          <TreeSelect
+            value={directoryFilter}
+            treeData={directoryTreeData}
+            treeDefaultExpandAll
+            showSearch
+            treeNodeFilterProp="title"
+            style={{ width: 220 }}
+            onChange={setDirectoryFilter}
+          />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setNaming(true)}>
             新建角色
+          </Button>
+          <Button
+            icon={<FolderOutlined />}
+            onClick={() => {
+              setManagedGroup(targetGroup)
+              setGrouping(true)
+            }}
+          >
+            分组管理
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -225,43 +292,23 @@ export default function CharacterTable() {
             扫描目录
           </Button>
         </Space>
-      }
-    >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
         {lastScan && lastScan.missing.length > 0 && (
           <Alert
             type="warning"
             showIcon
-            message="有素材在库里但磁盘上找不到"
+            message="有角色在库里但磁盘上找不到"
             description={`${lastScan.missing.join('、')}。目录可能还没拷过来，平台不会替你删记录。`}
           />
         )}
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-          <div style={{ width: 220, flexShrink: 0 }}>
-            <Tree
-              treeData={treeData}
-              selectedKeys={[currentGroup || ROOT_KEY]}
-              defaultExpandAll
-              onSelect={(keys) => {
-                const key = keys[0]
-                if (key === undefined) return
-                setCurrentGroup(key === ROOT_KEY ? '' : String(key))
-              }}
-            />
-          </div>
-          <Table
-            style={{ flex: 1, minWidth: 0 }}
-            rowKey="id"
-            size="small"
-            loading={rows.isLoading}
-            dataSource={visibleRows}
-            columns={columns}
-            pagination={false}
-            locale={{
-              emptyText: `分组「${groupLabel}」下还没有角色。点「新建角色」建一个，或把角色目录拷进来再扫描认领`,
-            }}
-          />
-        </div>
+        <Table
+          rowKey="id"
+          size="small"
+          loading={rows.isLoading}
+          dataSource={visibleRows}
+          columns={columns}
+          pagination={false}
+          locale={{ emptyText: '没有符合筛选条件的角色' }}
+        />
       </Space>
 
       <Modal
@@ -287,26 +334,43 @@ export default function CharacterTable() {
         </Space>
       </Modal>
 
-      <Modal
-        open={grouping}
-        title={`在分组「${groupLabel}」下新建子分组`}
-        okText="建吧"
-        cancelText="算了"
-        okButtonProps={{ disabled: groupName.trim() === '' }}
-        confirmLoading={group.isPending}
-        onCancel={() => setGrouping(false)}
-        onOk={() => group.mutate()}
-      >
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            分组就是 characters/ 下的一个文件夹，用来把角色分门别类（如玩家角色、boss 角色）。
-          </Typography.Text>
-          <Input
-            value={groupName}
-            placeholder="例：boss角色"
-            onChange={(event) => setGroupName(event.target.value)}
-            onPressEnter={() => groupName.trim() !== '' && group.mutate()}
+      <Modal open={grouping} title="分组管理" footer={null} onCancel={() => setGrouping(false)}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Tree
+            blockNode
+            defaultExpandAll
+            selectedKeys={[managedGroup || ROOT_GROUP]}
+            treeData={[
+              {
+                key: ROOT_GROUP,
+                title: '根目录',
+                children: directoryTreeData[1]?.children ?? [],
+              },
+            ]}
+            onSelect={(keys) => {
+              const key = keys[0]
+              if (key === undefined) return
+              setManagedGroup(key === ROOT_GROUP ? '' : String(key))
+            }}
           />
+          <Typography.Text>在「{managedGroup || '根目录'}」下新建子分组</Typography.Text>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              value={groupName}
+              placeholder="输入分组名称"
+              onChange={(event) => setGroupName(event.target.value)}
+              onPressEnter={submitGroup}
+            />
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              loading={group.isPending}
+              disabled={groupName.trim() === ''}
+              onClick={submitGroup}
+            >
+              新建
+            </Button>
+          </Space.Compact>
         </Space>
       </Modal>
     </Card>

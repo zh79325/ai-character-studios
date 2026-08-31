@@ -6,18 +6,23 @@
  */
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Card, Empty, Space, Tag, Typography } from 'antd'
+import { Breadcrumb, Button, Card, Empty, Space } from 'antd'
 import type { ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
 import { currentProject } from '@/api/projects'
 
+export interface ProjectBreadcrumbItem {
+  label: string
+  path?: string
+}
+
 interface Props {
   /** 真则立项没收口时不放行：素材目录都还没铺，进去只会看到一片空。 */
   requireReady?: boolean
-  /** 假则不出项目抬头卡：页面自己把项目名、代号、路径摆进更省地方的位置。 */
-  header?: boolean
+  /** “项目首页”之后的页面层级。 */
+  breadcrumb?: ProjectBreadcrumbItem[]
   children: ReactNode
 }
 
@@ -31,7 +36,7 @@ export function useCurrentProject() {
   })
 }
 
-export default function ProjectFrame({ requireReady = false, header = true, children }: Props) {
+export default function ProjectFrame({ requireReady = false, breadcrumb = [], children }: Props) {
   const navigate = useNavigate()
   const current = useCurrentProject()
 
@@ -54,25 +59,18 @@ export default function ProjectFrame({ requireReady = false, header = true, chil
 
   const drafting = current.data?.stage === 'drafting'
 
+  const breadcrumbItems = [
+    {
+      title: breadcrumb.length === 0 ? '项目首页' : <Link to="/project">项目首页</Link>,
+    },
+    ...breadcrumb.map((item) => ({
+      title: item.path ? <Link to={item.path}>{item.label}</Link> : item.label,
+    })),
+  ]
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {header && (
-        <Card size="small" loading={current.isLoading}>
-          <Space direction="vertical" size={2}>
-            <Space size={8}>
-              <Typography.Title level={5} style={{ margin: 0 }}>
-                {current.data?.name ?? '…'}
-              </Typography.Title>
-              <Tag>{current.data?.code}</Tag>
-              {drafting && <Tag color="processing">立项中</Tag>}
-              {current.data?.missing && <Tag color="error">目录不在</Tag>}
-            </Space>
-            <Typography.Text type="secondary" copyable={{ text: current.data?.dir_path ?? '' }}>
-              {current.data?.dir_path ?? ''}
-            </Typography.Text>
-          </Space>
-        </Card>
-      )}
+      <Breadcrumb items={breadcrumbItems} />
       {requireReady && drafting ? (
         <Card>
           <Empty description="这个项目还在立项中，先把名字与代号定下来">
