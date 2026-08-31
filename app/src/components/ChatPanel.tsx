@@ -80,6 +80,8 @@ interface Props {
   finale?: ((say: (text: string) => void) => ReactNode) | null
   /** 收口这一步叫什么，用在抽屉标题与重开按钮上。 */
   finaleTitle?: string
+  /** 收口内容的签名：换了抽屉自己弹出来，跟新一批待选项一模一样。空串就是没收口可做。 */
+  finaleKey?: string
 }
 
 /**
@@ -107,6 +109,7 @@ export default function ChatPanel({
   sidebar = null,
   finale = null,
   finaleTitle = '收口',
+  finaleKey = '',
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
@@ -344,6 +347,7 @@ export default function ChatPanel({
                 disabled={send.isPending}
                 onSubmit={dispatch}
                 finaleTitle={finaleTitle}
+                finaleKey={finaleKey}
                 finale={
                   finale === null
                     ? null

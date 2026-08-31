@@ -6,19 +6,20 @@
  *
  * 收口的两步都在待选项抽屉里，跟这一轮的题排在一起：
  *
- * 1. **确认游戏风格**：把设计师写的那份 art-bible 草稿落盘。以前这一步叫「确认沉淀」——用户看不出
- *    沉淀的是什么，也不知道点完会发生什么。
+ * 1. **确认游戏风格**：抽屉里摆设计师写的那份 art-bible 全文，看完再拍——以前这一步叫「确认沉淀」，
+ *    用户既看不出沉淀的是什么，也不知道点完会发生什么。
  * 2. **确认立项**：定下项目名与代号。落盘之后自动向设计师要几组命名建议（`[项目命名建议]`），
  *    用户点一组或自己写，再按确认立项。名字与代号不该让用户凭空填，聊过一路的是设计师。
  *
- * 两步都不催：抽屉随时可以关掉接着聊，聊完再从那个按钮抽回来。
+ * 两步的交互跟拍待选项一模一样：新东西到了抽屉自己弹出来，拍一下就过，不想现在拍就关掉接着聊，
+ * 聊完再从那个按钮抽回来。
  *
  * 对焦会话由系统管（`managed`）：进页就接上这个项目还开着的那场，没有就开一场，开场先报一遍
  * 项目现状。
  */
 import { RightOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Card, Input, Radio, Space, Tag, Typography } from 'antd'
+import { App, Button, Card, Collapse, Input, Radio, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -26,6 +27,7 @@ import { commitConversation, readConversation } from '@/api/conversations'
 import { finalizeProject } from '@/api/projects'
 import ChatPanel from '@/components/ChatPanel'
 import { Row, ROW_LABEL } from '@/components/ChoicePicker'
+import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
 import { DESIGN_ENTRIES, designPath } from '@/lib/design'
 import type { Draft, NamingOption, ProjectList } from '@/types/api'
@@ -55,6 +57,13 @@ export default function ProjectPage() {
 
   // 聊到有东西可拍才摆收口：白纸一张就摆一个「确认立项」，等于请用户跳过聊风格这一步
   const gate = landing.length > 0 ? 'style' : naming.length > 0 || settled ? 'launch' : null
+  // 换了一份草稿、换了一批建议就重新弹出来；同一份反复刷详情不打扰已经关掉它的人
+  const finaleKey =
+    gate === 'style'
+      ? `style:${landing.map((one) => one.id).join(',')}`
+      : gate === 'launch'
+        ? `launch:${naming.map((one) => `${one.name}/${one.code}`).join(',')}`
+        : ''
 
   return (
     <ProjectFrame header={false}>
@@ -66,6 +75,7 @@ export default function ProjectPage() {
         draftsAside
         sidebar={<Sidebar />}
         finaleTitle={gate === 'style' ? '确认游戏风格' : '确认立项'}
+        finaleKey={!drafting ? '' : finaleKey}
         finale={
           !drafting || gate === null
             ? null
@@ -172,13 +182,17 @@ function StyleGate({
         确认游戏风格
       </Typography.Text>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        这几份写进项目目录，之后设计师给项目名与代号：
+        看一眼这几份，确认了就写进项目目录，之后设计师给项目名与代号；要改就关掉这层说改哪里。
       </Typography.Text>
-      {drafts.map((one) => (
-        <Row key={one.id} active={false}>
-          <Typography.Text style={{ fontSize: 12 }}>{one.target_path}</Typography.Text>
-        </Row>
-      ))}
+      <Collapse
+        size="small"
+        defaultActiveKey={drafts[0]?.id}
+        items={drafts.map((one) => ({
+          key: one.id,
+          label: <Typography.Text style={{ fontSize: 12 }}>{one.target_path}</Typography.Text>,
+          children: <Preview draft={one} />,
+        }))}
+      />
       <Button
         type="primary"
         block
@@ -194,6 +208,27 @@ function StyleGate({
 
 /** 「其他」那一档：选项文字里不可能出现控制字符，拿它当哨兵不会跟真的建议撞上。 */
 const CUSTOM = '\u0000custom'
+
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
+
+/** 草稿全文。md 按 markdown 渲染；`project.json` 这种照原样摆，拿 markdown 读会把缩进与引号吃掉。 */
+function Preview({ draft }: { draft: Draft }) {
+  if (draft.target_path.endsWith('.md')) return <MarkdownText text={draft.content} />
+
+  return (
+    <pre
+      style={{
+        margin: 0,
+        fontFamily: MONO,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+      }}
+    >
+      {draft.content}
+    </pre>
+  )
+}
 
 /** 第二步：定名字与代号。一组建议一行，跟上面的题一个长相。 */
 function LaunchGate({ naming, say }: { naming: NamingOption[]; say: (text: string) => void }) {

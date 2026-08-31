@@ -14,20 +14,41 @@
 /** 标记行。行首容忍缩进与 `>`：模型爱把块包在引用里。 */
 const MARKER = /^[ \t>]*\[(草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议|待选项)/
 
+/** ``` 围栏行。模型爱把整个块包在代码围栏里，剥了块只留围栏会在气泡里渲染成一条空代码块。 */
+const FENCE = /^[ \t>]*```/
+
 /** 剥掉结构块，只留下给人看的那几段话。 */
 export function visibleText(text: string): string {
   const kept: string[] = []
   let dropping = false
+  /** 这个块是包在围栏里的：它的收尾围栏也得跟着走。 */
+  let fenced = false
 
   for (const line of text.split('\n')) {
     const hit = MARKER.exec(line)
     if (hit !== null) {
+      const ending = hit[1] === '草稿结束'
+      if (!ending && !dropping) fenced = dropOpeningFence(kept) || fenced
       // `[草稿结束]` 是收尾行，它自己被吃掉，后面的正文重新算可见
-      dropping = hit[1] !== '草稿结束'
+      dropping = !ending
       continue
     }
-    if (!dropping) kept.push(line)
+    if (dropping) continue
+    if (fenced && FENCE.test(line)) {
+      fenced = false
+      continue
+    }
+    kept.push(line)
   }
 
   return kept.join('\n').trim()
+}
+
+/** 块前面那道围栏。中间隔着空行也算，模型换行不讲究。 */
+function dropOpeningFence(kept: string[]): boolean {
+  let last = kept.length - 1
+  while (last >= 0 && (kept[last] ?? '').trim() === '') last -= 1
+  if (last < 0 || !FENCE.test(kept[last] ?? '')) return false
+  kept.splice(last, 1)
+  return true
 }

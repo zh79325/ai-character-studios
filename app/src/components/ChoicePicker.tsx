@@ -47,6 +47,13 @@ interface Props {
   finale?: ((close: () => void) => ReactNode) | null
   /** 收口这一步叫什么：没有待选项时它就是抽屉标题与那个重开按钮上的字。 */
   finaleTitle?: string
+  /**
+   * 收口这一块的内容签名，换了就重新抽出来。
+   *
+   * 跟待选项同一套规矩：设计师新写了一份草稿、新给了一批命名建议，该弹出来让用户看一眼再拍，
+   * 而不是摆成一个平按钮等他自己发现。空串就是现在没收口可做。
+   */
+  finaleKey?: string
 }
 
 type Table = Record<string, string>
@@ -81,7 +88,7 @@ function multiDefaults(groups: ChoiceGroup[]): Marks {
  * 抽屉多高。
  *
  * 项少就只抽出装得下的那么高，项多就一直顶到离对话区顶部 30px：留这一条才看得出摆在上面的
- * 是聊天，而不是一整屏表单。
+ * 是聊天，而不是一整屏表单。收口那一块里是草稿全文，算三项的位置。
  */
 function heightOf(count: number): string {
   return `min(${240 + count * 200}px, calc(100% - 30px))`
@@ -93,24 +100,26 @@ export default function ChoicePicker({
   onSubmit,
   finale = null,
   finaleTitle = '收口',
+  finaleKey = '',
 }: Props) {
-  const signature = signatureOf(groups)
+  const signature = `${signatureOf(groups)}\n@${finaleKey}`
   const [picked, setPicked] = useState<Table>(() => singleDefaults(groups))
   const [marks, setMarks] = useState<Marks>(() => multiDefaults(groups))
   const [custom, setCustom] = useState<Table>({})
   const [note, setNote] = useState<Table>({})
-  // 有题才自己抽出来：只剩收口那一块时抽出来会白盖住对话，用户还没想收口
-  const [open, setOpen] = useState(groups.length > 0)
+  const [open, setOpen] = useState(groups.length > 0 || finaleKey !== '')
   const [seen, setSeen] = useState(signature)
 
-  // 换了一批选项就重新预选并重新抽出来：上一轮的选择与补充留着会让用户以为新的项也已经定了
+  // 换了一批选项（或换了一份要确认的东西）就重新预选并重新抽出来：上一轮的选择与补充留着
+  // 会让用户以为新的项也已经定了
   if (seen !== signature) {
     setSeen(signature)
     setPicked(singleDefaults(groups))
     setMarks(multiDefaults(groups))
     setCustom({})
     setNote({})
-    if (groups.length > 0) setOpen(true)
+    // 这一轮还没回完就不抽：字正在往外冒，盖住了用户看不见。回完那一下内容又会变，那时再抽
+    if (!disabled && (groups.length > 0 || finaleKey !== '')) setOpen(true)
   }
 
   if (groups.length === 0 && finale === null) return null
@@ -157,7 +166,7 @@ export default function ChoicePicker({
       <Drawer
         open={open}
         placement="bottom"
-        height={heightOf(groups.length + (finale === null ? 0 : 1))}
+        height={heightOf(groups.length + (finale === null ? 0 : 3))}
         getContainer={false}
         rootStyle={{ position: 'absolute' }}
         title={

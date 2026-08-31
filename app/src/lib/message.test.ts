@@ -47,4 +47,29 @@ describe('visibleText', () => {
       '这几处我想跟你确认一下：色彩要不要压暗？',
     )
   })
+
+  it('包在 ``` 里的块不会剩下一条空代码块', () => {
+    const text = [
+      '这是完整草稿：',
+      '',
+      '```',
+      '[草稿开始: art-bible.md]',
+      '# 美术圣经',
+      '[草稿结束]',
+      '```',
+      '',
+      '```',
+      '[对焦进度]',
+      '已定：全部',
+      '```',
+    ].join('\n')
+
+    expect(visibleText(text)).toBe('这是完整草稿：')
+  })
+
+  it('正文里真的代码块不能被剥掉', () => {
+    const text = ['改这一行：', '```', 'style: voxel', '```'].join('\n')
+
+    expect(visibleText(text)).toBe(text)
+  })
 })
