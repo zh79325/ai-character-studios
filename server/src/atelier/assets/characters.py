@@ -13,18 +13,19 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from atelier.assets import archive, layout, projects
 from atelier.assets.projects import ProjectRef
-from atelier.db.project_models import Character
+from atelier.db.project_models import Character, TaskEvent
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict, NotFound
 
@@ -144,24 +145,38 @@ def spec_target(character: Character) -> str:
     return character.spec_path or f"{character.dir_name}/{character.name}{SPEC_SUFFIX}"
 
 
-def create(project: Session, ref: ProjectRef, name: str) -> Character:
-    """建一个角色：铺目录、登记库行，状态从 S0 起步。
+def create(
+    project: Session,
+    ref: ProjectRef,
+    name: str,
+    group: str = "",
+    overwrite: bool = False,
+) -> Character:
+    """建一个角色：铺目录、写 marker、登记库行，状态从 S0 起步。
 
-    目录名过一遍 `safe_dir_name`，库里的 `name` 留用户写的原文——用户认的是「赤瞳双尾兽」，
-    路径合不合法是平台自己的事。
+    角色按磁盘文件夹分层组织（`group` 可多级），身份是相对路径 `dir_name`：同一分组
+    内同名才算重名，跨分组允许同名。目录名过 `safe_dir_name`，库里的 `name` 留用户写的原文。
+
+    目标目录已存在时：`overwrite` 为假就拒；为真就删旧目录（含已生成素材）+ 删旧库行与
+    它的 task_events 再重建。asset_id 由 dir_name 派生，覆盖后 id 不变。
     """
     display = name.strip()
     if not display:
         raise Conflict("角色名不能为空")
     require_project_ready(ref)
-    if by_name(project, display) is not None:
-        raise Conflict(f"角色「{display}」已经有了")
 
-    dir_name = f"characters/{layout.safe_dir_name(display)}"
+    group = layout.safe_rel_path(group)
+    seg = layout.safe_dir_name(display)
+    dir_name = "/".join(["characters", *([group] if group else []), seg])
     asset_dir = ref.dir / dir_name
+
     if asset_dir.exists():
-        raise Conflict(f"目录 {dir_name} 已经在磁盘上了，用扫描把它认领进来")
+        if not overwrite:
+            raise Conflict(f"角色「{display}」在该分组已存在")
+        _remove_existing(project, ref, dir_name)
+
     layout.ensure_asset_dirs(asset_dir)
+    layout.write_model_marker(asset_dir, display)
 
     character = Character(id=projects.asset_id(ref.code, dir_name), name=display, dir_name=dir_name)
     project.add(character)
@@ -175,6 +190,19 @@ def create(project: Session, ref: ProjectRef, name: str) -> Character:
     project.commit()
     _log.info("character_created", id=character.id, name=display, dir=dir_name)
     return character
+
+
+def _remove_existing(project: Session, ref: ProjectRef, dir_name: str) -> None:
+    """覆盖时把旧角色抹干净：磁盘目录、库行、它名下的 task_events 一并删。删完不 commit，
+    跟重建在同一事务里落库，免得删了一半建失败留下个空宝."""
+    asset_dir = ref.dir / dir_name
+    if asset_dir.exists():
+        shutil.rmtree(asset_dir)
+    stale = project.scalar(select(Character).where(Character.dir_name == dir_name))
+    if stale is not None:
+        project.execute(delete(TaskEvent).where(TaskEvent.task_id == stale.id))
+        project.delete(stale)
+        project.flush()
 
 
 # --------------------------------------------------------------------------- #

@@ -19,8 +19,11 @@ import type {
   ViewSet,
 } from '@/types/api'
 
-export function createCharacter(name: string): Promise<Character> {
-  return request<Character>('/api/characters', { method: 'POST', body: { name } })
+export function createCharacter(name: string, group = '', overwrite = false): Promise<Character> {
+  return request<Character>('/api/characters', {
+    method: 'POST',
+    body: { name, group, overwrite },
+  })
 }
 
 export function readCharacter(id: string): Promise<Character> {

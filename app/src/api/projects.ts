@@ -94,6 +94,16 @@ export function listCharacters(project?: string): Promise<Character[]> {
   return request<Character[]>(withQuery('/api/projects/current/characters', { project }))
 }
 
+/** 当前项目 `characters/` 下的分组目录（含空分组）。分组只是文件夹，后端直接读盘。 */
+export function listGroups(): Promise<string[]> {
+  return request<string[]>('/api/projects/current/groups')
+}
+
+/** 建一个空分组文件夹，返回建完后的最新分组列表。 */
+export function createGroup(path: string): Promise<string[]> {
+  return request<string[]>('/api/projects/current/groups', { method: 'POST', body: { path } })
+}
+
 /**
  * 用表单值拼配置提交体。
  *

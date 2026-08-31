@@ -22,9 +22,13 @@
 
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+import structlog
 
 PROJECT_JSON = "project.json"
 ART_BIBLE = "art-bible.md"
@@ -35,6 +39,11 @@ TMP_DIR = "tmp"
 
 ASSET_SUBDIRS = ("images", "models", "animations", TMP_DIR)
 GITKEEP = ".gitkeep"
+MODEL_JSON = ".model.json"
+"""角色目录的判定 marker。目录里有它才算一个角色目录：分组只是普通文件夹，靠有没有这个
+文件把「角色」从「分组」里区分出来，扫描据此递归认领。"""
+
+_log = structlog.get_logger(__name__)
 
 CATEGORY_DIRS = ("characters", "equipment", "maps", "scenes")
 """新建项目时铺的维度目录。与 config.db 的 `asset_categories.dir_name` 同名，但建目录
@@ -66,6 +75,43 @@ def safe_dir_name(name: str) -> str:
     if len(cleaned) > 100:
         raise LayoutError("名称过长（超过 100 字）")
     return cleaned
+
+
+def safe_rel_path(group: str) -> str:
+    """把用户给的分组路径（可多级，如 `boss角色/精英`）逐段过 `safe_dir_name`。
+
+    空串代表「根分组」，原样返回。返回用 `/` 拼回的相对路径，仍不做改写只做校验。
+    """
+    cleaned = group.strip().strip("/")
+    if not cleaned:
+        return ""
+    return "/".join(safe_dir_name(seg) for seg in cleaned.split("/") if seg.strip())
+
+
+def is_character_dir(path: Path) -> bool:
+    """目录里有 marker 才算角色目录，否则只是分组文件夹。"""
+    return (path / MODEL_JSON).is_file()
+
+
+def write_model_marker(asset_dir: Path, name: str) -> Path:
+    """在角色目录里落 marker。判定角色目录只看它在不在，内容仅供人肉排查。"""
+    target = asset_dir / MODEL_JSON
+    payload = {"schema": 1, "name": name, "created_at": datetime.now(UTC).isoformat()}
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def read_model_marker(path: Path) -> dict[str, Any]:
+    """读角色目录的 marker，读不出来就当空的——它不是真相，只是判定与展示用。"""
+    target = path / MODEL_JSON
+    if not target.is_file():
+        return {}
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _log.warning("model_json_unreadable", path=str(target))
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def project_json_path(project_dir: Path) -> Path:

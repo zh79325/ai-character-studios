@@ -22,6 +22,7 @@ from atelier.api.schemas import (
     ArtBibleIn,
     ArtBibleOut,
     CharacterOut,
+    GroupCreateIn,
     ProjectBootstrapIn,
     ProjectConfigOut,
     ProjectConfigPatch,
@@ -185,6 +186,19 @@ def scan_project(ref: CurrentProject) -> ScanResultOut:
     """扫 `characters/` 目录同步进项目库：用户直接拷进来的素材靠这个被认领。"""
     result = projects.scan_characters(ref)
     return ScanResultOut(added=result.added, missing=result.missing, total=result.total)
+
+
+@router.get("/current/groups", response_model=list[str])
+def list_groups(ref: CurrentProject) -> list[str]:
+    """当前项目 `characters/` 下的分组目录（含空分组）。分组只是文件夹，直接读盘。"""
+    return projects.list_groups(ref)
+
+
+@router.post("/current/groups", response_model=list[str], status_code=status.HTTP_201_CREATED)
+def create_group(payload: GroupCreateIn, ref: CurrentProject) -> list[str]:
+    """在当前项目建一个空分组文件夹，建完回最新分组列表。"""
+    projects.create_group(ref, payload.path)
+    return projects.list_groups(ref)
 
 
 @router.get("/current/characters", response_model=list[CharacterOut])

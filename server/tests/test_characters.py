@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from atelier.assets import characters, projects
+from atelier.assets import characters, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db import task_events
 from atelier.errors import Conflict, NotFound
@@ -140,20 +140,52 @@ def test_建角色铺好四个子目录并记一条事件(project: ProjectRef, p
     ]
 
 
-def test_同名角色不再建第二个(project: ProjectRef, project_db: Session) -> None:
+def test_同组重名默认不覆盖(project: ProjectRef, project_db: Session) -> None:
+    """同一分组（同一父目录）内同名才算重名，非覆盖就拦下来。"""
     make(project_db, project)
 
-    with pytest.raises(Conflict, match="已经有了"):
+    with pytest.raises(Conflict, match="在该分组已存在"):
         characters.create(project_db, project, "赤瞳")
 
 
-def test_目录已经在磁盘上就让用户走扫描(project: ProjectRef, project_db: Session) -> None:
-    """磁盘上那份可能是导入进来的、已经有设定文档的角色，直接覆盖建等于把它抹平。"""
+def test_跨分组允许同名(project: ProjectRef, project_db: Session) -> None:
+    """角色身份是相对路径，不同分组下同名各自成立。"""
     ready(project)
-    (project.dir / "characters" / "赤瞳").mkdir(parents=True)
+    hero = characters.create(project_db, project, "赤瞳", group="玩家角色")
+    boss = characters.create(project_db, project, "赤瞳", group="boss角色")
 
-    with pytest.raises(Conflict, match="用扫描把它认领进来"):
-        characters.create(project_db, project, "赤瞳")
+    assert hero.dir_name == "characters/玩家角色/赤瞳"
+    assert boss.dir_name == "characters/boss角色/赤瞳"
+    assert hero.id != boss.id
+
+
+def test_建在分组下并写了marker(project: ProjectRef, project_db: Session) -> None:
+    """分组可多级；建角色后目录里落 `.model.json`，扫描据此认它是角色。"""
+    ready(project)
+    character = characters.create(project_db, project, "赤瞳", group="boss角色/精英")
+
+    assert character.dir_name == "characters/boss角色/精英/赤瞳"
+    asset_dir = project.absolute(character.dir_name)
+    assert layout.is_character_dir(asset_dir)
+    assert layout.read_model_marker(asset_dir)["name"] == "赤瞳"
+
+
+def test_覆盖删旧重建_id不变且旧事件清掉(project: ProjectRef, project_db: Session) -> None:
+    """覆盖 = 删旧目录（含素材）+ 删旧库行与其 task_events 再重建；dir_name 不变故 id 不变。"""
+    ready(project)
+    old = characters.create(project_db, project, "赤瞳")
+    old_id = old.id
+    (project.absolute(old.dir_name) / "images" / "旧图.png").write_bytes(b"old")
+    task_events.record(project_db, old.id, "随手一条", "旧事件")
+    project_db.commit()
+
+    fresh = characters.create(project_db, project, "赤瞳", overwrite=True)
+
+    assert fresh.id == old_id  # dir_name 没变，id 由它派生
+    assert not (project.absolute(fresh.dir_name) / "images" / "旧图.png").exists()
+    assert [one.event for one in task_events.history(project_db, fresh.id)] == [
+        "character_created"
+    ]
 
 
 def test_取不到的角色是找不到而不是空(project_db: Session) -> None:

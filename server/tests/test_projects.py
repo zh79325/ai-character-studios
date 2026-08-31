@@ -26,10 +26,11 @@ pytestmark = pytest.mark.usefixtures("projects_root")
 
 
 def make_character(ref: projects_mod.ProjectRef, name: str) -> Path:
-    """像用户那样直接往 characters/ 里拷一个素材目录进去。"""
+    """像用户那样直接往 characters/ 里拷一个角色目录进去（带 marker 才算角色）。"""
     target = ref.dir / "characters" / name
     target.mkdir(parents=True)
     (target / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+    layout.write_model_marker(target, name)
     return target
 
 
@@ -596,6 +597,43 @@ def test_scan_ignores_hidden_dirs_and_loose_files(session: Session) -> None:
     (ref.dir / "characters" / "随手放的.png").touch()
 
     assert projects_mod.scan_characters(ref).added == []
+
+
+def test_scan_claims_characters_nested_in_groups(session: Session) -> None:
+    """角色按文件夹分层，层级任意深：扫描递归按 marker 认领，不把中间的分组文件夹当角色。"""
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+    boss = ref.dir / "characters" / "boss角色" / "赤瞳"
+    boss.mkdir(parents=True)
+    layout.write_model_marker(boss, "赤瞳")
+    (ref.dir / "characters" / "玩家角色").mkdir()  # 空分组，不应被当角色
+
+    result = projects_mod.scan_characters(ref)
+
+    assert result.added == ["赤瞳"]
+    row = projects_mod.character_rows(ref)[0]
+    assert row["dir_name"] == "characters/boss角色/赤瞳"
+
+
+def test_list_groups_reads_folders_from_disk(session: Session) -> None:
+    """分组只是文件夹，含空分组；角色目录与 asset 子目录不算分组。"""
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+    hero = ref.dir / "characters" / "玩家角色" / "赤瞳"
+    hero.mkdir(parents=True)
+    layout.ensure_asset_dirs(hero)
+    layout.write_model_marker(hero, "赤瞳")
+    (ref.dir / "characters" / "boss角色" / "精英").mkdir(parents=True)  # 多级空分组
+
+    assert projects_mod.list_groups(ref) == ["boss角色", "boss角色/精英", "玩家角色"]
+
+
+def test_create_group_makes_an_empty_folder(session: Session) -> None:
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+
+    rel = projects_mod.create_group(ref, "boss角色/精英")
+
+    assert rel == "boss角色/精英"
+    assert (ref.dir / "characters" / "boss角色" / "精英").is_dir()
+    assert projects_mod.list_groups(ref) == ["boss角色", "boss角色/精英"]
 
 
 def test_assets_are_isolated_between_projects(session: Session) -> None:

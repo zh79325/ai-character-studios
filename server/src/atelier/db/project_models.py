@@ -64,7 +64,7 @@ class Character(ProjectBase):
     """人物素材，状态与 meta.json 双写，断电可从 meta.json 恢复。"""
 
     __tablename__ = "characters"
-    __table_args__ = (UniqueConstraint("name", name="uq_character_name"),)
+    __table_args__ = (UniqueConstraint("dir_name", name="uq_character_dir"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))

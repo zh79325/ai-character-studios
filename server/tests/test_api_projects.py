@@ -415,6 +415,7 @@ def make_character(client: TestClient, name: str, project: str | None = None) ->
     target = project_dir / "characters" / name
     target.mkdir(parents=True)
     (target / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+    (target / ".model.json").write_text(f'{{"schema": 1, "name": "{name}"}}', encoding="utf-8")
     return target
 
 

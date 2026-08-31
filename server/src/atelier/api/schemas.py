@@ -440,6 +440,20 @@ class CharacterOut(Schema):
 
 class CharacterCreateIn(Schema):
     name: str = Field(min_length=1, max_length=120)
+    group: str = Field(
+        default="",
+        max_length=512,
+        description="建在哪个分组下（相对 characters/ 的路径，可多级），空串是根",
+    )
+    overwrite: bool = Field(
+        default=False, description="目标目录已存在时：为真就删旧重建，为假就报冲突"
+    )
+
+
+class GroupCreateIn(Schema):
+    path: str = Field(
+        min_length=1, max_length=512, description="要建的分组路径，相对 characters/，可多级"
+    )
 
 
 class SpecReviewIn(Schema):

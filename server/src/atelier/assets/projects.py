@@ -784,15 +784,16 @@ def asset_id(project_code: str, dir_name: str) -> str:
 
 
 def scan_characters(ref: ProjectRef) -> ScanResult:
-    """把 `characters/` 下的目录同步进项目库。
+    """把 `characters/` 下带 marker 的目录递归同步进项目库。
 
-    磁盘是素材存在与否的真相（用户会直接拷目录进来），库是可查询副本。所以扫描只做两件
-    事：见到新目录就登记，库里有而磁盘没有的标出来给用户看——不自动删，目录可能只是还
-    没从别处拷过来。
+    磁盘是素材存在与否的真相（用户会直接拷目录进来），库是可查询副本。角色按文件夹
+    分层，层级任意深，靠 `.model.json` marker 把「角色」从「分组」里认出来。扫描只做两件
+    事：见到带 marker 的新目录就登记，库里有而磁盘没的标出来给用户看——不自动删，目录
+    可能只是还没从别处拷过来。
     """
     root = ref.dir / "characters"
     dirs = (
-        sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+        sorted(p for p in root.rglob("*") if p.is_dir() and layout.is_character_dir(p))
         if root.is_dir()
         else []
     )
@@ -806,20 +807,55 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
             if rel in known:
                 continue
             layout.ensure_asset_dirs(path)
+            name = str(layout.read_model_marker(path).get("name") or path.name)
             session.add(
                 Character(
                     id=asset_id(ref.code, rel),
-                    name=path.name,
+                    name=name,
                     dir_name=rel,
                     spec_path=_find_spec(path, ref.dir),
                 )
             )
-            added.append(path.name)
+            added.append(name)
         on_disk = {layout.relative_to(ref.dir, p) for p in dirs}
         missing = sorted(row.name for rel, row in known.items() if rel not in on_disk)
         total = len(known) + len(added)
 
     return ScanResult(added=added, missing=missing, total=total)
+
+
+def list_groups(ref: ProjectRef) -> list[str]:
+    """`characters/` 下的所有分组目录（相对 `characters/` 的路径，含空分组）。
+
+    分组只是普通文件夹，磁盘是它们存在与否的真相（空分组没有库行可依），所以直接读盘。
+    排掉三类不是分组的目录：角色目录（带 marker）、角色内的 asset 子目录、. 开头的隐藏目录。
+    """
+    root = ref.dir / "characters"
+    if not root.is_dir():
+        return []
+    groups: set[str] = set()
+    for path in root.rglob("*"):
+        if not path.is_dir() or path.name.startswith(".") or path.name in layout.ASSET_SUBDIRS:
+            continue
+        if layout.is_character_dir(path):
+            continue
+        rel = path.relative_to(root)
+        if any(part in layout.ASSET_SUBDIRS for part in rel.parts):
+            continue
+        ancestors = (root.joinpath(*rel.parts[:i]) for i in range(1, len(rel.parts)))
+        if any(layout.is_character_dir(parent) for parent in ancestors):
+            continue
+        groups.add(rel.as_posix())
+    return sorted(groups)
+
+
+def create_group(ref: ProjectRef, path: str) -> str:
+    """在 `characters/<path>` 下建一个空分组文件夹，返回相对 `characters/` 的路径。"""
+    rel = layout.safe_rel_path(path)
+    if not rel:
+        raise Conflict("分组名不能为空")
+    (ref.dir / "characters" / rel).mkdir(parents=True, exist_ok=True)
+    return rel
 
 
 def _find_spec(asset_dir: Path, project_dir: Path) -> str | None:

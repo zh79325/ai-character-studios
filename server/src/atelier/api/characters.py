@@ -83,7 +83,7 @@ def create_character(
 
     art bible 是角色设定的风格锚点，拿一份模板原样当锚点等于没有锚点，后面每张图都会跑偏。
     """
-    character = characters.create(project, ref, body.name)
+    character = characters.create(project, ref, body.name, body.group, body.overwrite)
     return character_out(projects.character_row(character))
 
 
