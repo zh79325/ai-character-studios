@@ -18,7 +18,7 @@ export default function DesignPage() {
   if (!entry) return <Navigate to={`/design/${DESIGN_ENTRIES[0]!.slug}`} replace />
 
   return (
-    <ProjectFrame requireReady>
+    <ProjectFrame requireReady header={false}>
       {entry.ready ? <CharacterTable /> : <ComingSoon label={entry.label} hint={entry.hint} />}
     </ProjectFrame>
   )
