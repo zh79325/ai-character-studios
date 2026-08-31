@@ -96,9 +96,12 @@ function PluginCard({
         {plugin.running && <Progress percent={plugin.progress} status="active" />}
         {plugin.running && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {plugin.eta_seconds == null
-              ? '预计剩余：估算中…'
-              : `预计剩余：${formatEta(plugin.eta_seconds)}`}
+            {plugin.total_bytes > 0
+              ? `${formatBytes(plugin.downloaded_bytes)} / ${formatBytes(plugin.total_bytes)}`
+              : formatBytes(plugin.downloaded_bytes)}
+            {plugin.speed_bytes != null && ` · ${formatBytes(plugin.speed_bytes)}/s`}
+            {' · '}
+            {plugin.eta_seconds == null ? '剩余估算中…' : `剩余 ${formatEta(plugin.eta_seconds)}`}
           </Typography.Text>
         )}
       </Space>
@@ -114,4 +117,18 @@ function formatEta(seconds: number): string {
   if (m < 60) return `${m} 分 ${s % 60} 秒`
   const h = Math.floor(m / 60)
   return `${h} 小时 ${m % 60} 分`
+}
+
+// 字节数揉成 B/KB/MB/GB（十进制，跟下载工具一致）。
+function formatBytes(bytes: number): string {
+  const n = Math.max(0, bytes)
+  if (n < 1000) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = n / 1000
+  let i = 0
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000
+    i += 1
+  }
+  return `${value.toFixed(value < 10 ? 2 : 1)} ${units[i]}`
 }

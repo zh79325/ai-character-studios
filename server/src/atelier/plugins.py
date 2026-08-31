@@ -194,15 +194,22 @@ _progress: dict[str, _Progress] = {}
 _lock = threading.Lock()
 
 
-def _eta_seconds(prog: _Progress | None) -> int | None:
-    """预估剩余秒数：速率 = 本次新增字节 / 已耗时，再除剩余字节。还没新增就返回 None。"""
-    if prog is None or prog.status != "running" or prog.started_at is None or prog.total <= 0:
+def _rate_bytes(prog: _Progress | None) -> float | None:
+    """本次会话平均下载速率（字节/秒）。速率只算基线之后新增的，还没新增返回 None。"""
+    if prog is None or prog.status != "running" or prog.started_at is None:
         return None
     elapsed = time.monotonic() - prog.started_at
     fresh = prog.downloaded - prog.start_bytes  # 本次会话新下的
     if elapsed <= 0 or fresh <= 0:
         return None
-    rate = fresh / elapsed  # 字节/秒
+    return fresh / elapsed
+
+
+def _eta_seconds(prog: _Progress | None) -> int | None:
+    """预估剩余秒数：剩余字节 / 当前速率。测不到速率或不知总量就返回 None。"""
+    rate = _rate_bytes(prog)
+    if rate is None or prog is None or prog.total <= 0:
+        return None
     remaining = max(0, prog.total - prog.downloaded)
     return int(remaining / rate)
 
@@ -221,6 +228,7 @@ def _status_dict(plugin: Plugin) -> dict:
         progress = 0
     else:
         progress = 100 if installed else 0
+    rate = _rate_bytes(prog)
     return {
         "id": plugin.id,
         "name": plugin.name,
@@ -229,6 +237,9 @@ def _status_dict(plugin: Plugin) -> dict:
         "running": running,
         "progress": progress,
         "eta_seconds": _eta_seconds(prog),
+        "downloaded_bytes": prog.downloaded if prog else 0,
+        "total_bytes": prog.total if prog else 0,
+        "speed_bytes": int(rate) if rate else None,
         "message": message,
     }
 

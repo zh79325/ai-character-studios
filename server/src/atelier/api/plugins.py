@@ -22,6 +22,9 @@ class PluginOut(BaseModel):
     running: bool
     progress: int
     eta_seconds: int | None = None
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    speed_bytes: int | None = None
     message: str
 
 

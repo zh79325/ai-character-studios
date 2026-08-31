@@ -15,6 +15,12 @@ export interface Plugin {
   progress: number
   /** 预计剩余秒数，安装中才有；刚开始测不到速率时为 null。 */
   eta_seconds: number | null
+  /** 已下字节，安装中/刚完成才有意义。 */
+  downloaded_bytes: number
+  /** 总字节，列文件拿到大小后才 > 0。 */
+  total_bytes: number
+  /** 当前下载速率（字节/秒），测不到时为 null。 */
+  speed_bytes: number | null
   /** 失败时的原因，正常为空串。 */
   message: string
 }
