@@ -347,6 +347,7 @@ class ProjectConfigOut(Schema):
     pose_template: str | None = None
     art_bible: str = "art-bible.md"
     review_mode: Literal["full", "lean", "solo"] = "lean"
+    conversation_audit: bool = False
     stage: Literal["drafting", "ready"] = "ready"
 
 
@@ -358,6 +359,7 @@ class ProjectConfigPatch(Schema):
     defaults: ProjectDefaultsIn | None = None
     pose_template: str | None = None
     review_mode: Literal["full", "lean", "solo"] | None = None
+    conversation_audit: bool | None = None
 
 
 class ProjectBootstrapIn(Schema):

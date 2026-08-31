@@ -116,6 +116,7 @@ export function buildConfigPatch(
   values: {
     name: string
     review_mode: ProjectConfig['review_mode']
+    conversation_audit: boolean
     pose_template?: string
     style: Partial<ProjectConfig['style']>
     defaults: Partial<ProjectConfig['defaults']>
@@ -124,6 +125,7 @@ export function buildConfigPatch(
   return {
     name: values.name,
     review_mode: values.review_mode,
+    conversation_audit: values.conversation_audit,
     // 空串表示「不用姿态模板」，后端的 null 与它同义，统一成 null 免得存一个空字符串进 json
     pose_template: values.pose_template?.trim() ? values.pose_template.trim() : null,
     style: { ...config.style, ...values.style },

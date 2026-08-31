@@ -26,7 +26,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from atelier.agents import context, dispatch, orchestrator, parsing, tokens
+from atelier.agents import audit, context, dispatch, orchestrator, parsing, tokens
 from atelier.agents.definitions import AgentDefinition, get_agent
 from atelier.agents.stream_bus import BUS, COMMITTED, DELTA, ERROR, TURN
 from atelier.assets import archive, characters, layout, projects
@@ -611,16 +611,28 @@ def send(
     assistant = _add_message(project, conversation, "assistant", "", 0, status=THINKING)
     project.commit()
 
+    turn_audit = _turn_audit(project, ref, conversation, assistant.turn_no, agent.agent_code)
     inputs = _inputs(project, ref, conversation)
     try:
         decision = _select(runtime, project, ref, conversation, agent)
 
-        folded = _fold_until_fits(project, runtime, ref, conversation, inputs, decision, caller)
+        folded = _fold_until_fits(
+            project, runtime, ref, conversation, inputs, decision, caller, turn_audit
+        )
         assembled = _assemble(inputs)
 
         on_delta = _delta_publisher(conversation.id) if stream else None
         reply = _call(
-            runtime, project, ref, conversation, agent, decision, assembled, caller, on_delta
+            runtime,
+            project,
+            ref,
+            conversation,
+            agent,
+            decision,
+            assembled,
+            caller,
+            on_delta,
+            turn_audit,
         )
 
         content = reply.content.strip()
@@ -663,6 +675,33 @@ def send(
     )
     BUS.publish(conversation.id, TURN, {"turn_no": assistant.turn_no, "drafts": list(draft_ids)})
     return result
+
+
+def _turn_audit(
+    project: Session,
+    ref: ProjectRef,
+    conversation: Conversation,
+    turn_no: int,
+    agent_code: str,
+) -> audit.TurnAudit | None:
+    """配置开启时按会话目标确定审计目录；关闭时不碰磁盘。"""
+    if not projects.read_config(ref.dir).conversation_audit:
+        return None
+
+    target_dir = ref.dir
+    target = "project"
+    if conversation.target_kind == "character":
+        character = characters.get(project, conversation.target_ref or "")
+        target_dir = ref.absolute(character.dir_name)
+        target = f"character:{character.id}"
+
+    return audit.TurnAudit.create(
+        target_dir,
+        conversation_id=conversation.id,
+        turn_no=turn_no,
+        target=target,
+        agent_code=agent_code,
+    )
 
 
 def _delta_publisher(conversation_id: str) -> Callable[[str], None]:
@@ -733,6 +772,7 @@ def _call(
     assembled: context.Assembled,
     chat: ChatFn,
     on_delta: Callable[[str], None] | None,
+    turn_audit: audit.TurnAudit | None,
 ) -> text_chat.ChatReply:
     """发出去并记账。重试与换候选的规矩在 `dispatch`，这里只多一件会话自己的事：换了候选要
     把新的绑定与原因落进会话行，下一轮才知道该接着粘在谁身上。
@@ -744,16 +784,38 @@ def _call(
         project.commit()
         return picked
 
-    return dispatch.call(
-        runtime,
-        agent.agent_code,
-        decision,
-        assembled.payload(),
-        chat,
-        project_code=ref.code,
-        on_delta=on_delta,
-        reselect=rebind,
-    )
+    payload = assembled.payload()
+    partial: list[str] = []
+    effective_delta = on_delta
+    if turn_audit is not None:
+        turn_audit.write_request("主回答", decision.candidate, payload)
+        if on_delta is not None:
+
+            def audited_delta(piece: str) -> None:
+                partial.append(piece)
+                on_delta(piece)
+
+            effective_delta = audited_delta
+
+    try:
+        reply = dispatch.call(
+            runtime,
+            agent.agent_code,
+            decision,
+            payload,
+            chat,
+            project_code=ref.code,
+            on_delta=effective_delta,
+            reselect=rebind,
+        )
+    except Exception as exc:
+        if turn_audit is not None:
+            turn_audit.write_error(exc, "".join(partial))
+        raise
+
+    if turn_audit is not None:
+        turn_audit.write_response(reply)
+    return reply
 
 
 # --------------------------------------------------------------------------- #
@@ -769,6 +831,7 @@ def _fold_until_fits(
     inputs: ContextInputs,
     decision: Decision,
     chat: ChatFn,
+    turn_audit: audit.TurnAudit | None,
 ) -> tuple[int, ...]:
     """超预算就把最老的原文压缩进摘要，直到装得下或折不动为止。"""
     memory = memory_of(project, conversation.id)
@@ -788,16 +851,23 @@ def _fold_until_fits(
             break
 
         request = context.fold_request(victims, memory.summary)
-        reply = chat(
-            decision.candidate,
-            [
-                {
-                    "role": "system",
-                    "content": FOLD_SUMMARY_SYSTEM.format(role=inputs.agent.role),
-                },
-                {"role": "user", "content": request},
-            ],
-        )
+        payload = [
+            {
+                "role": "system",
+                "content": FOLD_SUMMARY_SYSTEM.format(role=inputs.agent.role),
+            },
+            {"role": "user", "content": request},
+        ]
+        if turn_audit is not None:
+            turn_audit.write_request("上下文折叠", decision.candidate, payload)
+        try:
+            reply = chat(decision.candidate, payload)
+        except Exception as exc:
+            if turn_audit is not None:
+                turn_audit.write_error(exc)
+            raise
+        if turn_audit is not None:
+            turn_audit.write_response(reply)
         summary = reply.content.strip()
         if not summary:
             _log.warning("fold_empty_summary", conversation=conversation.id)

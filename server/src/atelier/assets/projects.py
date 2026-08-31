@@ -110,6 +110,7 @@ class ProjectConfig(BaseModel):
     """相对项目目录的姿势模版；为空则回落全局 `templates/人物姿势模版.jpg`。"""
     art_bible: str = layout.ART_BIBLE
     review_mode: ReviewMode = "lean"
+    conversation_audit: bool = False
     stage: Stage = "ready"
 
 

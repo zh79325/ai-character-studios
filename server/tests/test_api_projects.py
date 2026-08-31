@@ -325,10 +325,24 @@ def test_config_patch_only_touches_what_the_form_sent(client: TestClient) -> Non
     assert body["style"]["art_style"] == "国风水墨"
     assert body["defaults"]["image_size"] == 2048  # 没提到，保持缺省
     assert body["review_mode"] == "lean"
+    assert body["conversation_audit"] is False
     assert json.loads(raw_path.read_text(encoding="utf-8"))["我的备注"] == "下周交付"
     # 目录名不跟着改名走，否则所有已存的相对路径都得重算
     assert Path(client.get("/api/projects/current").json()["dir_path"]) == project_dir
     assert summary(client.get("/api/projects").json(), "p1")["name"] == "改了名"
+
+
+def test_config_can_toggle_conversation_audit(client: TestClient) -> None:
+    create(client, "项目", "p1")
+
+    enabled = client.put("/api/projects/current/config", json={"conversation_audit": True}).json()
+    assert enabled["conversation_audit"] is True
+
+    project_dir = Path(client.get("/api/projects/current").json()["dir_path"])
+    assert projects_mod.read_config(project_dir).conversation_audit is True
+
+    disabled = client.put("/api/projects/current/config", json={"conversation_audit": False}).json()
+    assert disabled["conversation_audit"] is False
 
 
 def test_config_is_read_from_disk_not_from_a_copy(client: TestClient) -> None:

@@ -24,6 +24,7 @@ export const REVIEW_MODES = [
 interface FormValues {
   name: string
   review_mode: ReviewMode
+  conversation_audit: boolean
   pose_template?: string
   art_style: string
   mood: string
@@ -41,6 +42,7 @@ function toForm(config: ProjectConfig): FormValues {
   return {
     name: config.name,
     review_mode: config.review_mode,
+    conversation_audit: config.conversation_audit,
     pose_template: config.pose_template ?? '',
     art_style: config.style.art_style,
     mood: config.style.mood,
@@ -72,6 +74,7 @@ export default function ProjectConfigForm() {
         buildConfigPatch(config.data, {
           name: values.name,
           review_mode: values.review_mode,
+          conversation_audit: values.conversation_audit,
           pose_template: values.pose_template,
           style: {
             art_style: values.art_style,
@@ -139,6 +142,16 @@ export default function ProjectConfigForm() {
             <Col span={12}>
               <Form.Item name="review_mode" label="评审强度">
                 <Select options={REVIEW_MODES} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="conversation_audit"
+                label="对话审计"
+                valuePropName="checked"
+                extra="开启后，LLM 的 Request/Response 写入目标目录的 tmp/conversation/"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
               </Form.Item>
             </Col>
             <Col span={12}>

@@ -175,12 +175,14 @@ describe('buildConfigPatch', () => {
     pose_template: null,
     art_bible: 'art-bible.md',
     review_mode: 'lean',
+    conversation_audit: false,
     我的备注: '下周交付',
   } as unknown as ProjectConfig
 
   const values = {
     name: '改了名',
     review_mode: 'full' as const,
+    conversation_audit: true,
     style: { art_style: '蒸汽朋克' },
     defaults: { image_size: 1024 },
   }
@@ -198,13 +200,14 @@ describe('buildConfigPatch', () => {
     expect(patch.defaults?.我的默认值).toBe(3)
     expect(patch.defaults?.image_size).toBe(1024)
     expect(patch.defaults?.texture_resolution).toBe('2k')
+    expect(patch.conversation_audit).toBe(true)
   })
 
   it('顶层没画在表单上的键不提交，交给后端的 PATCH 语义留着', () => {
     const patch = buildConfigPatch(config, values)
 
     expect(Object.keys(patch).sort()).toEqual(
-      ['defaults', 'name', 'pose_template', 'review_mode', 'style'].sort(),
+      ['conversation_audit', 'defaults', 'name', 'pose_template', 'review_mode', 'style'].sort(),
     )
   })
 

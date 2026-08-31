@@ -280,6 +280,7 @@ export interface ProjectConfig extends Record<string, unknown> {
   pose_template: string | null
   art_bible: string
   review_mode: ReviewMode
+  conversation_audit: boolean
   stage: ProjectStage
 }
 
@@ -290,6 +291,7 @@ export interface ProjectConfigPatch {
   defaults?: ProjectDefaults
   pose_template?: string | null
   review_mode?: ReviewMode
+  conversation_audit?: boolean
 }
 
 /** 立项第一步：只占下目录，名字与代号等对焦完再定。 */
