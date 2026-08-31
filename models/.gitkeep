@@ -1,1 +1,1 @@
-# 语音模型放这儿。用到才从 gitee 克隆到 whisper-large-v3/，模型二进制不进 Git。
+# 语音模型放这儿。用到才由「插件管理」从国内镜像下载到 whisper-large-v3/，模型二进制不进 Git。

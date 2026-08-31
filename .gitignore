@@ -46,7 +46,7 @@ provider_agents*.json
 **/tmp/*
 !**/tmp/.gitkeep
 
-# 语音模型：用到才从 gitee 克隆到 models/whisper-large-v3，模型文件不进 Git
+# 语音模型：用到才由插件管理从国内镜像下载到 models/whisper-large-v3，模型文件不进 Git
 models/*
 !models/.gitkeep
 

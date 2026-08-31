@@ -12,6 +12,7 @@ import ArtBiblePage from '@/pages/ArtBiblePage'
 import CharacterPage from '@/pages/CharacterPage'
 import DesignPage from '@/pages/DesignPage'
 import LogsPage from '@/pages/LogsPage'
+import PluginsPage from '@/pages/PluginsPage'
 import ProjectConfigPage from '@/pages/ProjectConfigPage'
 import ProjectPage from '@/pages/ProjectPage'
 import ProjectsPage from '@/pages/ProjectsPage'
@@ -41,6 +42,7 @@ const CONFIG_NAV: MenuProps['items'] = [
     children: [
       { key: '/usage', label: '额度看板' },
       { key: '/logs', label: '运行日志' },
+      { key: '/plugins', label: '插件管理' },
     ],
   },
 ]
@@ -114,6 +116,7 @@ export default function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/usage" element={<UsagePage />} />
           <Route path="/logs" element={<LogsPage />} />
+          <Route path="/plugins" element={<PluginsPage />} />
           {/* 进来先落在项目管理：选项目是干任何事的第一步 */}
           <Route path="*" element={<Navigate to="/projects" replace />} />
         </Routes>
