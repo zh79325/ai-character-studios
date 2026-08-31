@@ -116,6 +116,8 @@ def upgrade() -> None:
         sa.Column("token_count", sa.Integer(), nullable=False),
         sa.Column("folded", sa.Boolean(), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("agent_code", sa.String(length=64), nullable=False),
+        sa.Column("attachments", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("conversation_id", "turn_no", name="uq_message_turn"),

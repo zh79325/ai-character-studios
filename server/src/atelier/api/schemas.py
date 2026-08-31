@@ -652,6 +652,10 @@ class MessageOut(Schema):
     """已折进摘要。原文仍在这里，前端默认收起、点开可看。"""
     status: str = "done"
     """thinking=正在等回答（前端摆转圈与中断按钮）、done、failed、cancelled。"""
+    agent_code: str = ""
+    """这句话是哪个 Agent 说的，空串=会话主 Agent。前端按它给气泡取称谓。"""
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    """这条消息带的非文字产物，元素形如 `{"kind": "image", "path": ..., "generation_id": ...}`。"""
     created_at: str
 
 

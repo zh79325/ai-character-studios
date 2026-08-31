@@ -513,7 +513,21 @@ export interface Message {
   folded: boolean
   /** thinking=这一轮还在跑（内容是空的）、done、failed=炸了（内容是错因）、cancelled=被中断。 */
   status: MessageStatus
+  /** 这句话是哪个 Agent 说的。空串=这场会话的主 Agent，user 那条恒为空。 */
+  agent_code: string
+  /** 这一轮带出来的东西（子 Agent 生的图）。后端暂时不塞，恒为空数组。 */
+  attachments: Attachment[]
   created_at: string
+}
+
+/** 挂在一条消息上的产物。 */
+export interface Attachment {
+  kind: string
+  /** 相对项目目录的路径。 */
+  path?: string
+  /** 取图口子；渲染进程读不到磁盘，光有路径显不出图。 */
+  url?: string
+  generation_id?: string
 }
 
 export type MessageStatus = 'thinking' | 'done' | 'failed' | 'cancelled'

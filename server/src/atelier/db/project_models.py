@@ -213,6 +213,10 @@ class Message(ProjectBase):
     assistant 那条在这一轮开跑时就先落一条空的（`status="thinking"`），模型回完再把内容
     填回同一行。「正在想」是一个跟着会话走的事实，只活在内存里的话，用户切走页面再回来就看不
     见了，进程重启更是直接丢。
+
+    `agent_code` 与 `attachments` 是给「一场会话里多个 Agent」留的位置：会话的
+    `agent_code` 是主 Agent，被它指派的子 Agent（生图、评审）产出的那条消息记在自己名下，
+    图这类非文字产物挂在 `attachments` 上。详见 `agents/orchestrator.py`。
     """
 
     __tablename__ = "messages"
@@ -232,6 +236,13 @@ class Message(ProjectBase):
     """thinking=正在等回答、done=回答已落库、failed=这一轮炸了、cancelled=用户中断。
 
     只有 done 进上下文。
+    """
+    agent_code: Mapped[str] = mapped_column(String(64), default="")
+    """这句话是哪个 Agent 说的。空串=会话主 Agent，user 那条恒为空。"""
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    """这条消息带的非文字产物，元素形如 `{"kind": "image", "path": ..., "generation_id": ...}`。
+
+    路径存相对项目目录的位置，跟 `Generation.file_path` 一个口径；现在恒为空数组。
     """
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 

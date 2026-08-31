@@ -28,8 +28,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { commitConversation, readConversation } from '@/api/conversations'
 import { finalizeProject } from '@/api/projects'
-import ChatPanel from '@/components/ChatPanel'
-import { Row, ROW_LABEL } from '@/components/ChoicePicker'
+import ChatPanel, { Row, ROW_LABEL } from '@/components/chat'
 import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
 import { DESIGN_ENTRIES, designPath } from '@/lib/design'
@@ -81,10 +80,9 @@ export default function ProjectPage() {
         agentCode="game_designer"
         targetKind="project"
         title="立项对焦"
-        managed
         draftsAside
         sidebar={<Sidebar settled={detail.data?.memory.decisions ?? []} />}
-        starter={STARTER}
+        starters={[STARTER]}
         finaleTitle={gate === 'style' ? '确认游戏风格' : '确认立项'}
         finaleKey={!drafting ? '' : finaleKey}
         finale={

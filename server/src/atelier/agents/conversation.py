@@ -26,7 +26,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from atelier.agents import context, dispatch, parsing, tokens
+from atelier.agents import context, dispatch, orchestrator, parsing, tokens
 from atelier.agents.definitions import AgentDefinition, get_agent
 from atelier.agents.stream_bus import BUS, COMMITTED, DELTA, ERROR, TURN
 from atelier.assets import archive, characters, layout, projects
@@ -186,6 +186,10 @@ def ensure(
 
     接着最近那场聊，不看它沉淀过没有：沉淀只是把草稿写进定稿位，聊到哪儿、定了什么都还在这
     场里，为此另起一场等于把上下文丢掉重讲一遍。
+
+    一个对焦对象（一个项目、一个角色、以后一张地图）就一场会话，`agent_code` 这一维指的是这场的
+    **主 Agent**；一场里要跑多个 Agent 不开新会话，而是由主 Agent 指派，见
+    `agents/orchestrator.py`。
     """
     for row in list_conversations(project, target_kind=target_kind, target_ref=target_ref):
         if row.agent_code == agent_code:
@@ -511,7 +515,7 @@ def addendum(project: Session, agent_code: str) -> str | None:
 
 
 def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> ContextInputs:
-    agent = get_agent(conversation.agent_code)
+    agent = get_agent(orchestrator.actor_for(conversation))
     artifact_path, artifact_text = artifact_of(project, ref, conversation)
     # 只有立项会话改得动 project.json，角色会话看见它也用不上，白占预算
     is_project = conversation.target_kind == "project"
@@ -568,6 +572,9 @@ def _add_message(
         content=content,
         token_count=token_count,
         status=status,
+        # 谁说的话记在谁名下。现在恒是会话主 Agent，将来主 Agent 派了子 Agent，执行器写
+        # 子 Agent 的 code，见 agents/orchestrator.py
+        agent_code="" if role == "user" else orchestrator.actor_for(conversation),
     )
     project.add(message)
     project.flush()
@@ -590,7 +597,7 @@ def send(
     if not body:
         raise Conflict("发给 Agent 的内容不能为空")
 
-    agent = get_agent(conversation.agent_code)
+    agent = get_agent(orchestrator.actor_for(conversation))
     if not agent.conversational:
         raise Conflict(f"{agent.agent_code} 不是会话型 Agent")
 

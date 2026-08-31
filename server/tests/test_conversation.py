@@ -136,6 +136,20 @@ def test_一轮对话记下两条消息与一份草稿(
     assert messages[1].token_count == 20
 
 
+def test_回答落库带上说话的agent(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """一场会话里将来会跑多个 Agent，气泡得认得出这句话是谁说的。"""
+    conversation = start_project_talk(project_db)
+
+    send(project_db, session, project, conversation, "开聊", ScriptedChat("好"))
+
+    messages = engine.messages_of(project_db, conversation.id)
+    assert messages[0].agent_code == ""
+    assert messages[1].agent_code == DESIGNER
+    assert messages[1].attachments == []
+
+
 def test_上下文按固定顺序拼且定稿走system(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:

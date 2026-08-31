@@ -107,6 +107,8 @@ def _message_out(row: Message) -> MessageOut:
         token_count=row.token_count,
         folded=row.folded,
         status=row.status,
+        agent_code=row.agent_code,
+        attachments=row.attachments,
         created_at=row.created_at.isoformat(),
     )
 

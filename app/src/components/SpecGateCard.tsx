@@ -16,7 +16,7 @@ import { Alert, App, Button, Card, Descriptions, Input, Modal, Space, Tag, Typog
 import { useState } from 'react'
 
 import { confirmSpec, rejectSpec, reviewSpec } from '@/api/characters'
-import type { Handoff } from '@/components/ChatPanel'
+import type { Handoff } from '@/components/chat'
 import type { Character, SpecReview } from '@/types/api'
 
 /** 裁决 token → 颜色。`CONCERNS` 不是通过，但也不是推翻，所以单独一档。 */
@@ -133,7 +133,8 @@ export default function SpecGateCard({ character, conversationId, onHandoff }: P
       }
       const text =
         chosen.kind === 'revise' ? `上一版这一项要改：${reason}` : `换个方向重来：${reason}`
-      onHandoff({ text, fresh: chosen.kind === 'pivot', nonce: Date.now() })
+      // 换方向也不另起一场：一个角色就一场会话，新方向靠递进去那段话说清
+      onHandoff({ text, nonce: Date.now() })
       toast.info('已记下。左边会话里帮你拟好了这句话，看一眼再发')
     },
     onError: (err: Error) => toast.error(err.message),

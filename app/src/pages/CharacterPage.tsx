@@ -19,13 +19,16 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { listCharacterEvents, readCharacter } from '@/api/characters'
 import { ApiError } from '@/api/client'
-import ChatPanel, { type Handoff } from '@/components/ChatPanel'
+import ChatPanel, { type Handoff } from '@/components/chat'
 import RenderGateCard from '@/components/RenderGateCard'
 import SpecGateCard from '@/components/SpecGateCard'
 import ViewsGateCard from '@/components/ViewsGateCard'
 import type { TaskEvent } from '@/types/api'
 
 const WRITER = 'spec_writer'
+
+/** 第一句话给个样子：设定要的几项一次说全，比来回追问快。 */
+const SPEC_STARTER = '这个角色叫…，定位是…，外形特征：…，性格与气质：…，出场场景在…'
 
 /** 事件级别 → 时间线颜色。`warning` 是「审出问题」，不是出错。 */
 const LEVEL_COLORS: Record<string, string> = {
@@ -94,6 +97,9 @@ export default function CharacterPage() {
         title={row ? `${row.name} 设定对焦` : undefined}
         onActiveChange={setConversationId}
         handoff={handoff}
+        heading="设定对焦"
+        who="设定作者"
+        starters={[SPEC_STARTER]}
       />
 
       <Row gutter={16}>
