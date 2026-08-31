@@ -21,10 +21,10 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     plugins._reset_for_tests()
 
 
-def _fake_download_ok(plugin: plugins.Plugin) -> None:
-    target = plugins._target_dir(plugin)
-    target.mkdir(parents=True, exist_ok=True)
-    (target / plugin.marker).write_bytes(b"fake-model")
+def _fake_download_ok(*, repo_id: str, target_dir, on_progress, ignore=()) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "model.bin").write_bytes(b"fake-model")
+    on_progress(10, 10)
 
 
 def test_列插件默认没装(client: TestClient) -> None:
@@ -39,7 +39,7 @@ def test_列插件默认没装(client: TestClient) -> None:
 
 
 def test_安装跑完转为已装(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plugins, "_download", _fake_download_ok)
+    monkeypatch.setattr(plugins, "_download_hf_model", _fake_download_ok)
 
     started = client.post(f"/api/plugins/{PLUGIN_ID}/install")
     assert started.status_code == 200
@@ -53,10 +53,10 @@ def test_安装跑完转为已装(client: TestClient, monkeypatch: pytest.Monkey
 
 
 def test_下载失败把原因记进状态(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(plugin: plugins.Plugin) -> None:
+    def _boom(**kwargs) -> None:
         raise RuntimeError("镜像连不上")
 
-    monkeypatch.setattr(plugins, "_download", _boom)
+    monkeypatch.setattr(plugins, "_download_hf_model", _boom)
 
     client.post(f"/api/plugins/{PLUGIN_ID}/install")
     plugins._join_for_tests(PLUGIN_ID)

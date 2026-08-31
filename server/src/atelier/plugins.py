@@ -1,10 +1,12 @@
 """插件安装：后台把「用得上但不随代码走」的大件下载到本地。
 
-第一个（目前也是唯一）插件是语音识别模型（faster-whisper large-v3，约 3GB）。安装 = 从国内镜像
-（hf-mirror）把模型文件下载到它的固定目录。下载耗时长，放后台线程跑，接口立刻返回，前端轮询状态。
+每个插件自带两件套：`is_installed`（检测装没装好）、`install`（阻塞式安装，边下边回调进度）。
+运行器（本模块下半段）只管：起后台线程、记状态、按回调上报的字节数算百分比与剩余时间，
+前端轮询 REST 拿状态。状态只存进程内存，不落库；进程重启没装完就重来，按文件大小断点续传。
 
-状态只存进程内存（模块级单例 + 锁），不落库：安装是一次性动作，进程重启后没装完就重来即可，
-huggingface_hub 的本地缓存还能断点续传。进度没有精确回调，用「目标目录已下字节 / 预期总大小」估。
+第一个（目前唯一）插件是语音识别模型（faster-whisper large-v3，约 3GB），从国内镜像
+hf-mirror 直连下载：逐文件 HTTP GET + Range 续传，直接写进模型目录，不碰 huggingface_hub
+的本地缓存（省掉 xet 绕美区 CDN、`.incomplete` 残留一堆的老毛病）。
 """
 
 from __future__ import annotations
@@ -12,109 +14,196 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
+from pathlib import Path
+
+import httpx
+import structlog
 
 from atelier import voice
+
+_log = structlog.get_logger(__name__)
+
+# 进度回调：把「已下字节, 总字节」告诉运行器。total 为 0 表示总量还没算出来。
+ProgressCb = Callable[[int, int], None]
 
 
 @dataclass(frozen=True)
 class Plugin:
-    """一个可安装插件的静态描述。"""
+    """一个可安装插件：一段静态描述 + 两个行为函数。"""
 
     id: str
     name: str
     description: str
-    repo_id: str
-    """HuggingFace 上的仓库 id，snapshot_download 照它拉。"""
-    target_dir_name: str
-    """落地目录名，父目录固定是仓库 models/。"""
-    expected_bytes: int
-    """预期总大小，只用来估进度百分比，不必精确。"""
-    marker: str = "model.bin"
-    """有这个文件才算装好。"""
+    is_installed: Callable[[], bool]
+    """检测装没装好。"""
+    install: Callable[[ProgressCb], None]
+    """阻塞式安装：边下边调 on_progress(done, total)，失败抛异常。"""
 
 
-# faster-whisper large-v3：转写用的本地模型。目标目录跟 voice.MODEL_DIR 是同一个。
+# ---- HuggingFace 直连下载（第一个插件复用） ------------------------------------
+
+# 走国内镜像。容许用环境变量覆盖（跟 huggingface_hub 一个约定）。
+_HF_ENDPOINT = os.environ.get("HF_ENDPOINT") or "https://hf-mirror.com"
+_CHUNK = 1024 * 1024  # 1MB，也是上报进度的粒度
+_MAX_RETRIES = 7
+_TIMEOUT = httpx.Timeout(30.0, connect=20.0)
+
+
+def _ignored(name: str, patterns: tuple[str, ...]) -> bool:
+    return any(fnmatch(name, pat) for pat in patterns)
+
+
+def _download_file(*, url: str, dest: Path, expected: int, on_bytes: Callable[[int], None]) -> None:
+    """单文件下载：先写到 `{dest}.part`，下满再原子改名成 dest。Range 续传 + 指数退避重试。
+
+    只在完整时才出现正式文件名，避免半截 model.bin 被 is_installed 误判成已装。
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # 已经有完整的正式文件（上次装过 / 断点续传里这个文件先下完了）就跳过。
+    if dest.exists():
+        cur = dest.stat().st_size
+        if not expected or cur == expected:
+            on_bytes(expected or cur)
+            return
+        dest.unlink()  # 大小对不上，删了重下
+
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(1, _MAX_RETRIES + 1):
+        have = part.stat().st_size if part.exists() else 0
+        if expected and have > expected:  # 脏残片，重下
+            have = 0
+        headers = {"Range": f"bytes={have}-"} if have else {}
+        try:
+            with httpx.stream(
+                "GET", url, headers=headers, follow_redirects=True, timeout=_TIMEOUT
+            ) as resp:
+                if have and resp.status_code == 416:  # 服务端说没得续了 = 已下满
+                    if part.exists():
+                        os.replace(part, dest)
+                    on_bytes(expected or have)
+                    return
+                resp.raise_for_status()
+                # 服务端可能无视 Range 从头给（返 200），那就重头写，别往残片后面追。
+                resumed = have > 0 and resp.status_code == 206
+                downloaded = have if resumed else 0
+                with part.open("ab" if resumed else "wb") as f:
+                    for chunk in resp.iter_bytes(_CHUNK):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        on_bytes(downloaded)
+            os.replace(part, dest)
+            return
+        except (httpx.HTTPError, OSError) as exc:
+            _log.warning("plugin_download_retry", file=dest.name, attempt=attempt, error=str(exc))
+            if attempt >= _MAX_RETRIES:
+                raise
+            time.sleep(min(2**attempt, 30))
+
+
+def _download_hf_model(
+    *,
+    repo_id: str,
+    target_dir: Path,
+    on_progress: ProgressCb,
+    ignore: tuple[str, ...] = (),
+) -> None:
+    """把一个 HF 仓库的文件逐个拉到 target_dir（扁平）。测试里整个替换掉，不触网。"""
+    from huggingface_hub import HfApi
+
+    info = HfApi(endpoint=_HF_ENDPOINT).model_info(repo_id, files_metadata=True)
+    files = [
+        (sibling.rfilename, int(sibling.size or 0))
+        for sibling in info.siblings
+        if not _ignored(sibling.rfilename, ignore)
+    ]
+    total = sum(size for _, size in files)
+    _log.info(
+        "plugin_download_begin",
+        repo=repo_id,
+        files=len(files),
+        total_mb=round(total / 1_000_000, 1),
+        endpoint=_HF_ENDPOINT,
+    )
+    done = 0
+    for name, size in files:
+        _download_file(
+            url=f"{_HF_ENDPOINT}/{repo_id}/resolve/main/{name}",
+            dest=target_dir / name,
+            expected=size,
+            on_bytes=lambda cur, base=done: on_progress(base + cur, total),
+        )
+        done += size
+        on_progress(done, total)
+
+
+# ---- 具体插件 ------------------------------------------------------------------
+
+
+def _whisper_is_installed() -> bool:
+    """有 model.bin 才算装好——空目录 / 只下了一半都不算。"""
+    return (voice.MODEL_DIR / "model.bin").is_file()
+
+
+def _whisper_install(on_progress: ProgressCb) -> None:
+    _download_hf_model(
+        repo_id="Systran/faster-whisper-large-v3",
+        target_dir=voice.MODEL_DIR,
+        on_progress=on_progress,
+        ignore=(".gitattributes", "README.md", ".git*"),
+    )
+    if not _whisper_is_installed():
+        raise RuntimeError("下载完却没找到 model.bin")
+
+
 _VOICE_PLUGIN = Plugin(
     id="whisper-large-v3",
     name="语音识别模型",
     description="本地语音转写模型（faster-whisper large-v3），装上后对话输入框才能用语音。",
-    repo_id="Systran/faster-whisper-large-v3",
-    target_dir_name="whisper-large-v3",
-    expected_bytes=3_100_000_000,
+    is_installed=_whisper_is_installed,
+    install=_whisper_install,
 )
 
 PLUGINS: list[Plugin] = [_VOICE_PLUGIN]
 _BY_ID = {plugin.id: plugin for plugin in PLUGINS}
 
 
+# ---- 运行器：后台线程 + 状态 + 进度/剩余时间 -----------------------------------
+
+
 @dataclass
 class _Progress:
-    """一个插件当前的安装态。仅在安装中/失败时有意义。"""
+    """一个插件当前的安装态。仅在安装中/失败/刚完成时有意义。"""
 
     status: str = "idle"  # idle | running | done | error
     message: str = ""
+    downloaded: int = 0
+    total: int = 0
     started_at: float | None = None
     """开装时间戳（time.monotonic），算下载速率与剩余时间用。"""
     start_bytes: int = 0
-    """开装时目录里已有的字节（断点续传的基线）。速率只算本次新增的，不把旧数据算进去。"""
+    """本次首个进度回调时已下的字节（断点续传基线），速率只算此后新增的。"""
+    baselined: bool = field(default=False, repr=False)
     thread: threading.Thread | None = field(default=None, repr=False)
 
 
 _progress: dict[str, _Progress] = {}
 _lock = threading.Lock()
 
-# 下载走国内镜像、禁用 xet（xet 后端在镜像上会 401）。用 setdefault，容许用户用环境变量覆盖。
-_HF_ENDPOINT = "https://hf-mirror.com"
 
-
-def _target_dir(plugin: Plugin):
-    return voice.MODEL_DIR.parent / plugin.target_dir_name
-
-
-def _is_installed(plugin: Plugin) -> bool:
-    return (_target_dir(plugin) / plugin.marker).is_file()
-
-
-def _disk_bytes(plugin: Plugin) -> int:
-    root = _target_dir(plugin)
-    if not root.exists():
-        return 0
-    total = 0
-    for path in root.rglob("*"):
-        try:
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-def _percent(plugin: Plugin, running: bool) -> int:
-    if _is_installed(plugin):
-        return 100
-    if not running:
-        return 0
-    done = _disk_bytes(plugin)
-    return max(0, min(99, round(done / plugin.expected_bytes * 100)))
-
-
-def _eta_seconds(plugin: Plugin, running: bool, prog: _Progress | None) -> int | None:
-    """预估剩余秒数。速率只算「本次新增字节 / 已耗时」，再除剩余字节。
-
-    断点续传时目录里已有上次的字节，所以要减掉开装时的基线 `start_bytes`，
-    否则 done 一上来就很大而 elapsed 接近 0，速率被严重高估。还没新增字节时返回
-    None（前端显「估算中」）。
-    """
-    if not running or prog is None or prog.started_at is None:
+def _eta_seconds(prog: _Progress | None) -> int | None:
+    """预估剩余秒数：速率 = 本次新增字节 / 已耗时，再除剩余字节。还没新增就返回 None。"""
+    if prog is None or prog.status != "running" or prog.started_at is None or prog.total <= 0:
         return None
     elapsed = time.monotonic() - prog.started_at
-    done = _disk_bytes(plugin)
-    downloaded = done - prog.start_bytes  # 本次会话新下的
-    if elapsed <= 0 or downloaded <= 0:
+    fresh = prog.downloaded - prog.start_bytes  # 本次会话新下的
+    if elapsed <= 0 or fresh <= 0:
         return None
-    rate = downloaded / elapsed  # 字节/秒
-    remaining = max(0, plugin.expected_bytes - done)
+    rate = fresh / elapsed  # 字节/秒
+    remaining = max(0, prog.total - prog.downloaded)
     return int(remaining / rate)
 
 
@@ -122,52 +211,59 @@ def _status_dict(plugin: Plugin) -> dict:
     with _lock:
         prog = _progress.get(plugin.id)
     running = bool(prog and prog.status == "running")
-    installed = _is_installed(plugin)
-    message = ""
-    if prog and prog.status == "error":
-        message = prog.message
+    done_ok = bool(prog and prog.status == "done")
+    # 装没装好以安装任务实际结束为准：还在跑就不算装好，哪怕 model.bin 已落地。
+    installed = (done_ok or plugin.is_installed()) and not running
+    message = prog.message if prog and prog.status == "error" else ""
+    if running and prog and prog.total > 0:
+        progress = max(0, min(99, round(prog.downloaded / prog.total * 100)))
+    elif running:
+        progress = 0
+    else:
+        progress = 100 if installed else 0
     return {
         "id": plugin.id,
         "name": plugin.name,
         "description": plugin.description,
         "installed": installed,
         "running": running,
-        "progress": _percent(plugin, running),
-        "eta_seconds": _eta_seconds(plugin, running, prog),
+        "progress": progress,
+        "eta_seconds": _eta_seconds(prog),
         "message": message,
     }
 
 
-def _download(plugin: Plugin) -> None:
-    """真正拉模型。测试里整个替换掉，不触网。"""
-    # HF_ENDPOINT / HF_HUB_DISABLE_XET 是在 huggingface_hub 导入时读进 constants 的，
-    # 改环境变量为时已晚。所以这里既显式传 endpoint，又在运行时直接翻
-    # constants.HF_HUB_DISABLE_XET —— is_xet_available() 是每次调用动态读它的。
-    # 不禁 xet 的话，即便 endpoint 指到镜像，xet 也会绕去美区 CDN 拖死下载。
-    os.environ.setdefault("HF_ENDPOINT", _HF_ENDPOINT)
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    from huggingface_hub import constants, snapshot_download
-
-    constants.HF_HUB_DISABLE_XET = True
-
-    snapshot_download(
-        repo_id=plugin.repo_id,
-        local_dir=str(_target_dir(plugin)),
-        endpoint=_HF_ENDPOINT,
-        ignore_patterns=[".gitattributes", "README.md", ".git*"],
-    )
-
-
 def _install_worker(plugin: Plugin) -> None:
-    try:
-        _download(plugin)
-        if not _is_installed(plugin):
-            raise RuntimeError(f"下载完却没找到 {plugin.marker}")
+    _log.info("plugin_install_start", plugin=plugin.id)
+
+    def on_progress(done: int, total: int) -> None:
         with _lock:
-            _progress[plugin.id] = _Progress(status="done", message="安装完成")
+            prog = _progress.get(plugin.id)
+            if prog is None:
+                return
+            if not prog.baselined:  # 第一次回调把已续传的字节定为速率基线
+                prog.start_bytes = done
+                prog.baselined = True
+            prog.downloaded = done
+            prog.total = total
+
+    try:
+        plugin.install(on_progress)
+        if not plugin.is_installed():
+            raise RuntimeError("安装跑完却没检测到已装")
+        with _lock:
+            cur = _progress.get(plugin.id)
+            _progress[plugin.id] = _Progress(
+                status="done",
+                message="安装完成",
+                downloaded=cur.downloaded if cur else 0,
+                total=cur.total if cur else 0,
+            )
+        _log.info("plugin_install_done", plugin=plugin.id)
     except Exception as exc:  # noqa: BLE001 — 网络/磁盘什么都可能炸，统一记进状态给前端看
         with _lock:
             _progress[plugin.id] = _Progress(status="error", message=str(exc))
+        _log.exception("plugin_install_failed", plugin=plugin.id)
 
 
 def list_plugins() -> list[dict]:
@@ -182,16 +278,13 @@ def plugin_status(plugin_id: str) -> dict:
 def start_install(plugin_id: str) -> dict:
     """触发安装并立刻返回当前状态。已装好或正在装都不重复起线程。"""
     plugin = _BY_ID[plugin_id]
-    if not _is_installed(plugin):
+    if not plugin.is_installed():
         with _lock:
             prog = _progress.get(plugin_id)
             if not (prog and prog.status == "running"):
                 thread = threading.Thread(target=_install_worker, args=(plugin,), daemon=True)
                 _progress[plugin_id] = _Progress(
-                    status="running",
-                    started_at=time.monotonic(),
-                    start_bytes=_disk_bytes(plugin),
-                    thread=thread,
+                    status="running", started_at=time.monotonic(), thread=thread
                 )
                 thread.start()
     return _status_dict(plugin)
