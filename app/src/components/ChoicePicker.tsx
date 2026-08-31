@@ -25,8 +25,9 @@
  *
  * 发出去就关掉，不留结果卡片：那句话已经进了消息区，再在旁边留一份就是同一件事摆两遍。
  *
- * `finale` 摆在所有题后面（立项页传的是定名字与代号、确认立项）：收口本身也是用户得拍的一项，跟其
- * 他题摆在一处才看得出「拍完这几项就能收口，也可以接着聊」。
+ * `finale` 摆在所有题后面（立项页传的是确认游戏风格、确认立项）：收口本身也是用户得拍的一项，
+ * 跟其他题摆在一处才看得出「拍完这几项就能收口，也可以接着聊」。它拿到一个关抽屉的手，
+ * 收口顺手要发一句话给 Agent 时先把这层收掉——不然设计师在后面回话，用户对着一层遮罩等。
  */
 import { Button, Checkbox, Divider, Drawer, Input, Radio, Space, Typography } from 'antd'
 import { useState, type ReactNode } from 'react'
@@ -42,8 +43,10 @@ interface Props {
   disabled?: boolean
   /** 把拼好的那句话发出去。 */
   onSubmit: (text: string) => void
-  /** 摆在最后一题后面的收口动作（立项页：定名字与代号、确认立项）。 */
-  finale?: ReactNode
+  /** 摆在最后一题后面的收口动作（立项页：确认游戏风格、确认立项）。 */
+  finale?: ((close: () => void) => ReactNode) | null
+  /** 收口这一步叫什么：没有待选项时它就是抽屉标题与那个重开按钮上的字。 */
+  finaleTitle?: string
 }
 
 type Table = Record<string, string>
@@ -84,13 +87,20 @@ function heightOf(count: number): string {
   return `min(${240 + count * 200}px, calc(100% - 30px))`
 }
 
-export default function ChoicePicker({ groups, disabled = false, onSubmit, finale = null }: Props) {
+export default function ChoicePicker({
+  groups,
+  disabled = false,
+  onSubmit,
+  finale = null,
+  finaleTitle = '收口',
+}: Props) {
   const signature = signatureOf(groups)
   const [picked, setPicked] = useState<Table>(() => singleDefaults(groups))
   const [marks, setMarks] = useState<Marks>(() => multiDefaults(groups))
   const [custom, setCustom] = useState<Table>({})
   const [note, setNote] = useState<Table>({})
-  const [open, setOpen] = useState(true)
+  // 有题才自己抽出来：只剩收口那一块时抽出来会白盖住对话，用户还没想收口
+  const [open, setOpen] = useState(groups.length > 0)
   const [seen, setSeen] = useState(signature)
 
   // 换了一批选项就重新预选并重新抽出来：上一轮的选择与补充留着会让用户以为新的项也已经定了
@@ -100,7 +110,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit, final
     setMarks(multiDefaults(groups))
     setCustom({})
     setNote({})
-    setOpen(true)
+    if (groups.length > 0) setOpen(true)
   }
 
   if (groups.length === 0 && finale === null) return null
@@ -141,34 +151,42 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit, final
     <>
       {!open && (
         <Button block size="small" disabled={disabled} onClick={() => setOpen(true)}>
-          还有 {groups.length} 项等你拍板
+          {groups.length > 0 ? `还有 ${groups.length} 项等你拍板` : finaleTitle}
         </Button>
       )}
       <Drawer
         open={open}
         placement="bottom"
-        height={heightOf(groups.length)}
+        height={heightOf(groups.length + (finale === null ? 0 : 1))}
         getContainer={false}
         rootStyle={{ position: 'absolute' }}
-        title={<span style={{ fontSize: 13 }}>这几项等你拍板</span>}
+        title={
+          <span style={{ fontSize: 13 }}>{groups.length > 0 ? '这几项等你拍板' : finaleTitle}</span>
+        }
         styles={{ body: { padding: 12 }, header: { padding: '8px 12px' } }}
         onClose={() => setOpen(false)}
         footer={
-          <Space size={8} wrap>
-            <Button
-              type="primary"
-              size="small"
-              disabled={disabled || settled.length === 0}
-              onClick={submit}
-            >
-              就按这些
-            </Button>
+          groups.length === 0 ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {settled.length === groups.length
-                ? '发出去之后设计师会照这些接着往下定'
-                : `已定 ${settled.length}/${groups.length}，没定的按它的推荐走`}
+              还想接着聊就关掉这层，回到下面的输入框
             </Typography.Text>
-          </Space>
+          ) : (
+            <Space size={8} wrap>
+              <Button
+                type="primary"
+                size="small"
+                disabled={disabled || settled.length === 0}
+                onClick={submit}
+              >
+                就按这些
+              </Button>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {settled.length === groups.length
+                  ? '发出去之后设计师会照这些接着往下定'
+                  : `已定 ${settled.length}/${groups.length}，没定的按它的推荐走`}
+              </Typography.Text>
+            </Space>
+          )
         }
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -253,6 +271,12 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit, final
               )}
             </Space>
           ))}
+          {finale !== null && (
+            <>
+              {groups.length > 0 && <Divider style={{ margin: 0 }} />}
+              {finale(() => setOpen(false))}
+            </>
+          )}
         </Space>
       </Drawer>
     </>
@@ -260,7 +284,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit, final
 }
 
 /** 单选铺满整行：点框里任何地方都算点这一项，选项文字长了在框里自己折。 */
-const ROW_LABEL = { display: 'flex', alignItems: 'flex-start', fontSize: 13 } as const
+export const ROW_LABEL = { display: 'flex', alignItems: 'flex-start', fontSize: 13 } as const
 
 function Recommended() {
   return (
@@ -270,8 +294,8 @@ function Recommended() {
   )
 }
 
-/** 一个选项一行：整行都框起来，选中的那行描边跟着变。 */
-function Row({ active, children }: { active: boolean; children: ReactNode }) {
+/** 一个选项一行：整行都框起来，选中的那行描边跟着变。`finale` 里的选项跟它共用一套长相。 */
+export function Row({ active, children }: { active: boolean; children: ReactNode }) {
   return (
     <div
       style={{

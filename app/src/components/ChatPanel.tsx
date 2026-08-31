@@ -69,16 +69,17 @@ interface Props {
    * 立项对焦这一页的主体就是聊，草稿只是聊出来的副产物，摆得跟对话一样大只会抢位置。
    */
   draftsAside?: boolean
-  /** 摆在待办栏最上面的一小块（如项目抬头）：看一眼的东西不值得单占一行卡片。 */
-  status?: ReactNode
-  /** 摆在待办栏最后的那一项（如立项收口）：它也是聊到最后该做的事，不另开一块地方摆。 */
-  todo?: ReactNode
+  /** 边上那条窄栏整块换掉（立项页只留快捷导航）：草稿区不是每一页都用得上。 */
+  sidebar?: ReactNode | null
   /**
-   * 沉淀交给 `todo` 那一项顺手做，草稿区不再摆一个沉淀按钮。
+   * 摆在待选项抽屉最后的收口动作（立项页：确认游戏风格、确认立项）。
    *
-   * 立项期就一个收口动作（确认立项），旁边再摆一个「确认沉淀」只会让人猜该先点哪个。
+   * 收口跟这一轮的题摆在一处：拍完几项接着就能收口，也可以关掉抽屉继续聊。它拿到的 `say`
+   * 会顺手关掉抽屉再发话。
    */
-  commitInTodo?: boolean
+  finale?: ((say: (text: string) => void) => ReactNode) | null
+  /** 收口这一步叫什么，用在抽屉标题与重开按钮上。 */
+  finaleTitle?: string
 }
 
 /**
@@ -103,9 +104,9 @@ export default function ChatPanel({
   handoff = null,
   managed = false,
   draftsAside = false,
-  status = null,
-  todo = null,
-  commitInTodo = false,
+  sidebar = null,
+  finale = null,
+  finaleTitle = '收口',
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
@@ -342,6 +343,16 @@ export default function ChatPanel({
                 groups={detail.data?.choices ?? []}
                 disabled={send.isPending}
                 onSubmit={dispatch}
+                finaleTitle={finaleTitle}
+                finale={
+                  finale === null
+                    ? null
+                    : (close) =>
+                        finale((text) => {
+                          close()
+                          dispatch(text)
+                        })
+                }
               />
               <Input.TextArea
                 value={input}
@@ -372,24 +383,19 @@ export default function ChatPanel({
           </div>
         )}
       </Card>
-      {chosen === null ? (
+      {sidebar !== null ? (
+        sidebar
+      ) : chosen === null ? (
         <Card size="small" title="待办">
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            {status}
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              会话产出的定稿会在这里等你过目。
-            </Typography.Text>
-            {todo}
-          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            会话产出的定稿会在这里等你过目。
+          </Typography.Text>
         </Card>
       ) : (
         <DraftDiffPanel
           conversationId={chosen}
           drafts={detail.data?.drafts ?? []}
           compact={draftsAside}
-          commitInTodo={commitInTodo}
-          header={status}
-          footer={todo}
         />
       )}
     </Layout>

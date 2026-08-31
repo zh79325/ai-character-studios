@@ -21,7 +21,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 
 import { commitConversation, discardConversation, readDiff } from '@/api/conversations'
 import { collapseUnchanged, diffLines, diffStat } from '@/lib/diff'
@@ -32,26 +32,11 @@ interface Props {
   drafts: Draft[]
   /** 挤在窄栏里：按钮改成竖排块级，diff 只留一小段能滚。 */
   compact?: boolean
-  /** 排在草稿前面的一小块（如项目抬头）。 */
-  header?: ReactNode
-  /** 排在草稿后面的其他待办（如立项收口）。 */
-  footer?: ReactNode
-  /**
-   * 沉淀由 `footer` 那一项顺手做：这里只给 diff 与丢弃，不再摆沉淀按钮与挑份数的勾选。
-   */
-  commitInTodo?: boolean
 }
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
 
-export default function DraftDiffPanel({
-  conversationId,
-  drafts,
-  compact = false,
-  header = null,
-  footer = null,
-  commitInTodo = false,
-}: Props) {
+export default function DraftDiffPanel({ conversationId, drafts, compact = false }: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<string | null>(null)
@@ -126,20 +111,19 @@ export default function DraftDiffPanel({
   )
   const actions = compact ? (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
-      {!commitInTodo && commitBtn}
+      {commitBtn}
       {discardBtn}
     </Space>
   ) : (
     <Space>
       {discardBtn}
-      {!commitInTodo && commitBtn}
+      {commitBtn}
     </Space>
   )
 
   return (
     <Card size="small" title="待办" extra={drafts.length > 0 && !compact ? actions : undefined}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        {header}
         {drafts.length === 0 ? (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             Agent 写出的定稿会先在这里等你过目，确认之前磁盘一个字节都不会动。
@@ -156,32 +140,29 @@ export default function DraftDiffPanel({
                 }))}
               />
             )}
-            {!commitInTodo && (
-              <Checkbox.Group
-                value={selected}
-                onChange={(value) => setPicked(value as string[])}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  wordBreak: 'break-all',
-                }}
-                options={drafts.map((draft) => ({
-                  value: draft.id,
-                  label: draft.stale
-                    ? `${draft.target_path}（基线已变，沉淀会被拒）`
-                    : draft.target_path,
-                  disabled: draft.stale,
-                }))}
-              />
-            )}
+            <Checkbox.Group
+              value={selected}
+              onChange={(value) => setPicked(value as string[])}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                wordBreak: 'break-all',
+              }}
+              options={drafts.map((draft) => ({
+                value: draft.id,
+                label: draft.stale
+                  ? `${draft.target_path}（基线已变，沉淀会被拒）`
+                  : draft.target_path,
+                disabled: draft.stale,
+              }))}
+            />
             {current && (
               <DiffView conversationId={conversationId} draft={current} compact={compact} />
             )}
             {compact && actions}
           </>
         )}
-        {footer}
       </Space>
     </Card>
   )
