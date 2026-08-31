@@ -250,9 +250,9 @@ def test_待选项一次给好几组() -> None:
 """
     groups = parsing.parse_choices(text)
 
-    assert [(g.item, g.options, g.recommended) for g in groups] == [
-        ("写实到卡通的位置", ("3:7 偏卡通", "5:5 折中", "7:3 偏写实"), "3:7 偏卡通"),
-        ("面数预算", ("8k", "15k", "30k"), "15k"),
+    assert [(g.item, g.options, g.recommended, g.multiple) for g in groups] == [
+        ("写实到卡通的位置", ("3:7 偏卡通", "5:5 折中", "7:3 偏写实"), ("3:7 偏卡通",), False),
+        ("面数预算", ("8k", "15k", "30k"), ("15k",), False),
     ]
 
 
@@ -267,7 +267,7 @@ def test_待选项分行写也收() -> None:
     assert (group.item, group.options, group.recommended) == (
         "色彩基调",
         ("明亮白日", "霓虹夜景"),
-        "霓虹夜景",
+        ("霓虹夜景",),
     )
 
 
@@ -289,7 +289,33 @@ def test_对不上号的推荐当没给() -> None:
     """预选不中的推荐会让用户以为默认值丢了。"""
     (group,) = parsing.parse_choices("[待选项]\n- 项: 光照 / 选项: 冷白 | 暖黄 / 推荐: 中性\n")
 
-    assert group.recommended == ""
+    assert group.recommended == ()
+
+
+def test_多选的那几组推荐能给好几个() -> None:
+    """可叠加的维度本来就是好几项，只能预选一个等于逼用户丢掉其他的。"""
+    text = """[待选项]
+- 项: 参考作品锚点 / 选项: 银翼 | 攻壳 | 2077 / 多选: 是 / 推荐: 银翼 | 2077
+- 项: 主光方向 / 选项: 逆光 | 侧逆光 / 多选: 否 / 推荐: 侧逆光
+"""
+    first, second = parsing.parse_choices(text)
+
+    assert (first.multiple, first.recommended) == (True, ("银翼", "2077"))
+    assert (second.multiple, second.recommended) == (False, ("侧逆光",))
+
+
+def test_单选组的推荐只取第一个() -> None:
+    """互排的维度预选两个，用户看到的就是两个重写彼此的结论。"""
+    (group,) = parsing.parse_choices("[待选项]\n- 项: 色温 / 选项: 冷 | 暖 / 推荐: 冷 | 暖\n")
+
+    assert (group.multiple, group.recommended) == (False, ("冷",))
+
+
+def test_没写多选就是单选() -> None:
+    """读不到声明时摆成多选，用户会同时选上两个互排的值。"""
+    (group,) = parsing.parse_choices("[待选项]\n- 项: 比例 / 选项: 6头身 | 7头身\n")
+
+    assert group.multiple is False
 
 
 def test_待选项块到下一个标记就结束() -> None:

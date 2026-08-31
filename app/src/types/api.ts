@@ -544,8 +544,10 @@ export interface NamingOption {
 export interface ChoiceGroup {
   item: string
   options: string[]
-  /** Agent 的推荐，拿它预选。空就是没给或给的不在选项里。 */
-  recommended: string
+  /** Agent 的推荐，拿它预选。空就是没给或给的不在选项里；单选题最多一个。 */
+  recommended: string[]
+  /** 真则这一项能同时拍好几个值，由 Agent 自己判断。 */
+  multiple: boolean
 }
 
 export interface ConversationDetail {

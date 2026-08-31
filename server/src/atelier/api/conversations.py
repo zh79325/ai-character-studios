@@ -149,7 +149,12 @@ def _naming_out(options: Sequence[parsing.NamingOption]) -> list[NamingOptionOut
 
 def _choices_out(groups: Sequence[parsing.ChoiceGroup]) -> list[ChoiceGroupOut]:
     return [
-        ChoiceGroupOut(item=one.item, options=list(one.options), recommended=one.recommended)
+        ChoiceGroupOut(
+            item=one.item,
+            options=list(one.options),
+            recommended=list(one.recommended),
+            multiple=one.multiple,
+        )
         for one in groups
     ]
 

@@ -684,8 +684,10 @@ class ChoiceGroupOut(Schema):
 
     item: str
     options: list[str] = Field(default_factory=list)
-    recommended: str = ""
-    """Agent 的推荐，前端拿它预选。空就是没给或给的不在选项里。"""
+    recommended: list[str] = Field(default_factory=list)
+    """Agent 的推荐，前端拿它预选。空就是没给或给的不在选项里；单选题最多一个。"""
+    multiple: bool = False
+    """真则这一项能同时拍好几个值，由 Agent 自己判断。"""
 
 
 class ConversationDetailOut(Schema):

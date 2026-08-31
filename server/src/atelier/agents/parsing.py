@@ -62,7 +62,7 @@ _NAMING_KEY_RE = re.compile(
     r"^(?P<key>名称|名字|项目名|代号|code|理由|说明)\s*[:：]\s*(?P<value>.*)$", re.I
 )
 _NAMING_SPLIT_RE = re.compile(r"\s*[/｜|；;]\s*")
-_CHOICE_KEY_RE = re.compile(r"^(?P<key>项|选项|推荐)\s*[:：]\s*(?P<value>.*)$")
+_CHOICE_KEY_RE = re.compile(r"^(?P<key>项|选项|推荐|多选)\s*[:：]\s*(?P<value>.*)$")
 _CHOICE_SEG_RE = re.compile(r"\s*([/；;])\s*")
 """一行里各段的分隔。不含 `|`：那个留给选项之间用。"""
 _CHOICE_OPT_RE = re.compile(r"\s*[|｜、]\s*")
@@ -71,6 +71,11 @@ _BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)、])\s*")
 _FENCE_RE = re.compile(r"^\s*(?:```+|~~~+)")
 
 _NONE_WORDS = frozenset({"暂无", "无", "none", "n/a", "-", "—"})
+
+_YES_WORDS = frozenset({"是", "真", "多选", "yes", "y", "true", "1"})
+"""`多选` 这一段写什么算真。其余一律当单选：读不懂的时候摆成单选只是少点几个，而把单选题
+摆成多选会让用户同时选上两个互排的值。
+"""
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*(?P<title>.+?)\s*#*\s*$")
 _CONSTRAINT_RE = re.compile(r"^(?P<item>[^=:：]{1,60}?)\s*(?:=|→|:|：)\s*(?P<value>.+)$")
@@ -172,13 +177,18 @@ class NamingOption:
 class ChoiceGroup:
     """一处要用户拍板的分歧：一个项、几个可选值、Agent 的推荐。
 
-    `recommended` 只在它真的是 `options` 之一时才有值：前端拿它做默认选中，对不上号的
-    推荐宁可不默认选，也不能多出一个选不中的影子选项。
+    `recommended` 只留真的是 `options` 之一的那几个：前端拿它做默认选中，对不上号的
+    推荐宁可不默认选，也不能多出一个选不中的影子选项。单选题最多一个（模型写了几个就只取
+    第一个），多选题几个都留。
+
+    `multiple` 由 Agent 在块里自己声明：互排的维度（写实到卡通的位置）只能选一个，可叠加的
+    维度（参考作品、要避开的元素）本来就是好几项，一律单选等于逼用户丢掉其他的。
     """
 
     item: str
     options: tuple[str, ...]
-    recommended: str = ""
+    recommended: tuple[str, ...] = ()
+    multiple: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,7 +387,7 @@ MAX_CHOICE_GROUPS = 4
 
 
 def _choice_segments(line: str) -> list[str]:
-    """把一行切成「项 / 选项 / 推荐」几段。
+    """把一行切成「项 / 选项 / 多选 / 推荐」几段。
 
     只在分隔符后面真的跟着段名时才断开：选项文字里本来就常带斜杠（「写实/仿真」），无条件
     切会把一个选项劈成两个。
@@ -395,9 +405,11 @@ def _choice_segments(line: str) -> list[str]:
 def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
     """解析 `[待选项]`。一次最多收 `MAX_CHOICE_GROUPS` 组，用户在面板上一次点完。
 
-    以「项」为一组的开头，三段既可能写在同一行用 `/` 隔开，也可能分行写。选项之间用 `|`
+    以「项」为一组的开头，各段既可能写在同一行用 `/` 隔开，也可能分行写。选项之间用 `|`
     而不是 `/`：选项文字里本来就常带斜杠（「3:7 写实/风格化」），两边用同一个分隔符就会把一个
     选项切成两个。
+
+    `多选: 是` 的那几组可以同时拍好几个值，推荐也就能给好几个（`推荐: A | B`）。
     """
     body = _block_body(text, CHOICE_MARKER)
     if body is None:
@@ -418,15 +430,28 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
                 if one and not is_placeholder(one)
             )
         )
-        recommended = current.get("recommended", "").strip().strip("`").strip()
+        recommended_raw = current.get("recommended", "")
+        multiple = current.get("multiple", "").strip().strip("`").strip().lower() in _YES_WORDS
         current.clear()
         if not item or is_placeholder(item) or len(options) < MIN_CHOICE_OPTIONS:
             return
+        # 去重保序：同一个值写两遍会在面板上预选成两行
+        recommended = tuple(
+            dict.fromkeys(
+                one
+                for one in (
+                    part.strip().strip("`").strip()
+                    for part in _CHOICE_OPT_RE.split(recommended_raw)
+                )
+                if one in options
+            )
+        )
         groups.append(
             ChoiceGroup(
                 item=item,
                 options=options,
-                recommended=recommended if recommended in options else "",
+                recommended=recommended if multiple else recommended[:1],
+                multiple=multiple,
             )
         )
 
@@ -441,6 +466,8 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
                 current["item"] = value
             elif key == "选项":
                 current["options"] = value
+            elif key == "多选":
+                current["multiple"] = value
             else:
                 current["recommended"] = value
     close()

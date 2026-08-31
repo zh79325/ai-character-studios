@@ -10,8 +10,12 @@
  *
  * 一项一行、一个选项一行：选项之间长短差得远，横着排会折成参差的几行，看着像分组错位。
  *
- * 每项都留了「其他」：列出来的几个覆盖不到用户真正想要的时候，逼他在这几个里挑一个等于替他改
- * 了需求。选了「其他」就只写自填值，不再多给一个补充框——同一件事两个框，用户得猜该写哪个。
+ * 单选还是多选由 Agent 逐项声明（`multiple`）：互排的维度只能拍一个，可叠加的维度（参考作品、
+ * 要避开的元素）本来就是好几项。
+ *
+ * 单选题留「其他」：列出来的几个覆盖不到用户真正想要的时候，逼他在这几个里挑一个等于替他改了
+ * 需求。选了「其他」就只写自填值，不再多给一个补充框——同一件事两个框，用户得猜该写哪个。
+ * 多选题不给「其他」：想加的直接写进那一个输入框，多勾一个「其他」再写一遍是白绕一道。
  *
  * 点完拼出来的那句话用的是 Agent 自己给的字面值，不写「选 B」：指代要靠模型回头数选项，
  * 而它数错的时候没人看得出来。
@@ -20,8 +24,11 @@
  * 等于替用户认了几个他没看的结论。
  *
  * 发出去就关掉，不留结果卡片：那句话已经进了消息区，再在旁边留一份就是同一件事摆两遍。
+ *
+ * `finale` 摆在所有题后面（立项页传的是定名字与代号、确认立项）：收口本身也是用户得拍的一项，跟其
+ * 他题摆在一处才看得出「拍完这几项就能收口，也可以接着聊」。
  */
-import { Button, Drawer, Input, Radio, Space, Typography } from 'antd'
+import { Button, Checkbox, Divider, Drawer, Input, Radio, Space, Typography } from 'antd'
 import { useState, type ReactNode } from 'react'
 
 import type { ChoiceGroup } from '@/types/api'
@@ -35,21 +42,36 @@ interface Props {
   disabled?: boolean
   /** 把拼好的那句话发出去。 */
   onSubmit: (text: string) => void
+  /** 摆在最后一题后面的收口动作（立项页：定名字与代号、确认立项）。 */
+  finale?: ReactNode
 }
 
 type Table = Record<string, string>
+/** 多选项当下勾了哪几个。 */
+type Marks = Record<string, string[]>
 
 /** 一批选项的内容签名：详情每次刷新都是新数组，认内容才知道是不是换了一批。 */
 function signatureOf(groups: ChoiceGroup[]): string {
-  return groups.map((one) => `${one.item}=${one.options.join('|')}`).join('\n')
+  return groups
+    .map((one) => `${one.item}=${one.multiple ? '*' : ''}${one.options.join('|')}`)
+    .join('\n')
 }
 
-function defaultsOf(groups: ChoiceGroup[]): Table {
+function singleDefaults(groups: ChoiceGroup[]): Table {
   const picked: Table = {}
   for (const one of groups) {
-    if (one.recommended !== '') picked[one.item] = one.recommended
+    const first = one.recommended[0]
+    if (!one.multiple && first !== undefined) picked[one.item] = first
   }
   return picked
+}
+
+function multiDefaults(groups: ChoiceGroup[]): Marks {
+  const marks: Marks = {}
+  for (const one of groups) {
+    if (one.multiple) marks[one.item] = [...one.recommended]
+  }
+  return marks
 }
 
 /**
@@ -62,9 +84,10 @@ function heightOf(count: number): string {
   return `min(${240 + count * 200}px, calc(100% - 30px))`
 }
 
-export default function ChoicePicker({ groups, disabled = false, onSubmit }: Props) {
+export default function ChoicePicker({ groups, disabled = false, onSubmit, finale = null }: Props) {
   const signature = signatureOf(groups)
-  const [picked, setPicked] = useState<Table>(() => defaultsOf(groups))
+  const [picked, setPicked] = useState<Table>(() => singleDefaults(groups))
+  const [marks, setMarks] = useState<Marks>(() => multiDefaults(groups))
   const [custom, setCustom] = useState<Table>({})
   const [note, setNote] = useState<Table>({})
   const [open, setOpen] = useState(true)
@@ -73,29 +96,38 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
   // 换了一批选项就重新预选并重新抽出来：上一轮的选择与补充留着会让用户以为新的项也已经定了
   if (seen !== signature) {
     setSeen(signature)
-    setPicked(defaultsOf(groups))
+    setPicked(singleDefaults(groups))
+    setMarks(multiDefaults(groups))
     setCustom({})
     setNote({})
     setOpen(true)
   }
 
-  if (groups.length === 0) return null
+  if (groups.length === 0 && finale === null) return null
 
-  /** 这一项当下定成了什么。选了「其他」却没写字就算还没定。 */
-  const valueOf = (item: string): string => {
-    const chosen = picked[item]
+  /** 这一项当下定成了什么。选了「其他」却没写字、多选一个没勾都算还没定。 */
+  const valueOf = (one: ChoiceGroup): string => {
+    if (one.multiple) return (marks[one.item] ?? []).join('、')
+    const chosen = picked[one.item]
     if (chosen === undefined) return ''
-    return chosen === CUSTOM ? (custom[item] ?? '').trim() : chosen
+    return chosen === CUSTOM ? (custom[one.item] ?? '').trim() : chosen
   }
 
-  const settled = groups.filter((one) => valueOf(one.item) !== '')
+  const noteOf = (item: string): string => (note[item] ?? '').trim()
+
+  // 多选题那个输入框就是它的自填口：一个没勾但写了字，这一项也算定了
+  const settled = groups.filter(
+    (one) => valueOf(one) !== '' || (one.multiple && noteOf(one.item) !== ''),
+  )
 
   const compose = (): string => {
     const lines = settled.map((one) => {
-      const extra = (note[one.item] ?? '').trim()
-      return `- ${one.item}: ${valueOf(one.item)}${extra === '' ? '' : `（补充：${extra}）`}`
+      const value = valueOf(one)
+      const extra = noteOf(one.item)
+      if (value === '') return `- ${one.item}: ${extra}`
+      return `- ${one.item}: ${value}${extra === '' ? '' : `（补充：${extra}）`}`
     })
-    const rest = groups.filter((one) => valueOf(one.item) === '').map((one) => one.item)
+    const rest = groups.filter((one) => !settled.includes(one)).map((one) => one.item)
     const tail = rest.length > 0 ? `\n剩下的（${rest.join('、')}）按你的推荐来。` : ''
     return `这几项我定了：\n${lines.join('\n')}${tail}`
   }
@@ -142,38 +174,63 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           {groups.map((one) => (
             <Space key={one.item} direction="vertical" size={6} style={{ width: '100%' }}>
-              <Typography.Text strong style={{ fontSize: 13 }}>
-                {one.item}
-              </Typography.Text>
-              <Radio.Group
-                disabled={disabled}
-                value={picked[one.item]}
-                style={{ width: '100%' }}
-                onChange={(event) =>
-                  setPicked((prev) => ({ ...prev, [one.item]: event.target.value as string }))
-                }
-              >
-                <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  {one.options.map((option) => (
-                    <Row key={option} active={picked[one.item] === option}>
-                      <Radio value={option} style={ROW_LABEL}>
-                        {option}
-                        {option === one.recommended && (
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            （推荐）
-                          </Typography.Text>
-                        )}
+              <Space size={6}>
+                <Typography.Text strong style={{ fontSize: 13 }}>
+                  {one.item}
+                </Typography.Text>
+                {one.multiple && (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    可多选
+                  </Typography.Text>
+                )}
+              </Space>
+              {one.multiple ? (
+                <Checkbox.Group
+                  disabled={disabled}
+                  value={marks[one.item] ?? []}
+                  style={{ width: '100%' }}
+                  onChange={(next) =>
+                    setMarks((prev) => ({ ...prev, [one.item]: next as string[] }))
+                  }
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {one.options.map((option) => (
+                      <Row key={option} active={(marks[one.item] ?? []).includes(option)}>
+                        <Checkbox value={option} style={ROW_LABEL}>
+                          {option}
+                          {one.recommended.includes(option) && <Recommended />}
+                        </Checkbox>
+                      </Row>
+                    ))}
+                  </Space>
+                </Checkbox.Group>
+              ) : (
+                <Radio.Group
+                  disabled={disabled}
+                  value={picked[one.item]}
+                  style={{ width: '100%' }}
+                  onChange={(event) =>
+                    setPicked((prev) => ({ ...prev, [one.item]: event.target.value as string }))
+                  }
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {one.options.map((option) => (
+                      <Row key={option} active={picked[one.item] === option}>
+                        <Radio value={option} style={ROW_LABEL}>
+                          {option}
+                          {one.recommended.includes(option) && <Recommended />}
+                        </Radio>
+                      </Row>
+                    ))}
+                    <Row active={picked[one.item] === CUSTOM}>
+                      <Radio value={CUSTOM} style={ROW_LABEL}>
+                        其他
                       </Radio>
                     </Row>
-                  ))}
-                  <Row active={picked[one.item] === CUSTOM}>
-                    <Radio value={CUSTOM} style={ROW_LABEL}>
-                      其他
-                    </Radio>
-                  </Row>
-                </Space>
-              </Radio.Group>
-              {picked[one.item] === CUSTOM ? (
+                  </Space>
+                </Radio.Group>
+              )}
+              {!one.multiple && picked[one.item] === CUSTOM ? (
                 <Input
                   size="small"
                   disabled={disabled}
@@ -188,7 +245,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
                   size="small"
                   disabled={disabled}
                   value={note[one.item] ?? ''}
-                  placeholder="补充一句（可选）"
+                  placeholder={one.multiple ? '还想要别的就写这儿（可选）' : '补充一句（可选）'}
                   onChange={(event) =>
                     setNote((prev) => ({ ...prev, [one.item]: event.target.value }))
                   }
@@ -204,6 +261,14 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
 
 /** 单选铺满整行：点框里任何地方都算点这一项，选项文字长了在框里自己折。 */
 const ROW_LABEL = { display: 'flex', alignItems: 'flex-start', fontSize: 13 } as const
+
+function Recommended() {
+  return (
+    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      （推荐）
+    </Typography.Text>
+  )
+}
 
 /** 一个选项一行：整行都框起来，选中的那行描边跟着变。 */
 function Row({ active, children }: { active: boolean; children: ReactNode }) {

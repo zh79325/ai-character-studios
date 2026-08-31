@@ -233,6 +233,38 @@ def test_发一轮拿到回答与草稿(client: TestClient, talk: str) -> None:
     assert detail["drafts"][0]["stale"] is False
 
 
+CHOICE_REPLY = """还有几处等你拍。
+
+[待选项]
+- 项: 参考作品锚点 / 选项: 银翼杀手 | 攻壳机动队 / 多选: 是 / 推荐: 银翼杀手 | 攻壳机动队
+- 项: 面数预算 / 选项: 8k | 15k / 多选: 否 / 推荐: 15k
+"""
+
+
+def test_待选项带着单选多选与推荐出去(client: TestClient, talk: str, chat: ScriptedChat) -> None:
+    """前端靠 `multiple` 决定摆单选还是多选，靠 `recommended` 预选；两个字段必须原样到线上。"""
+    chat.replies.append(CHOICE_REPLY)
+    send(client, talk, "拟一版")
+    send(client, talk, "接着说")
+
+    detail = client.get(f"/api/conversations/{talk}").json()
+
+    assert detail["choices"] == [
+        {
+            "item": "参考作品锚点",
+            "options": ["银翼杀手", "攻壳机动队"],
+            "recommended": ["银翼杀手", "攻壳机动队"],
+            "multiple": True,
+        },
+        {
+            "item": "面数预算",
+            "options": ["8k", "15k"],
+            "recommended": ["15k"],
+            "multiple": False,
+        },
+    ]
+
+
 def test_空内容不发(client: TestClient, talk: str) -> None:
     response = client.post(f"/api/conversations/{talk}/messages", json={"content": "   "})
 
