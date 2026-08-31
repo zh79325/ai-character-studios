@@ -491,7 +491,7 @@ export interface Conversation {
   target_ref: string | null
   agent_code: string
   title: string
-  /** `active` / `committed` / `discarded`，后两种不能再发消息。 */
+  /** 新会话恒为 `active`：沉淀与丢弃只处理草稿，不冻结会话。老库里可能还有另外两种。 */
   status: string
   /** 这场会话粘在哪个候选上——多轮对话不换 provider，前缀缓存才用得上。 */
   bound_provider_label: string

@@ -176,11 +176,11 @@ def ensure(
 ) -> Conversation:
     """这个对焦对象当下该聊的那场会话，没有就开一场。
 
-    接着最近那场还开着的聊；上一场已经沉淀或丢弃了才开新的——冻结的会话发不出消息，把它
-    摆上来等于让用户自己去发现「原来得先开一场新的」。
+    接着最近那场聊，不看它沉淀过没有：沉淀只是把草稿写进定稿位，聊到哪儿、定了什么都还在这
+    场里，为此另起一场等于把上下文丢掉重讲一遍。
     """
     for row in list_conversations(project, target_kind=target_kind, target_ref=target_ref):
-        if row.agent_code == agent_code and row.status == "active":
+        if row.agent_code == agent_code:
             return row
     return start(
         project,
@@ -227,21 +227,21 @@ def memory_of(project: Session, conversation_id: str) -> ConversationMemory:
 
 
 def choices_of(project: Session, conversation_id: str) -> tuple[parsing.ChoiceGroup, ...]:
-    """这场会话当下要用户拍板的那几组选项。
+    """这场会话当下要用户拍板的那几组选项。现场从消息里解析，不建表。
 
-    跟命名建议同一个路子：现场从最近一条带过该块的助手消息里解析，不建表。只认最近那一条：
-    用户选完下一轮就该摆新的分歧了，旧选项继续摆在面板上等于请用户再选一遍已经定了的事。
+    只认最后一条消息：用户答过之后那一轮的回话里没再提新分歧，就说明这几处已经拍完了，把
+    上一轮的表单继续摆成可点的样子等于请用户再选一遍已经定了的事。定下的结果本来就在
+    用户自己那条消息里摆着。
     """
-    rows = project.scalars(
+    row = project.scalars(
         select(Message)
-        .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+        .where(Message.conversation_id == conversation_id)
         .order_by(Message.turn_no.desc())
-    )
-    for row in rows:
-        groups = parsing.parse_choices(row.content)
-        if groups:
-            return groups
-    return ()
+        .limit(1)
+    ).first()
+    if row is None or row.role != "assistant":
+        return ()
+    return parsing.parse_choices(row.content)
 
 
 def naming_of(project: Session, conversation_id: str) -> tuple[parsing.NamingOption, ...]:
@@ -559,9 +559,6 @@ def send(
 ) -> TurnResult:
     """走完一轮：记录用户输入 → 按需折叠 → 调模型 → 记录回答与草稿。"""
     caller: ChatFn = chat if chat is not None else text_chat.complete
-    if conversation.status != "active":
-        ended = "沉淀" if conversation.status == "committed" else "丢弃"
-        raise Conflict(f"会话已{ended}，要继续改就开一个新会话")
     body = text.strip()
     if not body:
         raise Conflict("发给 Agent 的内容不能为空")
@@ -931,10 +928,10 @@ def commit(
     *,
     draft_ids: Sequence[str] | None = None,
 ) -> CommitResult:
-    """确认沉淀：草稿写定稿位，会话收口，关键决策进长期记忆。"""
-    if conversation.status != "active":
-        raise Conflict("这个会话已经结束了，不能再沉淀")
+    """确认沉淀：草稿写定稿位，关键决策进长期记忆。
 
+    不收口会话：沉淀是「这一版落盘」，不是「这场聊完了」。接着聊出下一版再沉淀一次就是了。
+    """
     pending = drafts_of(project, conversation.id)
     if draft_ids is not None:
         wanted = set(draft_ids)
@@ -971,7 +968,6 @@ def commit(
 
     added = _write_memories(project, conversation, harvest_memories(project, conversation.id))
     _link_spec(project, conversation, archived)
-    conversation.status = "committed"
     project.commit()
 
     BUS.publish(
@@ -1012,13 +1008,13 @@ def _link_spec(
 
 
 def discard(project: Session, conversation: Conversation) -> int:
-    """丢弃草稿：只改状态，会话与消息全留着可回看。"""
-    if conversation.status == "committed":
-        raise Conflict("已经沉淀过的会话不能再丢弃")
+    """丢弃这批草稿：只标弃用，磁盘不动，会话继续开着。
+
+    丢的是这一版写出来的东西，不是这场对话——用户按的那个按钮写的就是「丢弃草稿」。
+    """
     pending = drafts_of(project, conversation.id)
     for draft in pending:
         draft.status = "discarded"
-    conversation.status = "discarded"
     project.commit()
     _log.info("conversation_discarded", conversation=conversation.id, drafts=len(pending))
     return len(pending)

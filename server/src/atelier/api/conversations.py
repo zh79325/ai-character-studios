@@ -217,7 +217,7 @@ def ensure_conversation(
     """拿这个对焦对象当下该聊的会话，没有就开一场。
 
     立项对焦用这一口：那本来就只有一条线，让用户先点一下「新会话」才能说话是白多一步。幂等：
-    刷多少次都是同一场，除非上一场已经沉淀或丢弃。因此返的是 200 而不是 201。
+    刷多少次都是同一场，沉淀过也不开新的。因此返的是 200 而不是 201。
     """
     row = engine.ensure(
         project,
@@ -320,7 +320,7 @@ def commit_conversation(
     project: ProjectDb,
     ref: CurrentProject,
 ) -> CommitOut:
-    """确认沉淀：这是整条链路里唯一会改工作区文件的接口。"""
+    """确认沉淀：这是整条链路里唯一会改工作区文件的接口。沉淀完会话继续开着，可以接着聊。"""
     row = engine.get(project, conversation_id)
     result = engine.commit(project, ref, row, draft_ids=payload.draft_ids)
     return CommitOut(
@@ -339,7 +339,7 @@ def commit_conversation(
 
 @router.post("/{conversation_id}/discard", response_model=DiscardOut)
 def discard_conversation(conversation_id: str, project: ProjectDb) -> DiscardOut:
-    """丢弃草稿。会话与消息全留着，只是不再往磁盘上落。"""
+    """丢弃草稿。会话与消息全留着，也还能接着聊，只是这批草稿不往磁盘上落了。"""
     row = engine.get(project, conversation_id)
     count = engine.discard(project, row)
     BUS.drop(conversation_id)

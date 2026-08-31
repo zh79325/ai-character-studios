@@ -4,8 +4,9 @@
  * 这一页只有一件事：跟设计师聊「这个项目要什么」。所以整页就是那个对话框，边上一条窄栏放待办，
  * 项目抬头也摆在那条窄栏里，其余入口都在顶栏菜单里，不在这儿再摆一遍。
  *
- * 「完成立项」就是这条待办里最后一项：名字与代号不由用户凭空填，设计师聊出轮廓后会给几组建议
- * （`[项目命名建议]`），用户点一条进表单或自己重写，提交后后端才铺目录骨架与 git 规则。
+ * 「确认立项」是这一页唯一的收口动作：草稿落盘与定下名字与代号一并做完，不让用户先点一次沉淀。名字
+ * 与代号不由用户凭空填，设计师聊出轮廓后会给几组建议（`[项目命名建议]`），用户点一条进表单
+ * 或自己重写。
  *
  * 对焦会话由系统管（`managed`）：进页就接上这个项目还开着的那场，没有就开一场，开场先报一遍
  * 项目现状。
@@ -15,11 +16,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { App, Button, Form, Input, Modal, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
 
-import { readConversation } from '@/api/conversations'
+import { commitConversation, readConversation } from '@/api/conversations'
 import { finalizeProject } from '@/api/projects'
 import ChatPanel from '@/components/ChatPanel'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
-import type { NamingOption, ProjectList } from '@/types/api'
+import type { Draft, NamingOption, ProjectList } from '@/types/api'
 
 export default function ProjectPage() {
   const current = useCurrentProject()
@@ -41,8 +42,17 @@ export default function ProjectPage() {
         title="立项对焦"
         managed
         draftsAside
+        commitInTodo={drafting}
         status={<ProjectStatus />}
-        todo={drafting ? <FinalizeTodo naming={detail.data?.naming ?? []} /> : null}
+        todo={
+          drafting ? (
+            <FinalizeTodo
+              conversationId={conversation}
+              drafts={detail.data?.drafts ?? []}
+              naming={detail.data?.naming ?? []}
+            />
+          ) : null
+        }
         onActiveChange={setConversation}
       />
     </ProjectFrame>
@@ -73,18 +83,38 @@ function ProjectStatus() {
   )
 }
 
-/** 待办里的立项收口：选一组名字与代号，落下目录骨架。 */
-function FinalizeTodo({ naming }: { naming: NamingOption[] }) {
+/** 待办里的立项收口：选一组名字与代号，把草稿落盘、把目录骨架铺下。 */
+function FinalizeTodo({
+  conversationId,
+  drafts,
+  naming,
+}: {
+  conversationId: string | null
+  drafts: Draft[]
+  naming: NamingOption[]
+}) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm<{ name: string; code: string }>()
 
+  // 基线过期的那几份后端会拒收，跳开它们：立项不该被一份对不上基线的草稿卡住
+  const landing = drafts.filter((one) => !one.stale).map((one) => one.id)
+
   const finalize = useMutation({
-    mutationFn: (values: { name: string; code: string }) =>
-      finalizeProject({ name: values.name.trim(), code: values.code.trim() }),
+    mutationFn: async (values: { name: string; code: string }) => {
+      // 先落盘再改名：代号一变项目就是另一个身份了，那时再去沉淀旧会话的草稿就对不上位置
+      if (conversationId !== null && landing.length > 0) {
+        await commitConversation(conversationId, landing)
+      }
+      return finalizeProject({ name: values.name.trim(), code: values.code.trim() })
+    },
     onSuccess: (fresh: ProjectList) => {
-      message.success('立项完成，目录骨架与 git 规则已经铺好')
+      message.success(
+        landing.length > 0
+          ? `立项完成，${landing.length} 份草稿已落盘，目录骨架与 git 规则也铺好了`
+          : '立项完成，目录骨架与 git 规则已经铺好',
+      )
       queryClient.setQueryData(['projects'], fresh)
       // 代号变了等于换了个项目身份，缓存里跟项目有关的东西一律重取
       void queryClient.invalidateQueries()
@@ -96,16 +126,16 @@ function FinalizeTodo({ naming }: { naming: NamingOption[] }) {
   return (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        聊定了就收口：定下名字与代号，铺出素材目录。
+        聊定了就收口：定下名字与代号，草稿一并落盘，铺出素材目录。
       </Typography.Text>
-      <Button block icon={<CheckCircleOutlined />} onClick={() => setOpen(true)}>
-        完成立项
+      <Button block type="primary" icon={<CheckCircleOutlined />} onClick={() => setOpen(true)}>
+        确认立项
         {naming.length > 0 && `（${naming.length} 组建议）`}
       </Button>
       <Modal
         open={open}
-        title="完成立项"
-        okText="完成立项"
+        title="确认立项"
+        okText="确认立项"
         cancelText="再聊聊"
         confirmLoading={finalize.isPending}
         onCancel={() => setOpen(false)}
@@ -161,8 +191,8 @@ function FinalizeTodo({ naming }: { naming: NamingOption[] }) {
             </Form.Item>
           </Form>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            提交后才铺素材目录、`.gitignore` 与 `.gitattributes`（图片与模型走 LFS）；
-            聊出来的视觉规范不会被覆盖。
+            提交后把待确认的草稿写进项目目录，再铺素材目录与 `.gitignore`、`.gitattributes`
+            （图片与模型走 LFS）。
           </Typography.Text>
         </Space>
       </Modal>

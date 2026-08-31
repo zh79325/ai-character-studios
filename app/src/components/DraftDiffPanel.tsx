@@ -30,14 +30,16 @@ import type { Draft } from '@/types/api'
 interface Props {
   conversationId: string
   drafts: Draft[]
-  /** 会话已经沉淀或丢弃过，只能看不能再动。 */
-  frozen?: boolean
   /** 挤在窄栏里：按钮改成竖排块级，diff 只留一小段能滚。 */
   compact?: boolean
   /** 排在草稿前面的一小块（如项目抬头）。 */
   header?: ReactNode
   /** 排在草稿后面的其他待办（如立项收口）。 */
   footer?: ReactNode
+  /**
+   * 沉淀由 `footer` 那一项顺手做：这里只给 diff 与丢弃，不再摆沉淀按钮与挑份数的勾选。
+   */
+  commitInTodo?: boolean
 }
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -45,10 +47,10 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
 export default function DraftDiffPanel({
   conversationId,
   drafts,
-  frozen = false,
   compact = false,
   header = null,
   footer = null,
+  commitInTodo = false,
 }: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -94,8 +96,7 @@ export default function DraftDiffPanel({
     onError: (err: Error) => message.error(err.message),
   })
 
-  const canCommit =
-    selected.length > 0 && !frozen && !drafts.some((d) => d.stale && selected.includes(d.id))
+  const canCommit = selected.length > 0 && !drafts.some((d) => d.stale && selected.includes(d.id))
 
   const discardBtn = (
     <Popconfirm
@@ -105,7 +106,7 @@ export default function DraftDiffPanel({
       cancelText="算了"
       onConfirm={() => discard.mutate()}
     >
-      <Button danger block={compact} disabled={frozen} loading={discard.isPending}>
+      <Button danger block={compact} loading={discard.isPending}>
         丢弃草稿
       </Button>
     </Popconfirm>
@@ -125,13 +126,13 @@ export default function DraftDiffPanel({
   )
   const actions = compact ? (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
-      {commitBtn}
+      {!commitInTodo && commitBtn}
       {discardBtn}
     </Space>
   ) : (
     <Space>
       {discardBtn}
-      {commitBtn}
+      {!commitInTodo && commitBtn}
     </Space>
   )
 
@@ -155,23 +156,25 @@ export default function DraftDiffPanel({
                 }))}
               />
             )}
-            <Checkbox.Group
-              value={selected}
-              onChange={(value) => setPicked(value as string[])}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                wordBreak: 'break-all',
-              }}
-              options={drafts.map((draft) => ({
-                value: draft.id,
-                label: draft.stale
-                  ? `${draft.target_path}（基线已变，沉淀会被拒）`
-                  : draft.target_path,
-                disabled: draft.stale || frozen,
-              }))}
-            />
+            {!commitInTodo && (
+              <Checkbox.Group
+                value={selected}
+                onChange={(value) => setPicked(value as string[])}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  wordBreak: 'break-all',
+                }}
+                options={drafts.map((draft) => ({
+                  value: draft.id,
+                  label: draft.stale
+                    ? `${draft.target_path}（基线已变，沉淀会被拒）`
+                    : draft.target_path,
+                  disabled: draft.stale,
+                }))}
+              />
+            )}
             {current && (
               <DiffView conversationId={conversationId} draft={current} compact={compact} />
             )}

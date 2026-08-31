@@ -190,6 +190,10 @@ class Conversation(ProjectBase):
     agent_code: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(16), default="active")
+    """新会话只会是 `active`：沉淀与丢弃都只处理草稿，不冻结会话。
+
+    列留着是为了读得懂老库——那时沉淀过的会话会被置成 `committed`/`discarded`。
+    """
 
     # 会话级粘性绑定
     bound_provider_model_id: Mapped[int | None] = mapped_column(Integer, default=None)

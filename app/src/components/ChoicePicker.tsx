@@ -13,8 +13,11 @@
  *
  * 没点的项不拼进去，只在末尾点名一句「按你的推荐来」。把没点的也按推荐值写成用户的选择，
  * 等于替用户认了几个他没看的结论。
+ *
+ * 拍完就不再是表单：点过「就按这些」之后这张卡片翻成定下来的那几行结果。继续摆着可点的单选框，
+ * 用户改一下以为改得掉，而那句话已经发出去了。
  */
-import { Button, Card, Input, Radio, Space, Typography } from 'antd'
+import { Button, Card, Input, Radio, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
 
 import type { ChoiceGroup } from '@/types/api'
@@ -24,13 +27,21 @@ const CUSTOM = '\u0000custom'
 
 interface Props {
   groups: ChoiceGroup[]
-  /** 会话冻结或这一轮还没回完时不让点。 */
+  /** 这一轮还没回完时不让点。 */
   disabled?: boolean
   /** 把拼好的那句话发出去。 */
   onSubmit: (text: string) => void
 }
 
 type Table = Record<string, string>
+
+/** 拍完那一下定成了什么。 */
+interface Answer {
+  /** 定下的那几项，按面板上的顺序。 */
+  settled: { item: string; value: string; note: string }[]
+  /** 没点的那几项：那些是按设计师的推荐走的。 */
+  rest: string[]
+}
 
 /** 一批选项的内容签名：详情每次刷新都是新数组，认内容才知道是不是换了一批。 */
 function signatureOf(groups: ChoiceGroup[]): string {
@@ -50,6 +61,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
   const [picked, setPicked] = useState<Table>(() => defaultsOf(groups))
   const [custom, setCustom] = useState<Table>({})
   const [note, setNote] = useState<Table>({})
+  const [answer, setAnswer] = useState<Answer | null>(null)
   const [seen, setSeen] = useState(signature)
 
   // 换了一批选项就重新预选：上一轮的选择与补充留着会让用户以为新的项也已经定了
@@ -58,6 +70,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
     setPicked(defaultsOf(groups))
     setCustom({})
     setNote({})
+    setAnswer(null)
   }
 
   if (groups.length === 0) return null
@@ -80,6 +93,20 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
     const tail = rest.length > 0 ? `\n剩下的（${rest.join('、')}）按你的推荐来。` : ''
     return `这几项我定了：\n${lines.join('\n')}${tail}`
   }
+
+  const submit = () => {
+    onSubmit(compose())
+    setAnswer({
+      settled: settled.map((one) => ({
+        item: one.item,
+        value: valueOf(one.item),
+        note: (note[one.item] ?? '').trim(),
+      })),
+      rest: groups.filter((one) => valueOf(one.item) === '').map((one) => one.item),
+    })
+  }
+
+  if (answer !== null) return <Answered answer={answer} />
 
   return (
     <Card
@@ -135,7 +162,7 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
             type="primary"
             size="small"
             disabled={disabled || settled.length === 0}
-            onClick={() => onSubmit(compose())}
+            onClick={submit}
           >
             就按这些
           </Button>
@@ -145,6 +172,38 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
               : `已定 ${settled.length}/${groups.length}，没定的按它的推荐走`}
           </Typography.Text>
         </Space>
+      </Space>
+    </Card>
+  )
+}
+
+/** 拍完之后这张卡片的样子：只报定下来的结果，不再给控件。 */
+function Answered({ answer }: { answer: Answer }) {
+  return (
+    <Card
+      size="small"
+      title={<span style={{ fontSize: 13 }}>这几项已经拍了</span>}
+      styles={{ body: { padding: 12 } }}
+    >
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        {answer.settled.map((one) => (
+          <Space key={one.item} size={6} wrap>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {one.item}
+            </Typography.Text>
+            <Tag color="blue">{one.value}</Tag>
+            {one.note !== '' && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                补充：{one.note}
+              </Typography.Text>
+            )}
+          </Space>
+        ))}
+        {answer.rest.length > 0 && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            剩下的（{answer.rest.join('、')}）按设计师的推荐走
+          </Typography.Text>
+        )}
       </Space>
     </Card>
   )

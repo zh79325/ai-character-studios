@@ -177,14 +177,15 @@ def test_ensure接着还开着的那场聊(client: TestClient, project: ProjectR
     assert len(client.get("/api/conversations").json()) == 1
 
 
-def test_ensure在上一场收尾后开新的(client: TestClient, talk: str) -> None:
-    """冻结的会话发不出消息，把它摆回去等于让用户自己去想办法。"""
-    assert client.post(f"/api/conversations/{talk}/discard").status_code == 200
+def test_ensure沉淀过也还是同一场(client: TestClient, talk: str) -> None:
+    """沉淀只是把草稿写进定稿位，聊到哪儿还在这场里，另起一场等于把上下文丢掉。"""
+    send(client, talk, "拟一版")
+    assert client.post(f"/api/conversations/{talk}/commit", json={}).status_code == 200
 
     body = ensure(client)
 
-    assert body["conversation"]["id"] != talk  # type: ignore[index]
-    assert body["conversation"]["status"] == "active"  # type: ignore[index]
+    assert body["conversation"]["id"] == talk  # type: ignore[index]
+    assert len(client.get("/api/conversations").json()) == 1
 
 
 def test_开场提示报出项目现状(client: TestClient, project: ProjectRef) -> None:
@@ -293,7 +294,8 @@ def test_确认沉淀后定稿落盘(client: TestClient, talk: str, project: Pro
     assert "湿滑金属" in project.absolute("art-bible.md").read_text(encoding="utf-8")
     assert body["archived"][0]["previous_path"].startswith("tmp/")
     assert body["memories_added"] == ["喜欢冷色调"]
-    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "committed"
+    # 沉淀不收口会话：接着聊下一版还得在同一场里
+    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "active"
 
 
 def test_基线过期时沉淀返回409(client: TestClient, talk: str, project: ProjectRef) -> None:
@@ -314,7 +316,7 @@ def test_丢弃后磁盘没动(client: TestClient, talk: str, project: ProjectRe
 
     assert body["discarded"] == 1
     assert project.absolute("art-bible.md").read_text(encoding="utf-8") == before
-    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "discarded"
+    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "active"
 
 
 # --------------------------------------------------------------------------- #

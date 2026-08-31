@@ -183,14 +183,40 @@ def test_空回答不写进消息(
     assert [m.role for m in engine.messages_of(project_db, conversation.id)] == ["user"]
 
 
-def test_结束的会话不能再发(
+def test_丢弃草稿后还能接着聊(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
     engine.discard(project_db, conversation)
 
-    with pytest.raises(Conflict, match="开一个新会话"):
-        send(project_db, session, project, conversation, "再聊两句", ScriptedChat("好"))
+    send(project_db, session, project, conversation, "再聊两句", ScriptedChat("好"))
+
+    assert [m.role for m in engine.messages_of(project_db, conversation.id)] == [
+        "user",
+        "assistant",
+    ]
+
+
+CHOICE_REPLY = """先给几处要你定的。
+
+[待选项]
+- 项: 面数预算 / 选项: 8k | 15k | 30k / 推荐: 15k
+"""
+
+
+def test_待选项只认最后一条消息(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """用户答过之后表单就该翻成结果，继续摆成可点的等于请他再选一遍定了的事。"""
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat(CHOICE_REPLY, "记下了。")
+    send(project_db, session, project, conversation, "开聊", chat)
+
+    assert [g.item for g in engine.choices_of(project_db, conversation.id)] == ["面数预算"]
+
+    send(project_db, session, project, conversation, "这几项我定了：\n- 面数预算: 15k", chat)
+
+    assert engine.choices_of(project_db, conversation.id) == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -493,7 +519,7 @@ def test_确认后定稿落盘旧版进tmp(
     retired = project.absolute(result.archived[0].previous_path or "")
     assert retired.parent.name == layout.TMP_DIR
     assert retired.read_text(encoding="utf-8") == old
-    assert conversation.status == "committed"
+    assert conversation.status == "active"
     assert engine.drafts_of(project_db, conversation.id, status="committed")
 
 
@@ -617,7 +643,7 @@ def test_角色沉淀设定后回填spec_path但不动状态(
 # --------------------------------------------------------------------------- #
 
 
-def test_丢弃只改状态消息全留着(
+def test_丢弃只标草稿弃用消息全留着(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
@@ -626,21 +652,26 @@ def test_丢弃只改状态消息全留着(
     count = engine.discard(project_db, conversation)
 
     assert count == 1
-    assert conversation.status == "discarded"
+    assert conversation.status == "active"
     assert len(engine.messages_of(project_db, conversation.id)) == 2
     assert engine.drafts_of(project_db, conversation.id) == []
     assert "湿滑金属" not in project.absolute("art-bible.md").read_text(encoding="utf-8")
 
 
-def test_沉淀过的会话不能再丢弃(
+def test_沉淀过的会话还能接着聊并再沉淀一版(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
+    """沉淀是「这一版落盘」，不是「这场聊完了」：接着改还得在同一场里，上下文才不用重讲。"""
+    target = project.absolute("art-bible.md")
     conversation = start_project_talk(project_db)
     send(project_db, session, project, conversation, "拟一版", ScriptedChat(DRAFT_REPLY))
     engine.commit(project_db, project, conversation)
 
-    with pytest.raises(Conflict):
-        engine.discard(project_db, conversation)
+    second = DRAFT_REPLY.replace("湿滑金属", "哑光陶土")
+    send(project_db, session, project, conversation, "再改一版", ScriptedChat(second))
+    engine.commit(project_db, project, conversation)
+
+    assert "哑光陶土" in target.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

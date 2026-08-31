@@ -7,8 +7,8 @@
  * 顺序是先订流再发消息：反过来的话第一批增量已经推完了，缓冲里的那段虽然还能补上，但会一
  * 次性砸出来，看着像卡了几秒。
  *
- * 折进摘要的消息默认收起。它们没被删，只是不再进上下文——不给用户看见「原文还在」，会让人
- * 以为聊过的东西丢了。
+ * 聊过的每一条都摆在消息区里，向上滚就能回看，折进摘要的那几条只是淡一档并标一句「已折进摘要」
+ * ——它们没被删，只是不再进上下文。收起来会让人以为聊过的东西丢了。
  */
 import { PlusOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -24,7 +24,6 @@ import {
   Select,
   Space,
   Spin,
-  Switch,
   Tag,
   Typography,
 } from 'antd'
@@ -54,10 +53,9 @@ interface Props {
   /** 父页面递进来的下一轮说辞。 */
   handoff?: Handoff | null
   /**
-   * 会话由系统管起来：进面板就接上该聊的那场，用户不用点「新会话」。
+   * 会话由系统管起来：进面板就接上该聊的那场，面板上不摆任何会话入口。
    *
-   * 立项对焦本来只有一条线，让用户先做一次开会话的动作纯属多余。历史会话仍然能切过去看，
-   * 但那是回看，不是管理。
+   * 立项对焦就一条线，既不需要用户先做一次开会话的动作，也没有第二场可选。
    */
   managed?: boolean
   /**
@@ -70,6 +68,12 @@ interface Props {
   status?: ReactNode
   /** 摆在待办栏最后的那一项（如立项收口）：它也是聊到最后该做的事，不另开一块地方摆。 */
   todo?: ReactNode
+  /**
+   * 沉淀交给 `todo` 那一项顺手做，草稿区不再摆一个沉淀按钮。
+   *
+   * 立项期就一个收口动作（确认立项），旁边再摆一个「确认沉淀」只会让人猜该先点哪个。
+   */
+  commitInTodo?: boolean
 }
 
 /**
@@ -96,6 +100,7 @@ export default function ChatPanel({
   draftsAside = false,
   status = null,
   todo = null,
+  commitInTodo = false,
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
@@ -104,7 +109,6 @@ export default function ChatPanel({
   const [streaming, setStreaming] = useState<string | null>(null)
   /** 已经发出去、还没回到会话详情里的那句话。 */
   const [pending, setPending] = useState<string | null>(null)
-  const [showFolded, setShowFolded] = useState(false)
   const stop = useRef<(() => void) | null>(null)
 
   const list = useQuery({
@@ -207,10 +211,7 @@ export default function ChatPanel({
   })
 
   const conversation = detail.data?.conversation
-  const frozen = conversation !== undefined && conversation.status !== 'active'
   const messages = (detail.data?.messages ?? []).filter((one) => one.role !== 'system')
-  const foldedCount = messages.filter((one) => one.folded).length
-  const shown = showFolded ? messages : messages.filter((one) => !one.folded)
   const preparing = managed && chosen === null
 
   // 只认 nonce：同一句话递两次是两件事，而重渲染不是
@@ -242,25 +243,9 @@ export default function ChatPanel({
         size="small"
         title={
           managed ? (
-            <Space size={8}>
-              <Typography.Text strong style={{ fontSize: 13 }}>
-                对焦
-              </Typography.Text>
-              {mine.length > 1 && (
-                <Select
-                  size="small"
-                  style={{ minWidth: 220 }}
-                  placeholder="历史会话"
-                  value={chosen ?? undefined}
-                  loading={list.isLoading}
-                  onChange={setActive}
-                  options={mine.map((one) => ({
-                    value: one.id,
-                    label: conversationLabel(one),
-                  }))}
-                />
-              )}
-            </Space>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              对焦
+            </Typography.Text>
           ) : (
             <Space>
               <Select
@@ -287,13 +272,10 @@ export default function ChatPanel({
           )
         }
         extra={
-          foldedCount > 0 && (
-            <Space size={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                已折起 {foldedCount} 条
-              </Typography.Text>
-              <Switch size="small" checked={showFolded} onChange={setShowFolded} />
-            </Space>
+          messages.length > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              共 {messages.length} 条
+            </Typography.Text>
           )
         }
       >
@@ -322,7 +304,6 @@ export default function ChatPanel({
                     换过 {conversation.rebind_count} 次服务商
                   </Tag>
                 )}
-                {frozen && <Tag>只读</Tag>}
               </Space>
             )}
             {detail.data?.memory.summary && (
@@ -340,7 +321,7 @@ export default function ChatPanel({
               />
             )}
             <MessageList
-              messages={shown}
+              messages={messages}
               pending={pending}
               streaming={streaming}
               loading={detail.isLoading}
@@ -348,23 +329,19 @@ export default function ChatPanel({
               briefingBlank={detail.data?.briefing_blank ?? false}
               height={draftsAside ? 560 : 420}
             />
-            {!frozen && (
-              <ChoicePicker
-                groups={detail.data?.choices ?? []}
-                disabled={send.isPending}
-                onSubmit={dispatch}
-              />
-            )}
+            <ChoicePicker
+              groups={detail.data?.choices ?? []}
+              disabled={send.isPending}
+              onSubmit={dispatch}
+            />
             <Input.TextArea
               value={input}
               rows={3}
-              disabled={frozen || send.isPending}
+              disabled={send.isPending}
               placeholder={
-                frozen
-                  ? '这场会话已经收尾了，开一场新的接着聊'
-                  : send.isPending
-                    ? '等设计师回这一轮，回完再接着说'
-                    : '说清你要什么。Enter 发送，Shift+Enter 换行'
+                send.isPending
+                  ? '等设计师回这一轮，回完再接着说'
+                  : '说清你要什么。Enter 发送，Shift+Enter 换行'
               }
               onChange={(event) => setInput(event.target.value)}
               onPressEnter={(event) => {
@@ -377,7 +354,7 @@ export default function ChatPanel({
               type="primary"
               block
               loading={send.isPending}
-              disabled={frozen || send.isPending}
+              disabled={send.isPending}
               onClick={submit}
             >
               {send.isPending ? '等回话' : '发送'}
@@ -399,8 +376,8 @@ export default function ChatPanel({
         <DraftDiffPanel
           conversationId={chosen}
           drafts={detail.data?.drafts ?? []}
-          frozen={frozen}
           compact={draftsAside}
+          commitInTodo={commitInTodo}
           header={status}
           footer={todo}
         />
@@ -437,8 +414,7 @@ function Layout({ aside, children }: { aside: boolean; children: [ReactNode, Rea
 
 /** 一场会话在下拉里的样子。 */
 function conversationLabel(one: Conversation): string {
-  const ended = one.status === 'committed' ? '，已沉淀' : '，已丢弃'
-  return `${one.title}（${one.message_count} 条${one.status === 'active' ? '' : ended}）`
+  return `${one.title}（${one.message_count} 条）`
 }
 
 const BUBBLE: Record<string, { background: string; align: string }> = {
@@ -468,12 +444,16 @@ function MessageList({
   height: number
 }) {
   const box = useRef<HTMLDivElement>(null)
+  /** 看的是不是最新那几条。用户往上翻着历史时不能再把他拽回底部。 */
+  const glued = useRef(true)
+  // 计数与末条 id 一起认：消息数组每次重渲染都是新的，按引用盯会变成每渲染一次强制置底
+  const tail = `${messages.length}:${messages.at(-1)?.id ?? ''}`
 
   useEffect(() => {
     // 新内容一到就贴到底部，不然生成中的字会长到看不见的地方去
     const node = box.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [messages, pending, streaming])
+    if (node && glued.current) node.scrollTop = node.scrollHeight
+  }, [tail, pending, streaming])
 
   // 一句号召摆成气泡，看着像 AI 已经先开口说过话了；铺成居中大字才是「这一屏在等你说」
   const hero = briefingBlank && messages.length === 0 && pending === null && streaming === null
@@ -496,7 +476,15 @@ function MessageList({
   }
 
   return (
-    <div ref={box} style={{ height, overflowY: 'auto', padding: '4px 2px' }}>
+    <div
+      ref={box}
+      style={{ height, overflowY: 'auto', padding: '4px 2px' }}
+      onScroll={(event) => {
+        // 离底不到一屏的一小段算还在看最新：精确到像素的话流式输出自己就会把自己顶出去
+        const node = event.currentTarget
+        glued.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
+      }}
+    >
       {loading && <Spin />}
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         {briefing !== '' && !briefingBlank && (
