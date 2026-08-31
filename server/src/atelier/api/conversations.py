@@ -286,14 +286,21 @@ async def stream_conversation(
     conversation_id: str,
     project: ProjectDb,
     after_seq: int = Query(default=0),
+    fresh: bool = Query(default=False),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> EventSourceResponse:
     """订阅这场会话的生成增量，一轮出了结果就收流。
 
-    只读广播缓冲，不查库也不发起调用：这条流的作用是「让字一个个出现」，会话的真相始终
-    在库里。缓冲里只有当下这一轮（开工第一步就清了上一轮），所以从头读不会读到旧结果；订流
-    稍微晚于发消息也能把错过的开头几段补上。客户端断开或进程重启后重连，靠游标续上还在缓
-    冲里的部分，缓冲已滚掉的那些不补——完整回答刷一次消息列表就有。
+    不发起任何调用：这条流的作用是「让字一个个出现」，会话的真相始终在库里。
+
+    起点由调用方定。刚发出一轮、要看这一轮的字，就带 `fresh=1`：缓冲里现存的一概不算，只
+    等订上来之后新产生的增量。这条流跟 `POST /messages` 几乎同时出发，谁先到服务端说不准，
+    赶在开工清缓冲之前从头读就会把上一轮整段重放进「正在想」的气泡，末尾那条 turn 再把流当场
+    收掉，这一轮反而一个字也没有。代价是可能漏掉开头几段，比重放错的那一轮划算。
+
+    接一轮别处发起的、已经在跑的生成就不要带：从缓冲头读才能把错过的开头补上。客户端断开或
+    进程重启后重连，靠游标续上还在缓冲里的部分，缓冲已滚掉的那些不补——完整回答刷一次消息
+    列表就有。
 
     收流的时机是一轮有了结果（`turn`/`error`/`committed`），不是等客户端断开：这条连接的
     价值只在生成中的那几秒，挂着不收既占着事件循环，也让「什么时候算结束」变成一件没人
@@ -301,6 +308,8 @@ async def stream_conversation(
     """
     engine.get(project, conversation_id)
     cursor = _resume_seq(conversation_id, after_seq, last_event_id)
+    if fresh and cursor == 0:
+        cursor = BUS.latest_seq(conversation_id)
 
     async def stream() -> AsyncIterator[ServerSentEvent]:
         nonlocal cursor

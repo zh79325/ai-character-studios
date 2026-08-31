@@ -6,9 +6,10 @@
  *
  * 三条约定改动前先看一遍：
  *
- * 1. 顺序是先 `sendMessage` 再 `subscribeConversation`。后端开工第一步会清掉上一轮的增量
- *    缓冲，订流赶在它前面就会把上一轮重放一遍，而那段末尾的 `turn` 一到流就收了，这一轮反
- *    而一个字也看不见。漏掉开头几段不用担心：缓冲里就剩这一轮，订上来从头补。
+ * 1. 顺序是先 `sendMessage` 再 `subscribeConversation`，后者带 `fresh`。后端开工第一步会清掉
+ *    上一轮的增量缓冲，而两个请求谁先到服务端说不准：`fresh` 就是告诉后端缓冲里现存的一
+ *    概不算，不然上一轮的回答会被重放进「正在想」的气泡。接别处发起的那一轮时不带：那时
+ *    缓冲里就剩这一轮，从头读才能把错过的开头补上。
  * 2. 「在跑」的凭据是库里那条 `status=thinking` 的消息，不是这个组件的 state。切走页面再
  *    回来、进程重启、别处发起的那一轮，都还认得出来在跑。
  * 3. 自己中断的那一轮，发消息那头随后会报 409。那不是意外，用 `cut` 挡掉这一次的报错。
@@ -111,7 +112,10 @@ export function useConversation({
       const turn = sendMessage(id, content)
       stop.current = subscribeConversation({
         conversationId: id,
+        fresh: true,
         onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
+        // 这一轮出了结果就把攒下的字交给消息列表：POST 马上就回来，气泡先退回转圈
+        onTurn: () => setStreaming(''),
         // 失败的措辞由发消息那头统一报，这里再弹一次就是同一件事说两遍
         onError: () => setStreaming(null),
       })

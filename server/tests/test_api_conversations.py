@@ -113,14 +113,18 @@ def parse_sse(body: str) -> list[Frame]:
 
 
 def read_stream(
-    client: TestClient, cid: str, *, headers: dict[str, str] | None = None
+    client: TestClient,
+    cid: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
 ) -> list[Frame]:
     """订一次流并等它自己收。
 
     TestClient 不做真正的增量读（拿到的是整段响应），所以这里靠的是接口本身会在一轮
     有了结果后收流——没这个收尾，这一句就是死等。
     """
-    body = client.get(f"/api/conversations/{cid}/stream", headers=headers).text
+    body = client.get(f"/api/conversations/{cid}/stream", headers=headers, params=params).text
     return [f for f in parse_sse(body) if f.event != "ready"]
 
 
@@ -448,6 +452,31 @@ def test_新一轮不会把上一轮重放一遍(client: TestClient, talk: str) 
     assert [json.loads(f.data)["turn_no"] for f in again if f.event == "turn"] == [4]
     # 序号接着数，但上一轮的那几帧已经不在缓冲里
     assert min(_seq(f) for f in again) > max(_seq(f) for f in first)
+
+
+def test_带fresh的流不推缓冲里剩下的那一轮(client: TestClient, talk: str) -> None:
+    """发消息跟订流几乎同时出发，订流先到时缓冲还没清：上一轮的回答不能进这一轮的气泡。
+
+    不带 `fresh` 的话这里从缓冲头读到的就是第二轮（`turn_no == 2`），而它末尾那条 turn
+    还会把流当场收掉。
+    """
+    send(client, talk, "拟一版", stream=True)
+    failures: list[BaseException] = []
+
+    def send_later() -> None:
+        try:
+            send(client, talk, "再拟一版", stream=True)
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(exc)
+            BUS.publish(talk, ERROR, "发消息没成")  # 不发就把读整段的那头挂死了
+
+    timer = threading.Timer(0.1, send_later)
+    timer.start()
+    events = read_stream(client, talk, params={"fresh": "1"})
+    timer.join()
+
+    assert not failures
+    assert [json.loads(f.data)["turn_no"] for f in events if f.event == "turn"] == [4]
 
 
 def test_不存在的会话订不了流(client: TestClient, project: ProjectRef) -> None:

@@ -136,6 +136,13 @@ export interface ConversationSubscription {
   conversationId: string
   /** 断线重连或换会话时接着看：不给就从缓冲里还留着的那段开始。 */
   afterSeq?: number
+  /**
+   * 只要订上来之后新产生的字。
+   *
+   * 刚发完一轮就得带上：这条流跟发消息那个请求几乎同时出发，赶在后端清缓冲之前到的话，
+   * 从缓冲头读到的就是上一轮的整段回答，而它末尾的 `turn` 还会把流当场收掉。
+   */
+  fresh?: boolean
   onDelta: (piece: string) => void
   /** 一轮有了结果，后端推完这条就收流。 */
   onTurn?: (turn: { turn_no: number; drafts: string[] }) => void
@@ -156,6 +163,7 @@ export function subscribeConversation(sub: ConversationSubscription): () => void
     if (cancelled) return
     const path = withQuery(`/api/conversations/${encodeURIComponent(sub.conversationId)}/stream`, {
       after_seq: sub.afterSeq,
+      fresh: sub.fresh === true ? 1 : undefined,
     })
     source = new EventSource(`${base}${path}`)
     source.addEventListener('delta', (event) => {

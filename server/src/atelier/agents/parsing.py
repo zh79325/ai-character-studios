@@ -65,7 +65,10 @@ _NAMING_SPLIT_RE = re.compile(r"\s*[/｜|；;]\s*")
 _CHOICE_KEY_RE = re.compile(r"^(?P<key>项|选项|推荐|多选)\s*[:：]\s*(?P<value>.*)$")
 _CHOICE_SEG_RE = re.compile(r"\s*([/；;])\s*")
 """一行里各段的分隔。不含 `|`：那个留给选项之间用。"""
-_CHOICE_OPT_RE = re.compile(r"\s*[|｜、]\s*")
+_CHOICE_OPT_SEPS = frozenset("|｜、")
+"""选项之间的分隔。"""
+_CHOICE_BRACKETS = {"（": "）", "(": ")", "《": "》", "【": "】", "「": "」", "『": "』"}
+"""成对的括号。里头的分隔符在列举这一个选项的内容，不是在分下一个选项。"""
 _MEMORY_RE = re.compile(rf"^(?P<kind>{'|'.join(MEMORY_KINDS)})\s*[:：]\s*(?P<value>.*)$", re.I)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)、])\s*")
 _FENCE_RE = re.compile(r"^\s*(?:```+|~~~+)")
@@ -402,12 +405,36 @@ def _choice_segments(line: str) -> list[str]:
     return segments
 
 
+def _split_options(raw: str) -> list[str]:
+    """把一段选项文字切开，括号里的分隔符不算。
+
+    选项文字本来就带成对括号（「《我的世界：地下城》（方块风格、光照、色彩基准）」），里头的
+    顿号是在列举这一个选项的内容。无条件切会把一个选项劈成好几个，面板上就摆出一堆
+    看不懂的碎片，推荐值也再也对不上。括号没合上就当它一直开着：宁可少切，不能切错。
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    stack: list[str] = []
+    for char in raw:
+        if char in _CHOICE_BRACKETS:
+            stack.append(_CHOICE_BRACKETS[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+        elif char in _CHOICE_OPT_SEPS and not stack:
+            parts.append("".join(buf))
+            buf.clear()
+            continue
+        buf.append(char)
+    parts.append("".join(buf))
+    return [one.strip() for one in parts]
+
+
 def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
     """解析 `[待选项]`。一次最多收 `MAX_CHOICE_GROUPS` 组，用户在面板上一次点完。
 
     以「项」为一组的开头，各段既可能写在同一行用 `/` 隔开，也可能分行写。选项之间用 `|`
     而不是 `/`：选项文字里本来就常带斜杠（「3:7 写实/风格化」），两边用同一个分隔符就会把一个
-    选项切成两个。
+    选项切成两个。顿号也算选项分隔，但括号里的不算：那是这一个选项自己的列举。
 
     `多选: 是` 的那几组可以同时拍好几个值，推荐也就能给好几个（`推荐: A | B`）。
     """
@@ -426,7 +453,7 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
             if is_placeholder(raw)
             else tuple(
                 one
-                for one in (part.strip().strip("`").strip() for part in _CHOICE_OPT_RE.split(raw))
+                for one in (part.strip("`").strip() for part in _split_options(raw))
                 if one and not is_placeholder(one)
             )
         )
@@ -439,10 +466,7 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
         recommended = tuple(
             dict.fromkeys(
                 one
-                for one in (
-                    part.strip().strip("`").strip()
-                    for part in _CHOICE_OPT_RE.split(recommended_raw)
-                )
+                for one in (part.strip("`").strip() for part in _split_options(recommended_raw))
                 if one in options
             )
         )
