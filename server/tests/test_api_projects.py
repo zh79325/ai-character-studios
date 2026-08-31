@@ -97,6 +97,43 @@ def test_bootstrap_refuses_a_directory_that_is_already_a_project(
     assert response.status_code == 409
 
 
+def test_dir_state_tells_the_ui_whether_the_directory_is_taken(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """界面靠它决定要不要先问一句「覆盖吗」，而不是先撞一个 409 再猜。"""
+    create(client, "项目", "p1", tmp_path / "src")
+
+    taken = client.get("/api/projects/dir-state", params={"dir_path": str(tmp_path / "src")})
+    empty = client.get("/api/projects/dir-state", params={"dir_path": str(tmp_path / "新的")})
+
+    assert taken.json() == {
+        "occupied": True,
+        "marks": ["project.json", "art-bible.md"],
+        "is_project": True,
+    }
+    assert empty.json() == {"occupied": False, "marks": [], "is_project": False}
+
+
+def test_bootstrap_overwrites_the_old_project_once_confirmed(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """用户点了覆盖就照办：旧项目的身份让位，他自己丢进去的素材文件一个不动。"""
+    target = tmp_path / "src"
+    create(client, "旧项目", "old", target)
+    (target / "characters" / "参考图.png").touch()
+
+    response = client.post(
+        "/api/projects/bootstrap", json={"dir_path": str(target), "overwrite": True}
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert summary(body, body["opened"])["stage"] == "drafting"
+    assert [item["code"] for item in body["projects"]] == [body["opened"]]  # 旧那条索引退场
+    assert (target / ".atelier" / "project.db").is_file()  # 库删干净了还得重新建出来
+    assert (target / "characters" / "参考图.png").is_file()
+
+
 def test_finalize_lands_in_the_default_root_and_opens_it(
     client: TestClient, projects_root: Path
 ) -> None:

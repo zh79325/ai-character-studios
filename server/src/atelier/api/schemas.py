@@ -364,6 +364,19 @@ class ProjectBootstrapIn(Schema):
     dir_path: str = Field(
         min_length=1, description="项目产出落地的目录（可以还不存在，里面本来有东西也行）"
     )
+    overwrite: bool = False
+    """真则先抹掉目录里旧项目的 `project.json`、`art-bible.md` 与 `.atelier/` 再建。
+
+    素材文件不动。只在用户对着确认框点过头之后才该带上。"""
+
+
+class ProjectDirStateOut(Schema):
+    """候选目录的现状。新建前先问一次，占着就先让用户点头再覆盖。"""
+
+    occupied: bool
+    marks: list[str]
+    """占着这块地的那几个文件名（`project.json` / `art-bible.md`）。"""
+    is_project: bool
 
 
 class ProjectFinalizeIn(Schema):

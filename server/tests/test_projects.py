@@ -133,6 +133,53 @@ def test_creating_where_an_art_bible_sits_is_refused(session: Session, tmp_path:
         projects_mod.create_project(session, name="占用", code="taken", dir_path=taken)
 
 
+def test_inspect_dir_reports_what_holds_the_ground(session: Session, tmp_path: Path) -> None:
+    """新建前先问一句：占着的是什么、是不是一整个项目，界面靠它拟确认框的词。"""
+    ref = projects_mod.create_project(session, name="项目", code="p1", dir_path=tmp_path / "p")
+
+    taken = projects_mod.inspect_dir(ref.dir)
+    fresh = projects_mod.inspect_dir(tmp_path / "还不存在")
+
+    assert taken.occupied is True
+    assert taken.is_project is True
+    assert taken.marks == ("project.json", "art-bible.md")
+    assert fresh.occupied is False
+    assert fresh.marks == ()
+
+
+def test_bootstrap_overwrite_swaps_the_identity_and_rebuilds_the_db(
+    session: Session, tmp_path: Path
+) -> None:
+    """覆盖后这块地归新项目：库是重建的（旧角色不跟过来），素材文件一个不动。"""
+    old = projects_mod.create_project(session, name="旧项目", code="old", dir_path=tmp_path / "p")
+    make_character(old, "旧角色")
+    with project_session(old.db_path) as db:
+        db.add(Character(id="c1", name="旧角色", dir_name="旧角色"))
+
+    fresh = projects_mod.bootstrap_project(session, old.dir, overwrite=True)
+
+    assert fresh.code.startswith(projects_mod.DRAFT_CODE_PREFIX)
+    assert projects_mod.read_config(old.dir).code == fresh.code
+    assert fresh.db_path.is_file()  # 库文件删掉了还得能重建（建库的幂等缓存曾把这步跳掉）
+    with project_session(fresh.db_path) as db:
+        assert db.scalars(select(Character)).all() == []
+    assert not (old.dir / "art-bible.md").exists()  # 旧项目的视觉真相让位
+    assert (old.dir / "characters" / "旧角色" / "旧角色.md").is_file()  # 用户的文件不动
+    assert session.get(ProjectRegistry, "old") is None  # 同一个目录不能挂着两条索引
+
+
+def test_bootstrap_without_overwrite_keeps_the_old_project(
+    session: Session, tmp_path: Path
+) -> None:
+    """没点过头就不能动别人的东西。"""
+    old = projects_mod.create_project(session, name="旧项目", code="old", dir_path=tmp_path / "p")
+
+    with pytest.raises(Conflict, match="导入"):
+        projects_mod.bootstrap_project(session, old.dir)
+
+    assert projects_mod.read_config(old.dir).code == "old"
+
+
 def test_duplicate_code_is_refused(session: Session, tmp_path: Path) -> None:
     projects_mod.create_project(session, name="第一个", code="dup", dir_path=tmp_path / "a")
 

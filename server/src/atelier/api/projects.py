@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 from sqlalchemy.orm import Session
 
 from atelier.api.characters import character_out
@@ -25,6 +25,7 @@ from atelier.api.schemas import (
     ProjectBootstrapIn,
     ProjectConfigOut,
     ProjectConfigPatch,
+    ProjectDirStateOut,
     ProjectFinalizeIn,
     ProjectImportIn,
     ProjectListOut,
@@ -71,13 +72,27 @@ def list_projects(session: RuntimeDb, sync: bool = False) -> ProjectListOut:
     return _list_out(session)
 
 
+@router.get("/dir-state", response_model=ProjectDirStateOut)
+def inspect_dir(dir_path: str = Query(min_length=1)) -> ProjectDirStateOut:
+    """选完目录先问一句：这块地是不是已经归另一个项目。
+
+    占着就报出占着的是哪几个文件，好让界面在覆盖之前把代价说清。
+    """
+    state = projects.inspect_dir(Path(dir_path))
+    return ProjectDirStateOut(
+        occupied=state.occupied, marks=list(state.marks), is_project=state.is_project
+    )
+
+
 @router.post("/bootstrap", response_model=ProjectListOut, status_code=status.HTTP_201_CREATED)
 def bootstrap_project(payload: ProjectBootstrapIn, session: RuntimeDb) -> ProjectListOut:
     """选完目录就开一个立项中的项目并切过去，接下来在对焦页聊。
 
     此时只有 `project.json` 与项目库，名字暂时用目录名、代号是临时的。
+
+    目录已经归另一个项目时报 409；用户对着确认框点了覆盖就带 `overwrite=true` 再来一次。
     """
-    projects.bootstrap_project(session, Path(payload.dir_path))
+    projects.bootstrap_project(session, Path(payload.dir_path), overwrite=payload.overwrite)
     return _list_out(session)
 
 

@@ -13,6 +13,7 @@ import {
   buildConfigPatch,
   finalizeProject,
   forgetProject,
+  inspectDir,
   listProjects,
   readConfig,
   scanProject,
@@ -82,8 +83,20 @@ describe('立项', () => {
     expect(onlyCall()).toMatchObject({
       url: 'http://127.0.0.1:62066/api/projects/bootstrap',
       method: 'POST',
-      body: { dir_path: '/tmp/赤瞳系列' },
+      body: { dir_path: '/tmp/赤瞳系列', overwrite: false },
     })
+  })
+
+  it('先问目录现状，界面才知道该不该弹覆盖确认', async () => {
+    await inspectDir('/tmp/赤瞳系列')
+    expect(onlyCall().url).toBe(
+      'http://127.0.0.1:62066/api/projects/dir-state?dir_path=%2Ftmp%2F%E8%B5%A4%E7%9E%B3%E7%B3%BB%E5%88%97',
+    )
+  })
+
+  it('用户点了覆盖才带 overwrite：它会删旧项目的配置与运行库', async () => {
+    await bootstrapProject('/tmp/赤瞳系列', true)
+    expect(onlyCall().body).toEqual({ dir_path: '/tmp/赤瞳系列', overwrite: true })
   })
 
   it('收口作用在当前项目上，所以路径是 /current/finalize', async () => {

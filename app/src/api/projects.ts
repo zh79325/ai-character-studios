@@ -12,6 +12,7 @@ import type {
   Character,
   ProjectConfig,
   ProjectConfigPatch,
+  ProjectDirState,
   ProjectFinalizeIn,
   ProjectList,
   ProjectSummary,
@@ -23,11 +24,21 @@ export function listProjects(sync = false): Promise<ProjectList> {
   return request<ProjectList>(withQuery('/api/projects', { sync: sync || null }))
 }
 
-/** 立项第一步：占下目录并切过去，接下来在立项页跟 Agent 对焦。 */
-export function bootstrapProject(dirPath: string): Promise<ProjectList> {
+/** 选完目录先问一句：已经归另一个项目的话，得先让用户点头再覆盖。 */
+export function inspectDir(dirPath: string): Promise<ProjectDirState> {
+  return request<ProjectDirState>(withQuery('/api/projects/dir-state', { dir_path: dirPath }))
+}
+
+/**
+ * 立项第一步：占下目录并切过去，接下来在立项页跟 Agent 对焦。
+ *
+ * `overwrite` 只在用户对着确认框点过头之后带：它会抹掉目录里旧项目的 `project.json`、
+ * `art-bible.md` 与 `.atelier/` 运行库（素材文件不动）。
+ */
+export function bootstrapProject(dirPath: string, overwrite = false): Promise<ProjectList> {
   return request<ProjectList>('/api/projects/bootstrap', {
     method: 'POST',
-    body: { dir_path: dirPath },
+    body: { dir_path: dirPath, overwrite },
   })
 }
 

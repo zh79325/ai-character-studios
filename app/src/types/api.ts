@@ -303,6 +303,14 @@ export interface ProjectFinalizeIn {
   code: string
 }
 
+/** 候选目录的现状：新建之前先问一次，占着就先让用户点头再覆盖。 */
+export interface ProjectDirState {
+  occupied: boolean
+  /** 占着这块地的那几个文件名（`project.json` / `art-bible.md`）。 */
+  marks: string[]
+  is_project: boolean
+}
+
 export interface ArtBible {
   path: string
   content: string

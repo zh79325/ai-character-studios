@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -455,7 +456,48 @@ def _project_marks(path: Path) -> list[str]:
     return [name for name in (layout.PROJECT_JSON, layout.ART_BIBLE) if (path / name).is_file()]
 
 
-def bootstrap_project(runtime: Session, dir_path: Path) -> ProjectRef:
+@dataclass(frozen=True, slots=True)
+class DirState:
+    """一个候选目录现在是什么状况。新建之前先问它，好在覆盖之前让用户点头。"""
+
+    dir: Path
+    marks: tuple[str, ...]
+    """目录里已经属于某个项目的那几个文件名。"""
+    is_project: bool
+
+    @property
+    def occupied(self) -> bool:
+        return bool(self.marks)
+
+
+def inspect_dir(dir_path: Path) -> DirState:
+    """这块地能不能直接建。占着就报出占着的是什么，让界面把话说清再问要不要覆盖。"""
+    target = dir_path.expanduser().resolve()
+    if target.exists() and not target.is_dir():
+        raise Conflict(f"{target} 不是目录")
+    return DirState(
+        dir=target,
+        marks=tuple(_project_marks(target)),
+        is_project=layout.is_project_dir(target),
+    )
+
+
+def _clear_project(target: Path) -> None:
+    """把这块地上一个项目的身份抹掉：`project.json`、`art-bible.md` 与 `.atelier/`。
+
+    只清项目自己的那几样，素材文件一个不动——用户点的是「这个目录归新项目」，不是「把我的
+    图删了」。`.atelier/` 得连库一起删，否则新项目会接着用旧项目的会话与素材记录。
+    """
+    db_path = layout.project_db_path(target)
+    dispose_project_engine(db_path)
+    # 库文件马上要被删掉，建库那步不能再被跳过
+    _migrated.discard(db_path.resolve())
+    for name in (layout.PROJECT_JSON, layout.ART_BIBLE):
+        (target / name).unlink(missing_ok=True)
+    shutil.rmtree(layout.data_dir(target), ignore_errors=True)
+
+
+def bootstrap_project(runtime: Session, dir_path: Path, *, overwrite: bool = False) -> ProjectRef:
     """开个立项中的空壳项目：只写 `project.json` 与项目库，不铺骨架。
 
     素材目录、art bible、git 规则都等 `finalize_project`——对焦还没开始就铺一堆写着「待填」
@@ -463,13 +505,19 @@ def bootstrap_project(runtime: Session, dir_path: Path) -> ProjectRef:
 
     代号先给个临时的：会话存在项目库里，没有项目身份就无处开会话，而名字与代号要等聊完
     才由用户定。
+
+    目录已经归另一个项目时默认拒收（界面据此问一句要不要覆盖）；`overwrite=True` 就是用户
+    点过头了，先抹掉旧项目的身份再建。
     """
     target = dir_path.expanduser().resolve()
-    if layout.is_project_dir(target):
-        raise Conflict(f"{target} 已经是一个项目，请用导入")
     if target.exists() and not target.is_dir():
         raise Conflict(f"{target} 不是目录")
     marks = _project_marks(target)
+    if marks and overwrite:
+        _clear_project(target)
+        marks = []
+    if layout.is_project_dir(target):
+        raise Conflict(f"{target} 已经是一个项目，请用导入")
     if marks:
         raise Conflict(f"{target} 里已经有 {'、'.join(marks)}，换个目录或走导入")
 
