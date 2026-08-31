@@ -69,7 +69,7 @@ export default function CharacterPage() {
         <Space direction="vertical" size={2}>
           <Space size={8}>
             <Typography.Link onClick={() => navigate('/project')}>
-              <ArrowLeftOutlined /> 人物素材
+              <ArrowLeftOutlined /> 角色素材
             </Typography.Link>
             <Typography.Title level={5} style={{ margin: 0 }}>
               {row?.name ?? '…'}

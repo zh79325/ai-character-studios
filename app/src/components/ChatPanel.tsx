@@ -4,8 +4,9 @@
  * 两条通道要分开看：字一个个出现靠 SSE，但这一轮真正的结果来自 `POST /messages` 的返回与
  * 随后刷新的详情。所以流断了不算出事——增量只是让等待不难受，落库的那份才是真相。
  *
- * 顺序是先订流再发消息：反过来的话第一批增量已经推完了，缓冲里的那段虽然还能补上，但会一
- * 次性砸出来，看着像卡了几秒。
+ * 顺序是先发消息再订流：后端开工第一步会清掉上一轮的增量缓冲，订流赶在它前面就会把上一轮
+ * 重放一遍，而那段末尾的 `turn` 一到流就收了，这一轮反而一个字也看不见。漏掉开头几段不用担
+ * 心：缓冲里就剩这一轮，订上来从头补。
  *
  * 聊过的每一条都摆在消息区里，向上滚就能回看，折进摘要的那几条只是淡一档并标一句「已折进摘要」
  * ——它们没被删，只是不再进上下文。收起来会让人以为聊过的东西丢了。
@@ -176,6 +177,8 @@ export default function ChatPanel({
       if (!chosen) throw new Error('还没有会话')
       setStreaming('')
       stop.current?.()
+      // 先发出去（不等），后端清掉上一轮缓冲之后这条流才订得上本轮的字
+      const turn = sendMessage(chosen, content)
       stop.current = subscribeConversation({
         conversationId: chosen,
         onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
@@ -183,7 +186,7 @@ export default function ChatPanel({
         onError: () => setStreaming(null),
       })
       try {
-        return await sendMessage(chosen, content)
+        return await turn
       } finally {
         stop.current?.()
         stop.current = null
@@ -561,7 +564,16 @@ function MessageList({
                 fontSize: 13,
               }}
             >
-              {streaming === '' ? <Spin size="small" /> : <MarkdownText text={streaming} />}
+              {streaming === '' ? (
+                <Space size={6}>
+                  <Spin size="small" />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    设计师在想，头几个字出来前先等一下
+                  </Typography.Text>
+                </Space>
+              ) : (
+                <MarkdownText text={streaming} />
+              )}
             </div>
           </div>
         )}

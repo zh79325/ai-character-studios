@@ -17,7 +17,7 @@ export interface DesignEntry {
 export const DESIGN_ENTRIES: DesignEntry[] = [
   {
     slug: 'characters',
-    label: '人物设计',
+    label: '角色设计',
     hint: '聊定设定 → 渲染图 → 四视图 → 模型',
     ready: true,
   },

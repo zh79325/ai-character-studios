@@ -10,16 +10,21 @@
  *
  * 对焦会话由系统管（`managed`）：进页就接上这个项目还开着的那场，没有就开一场，开场先报一遍
  * 项目现状。
+ *
+ * 待办下面接一排后续动作的入口（角色设计、地图设计……）：聊完项目要什么，下一步就是去具体类别
+ * 里干活，不该只摆在顶栏菜单里等用户自己去翻。
  */
-import { CheckCircleOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, RightOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Form, Input, Modal, Space, Tag, Typography } from 'antd'
+import { App, Button, Divider, Form, Input, Modal, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { commitConversation, readConversation } from '@/api/conversations'
 import { finalizeProject } from '@/api/projects'
 import ChatPanel from '@/components/ChatPanel'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
+import { DESIGN_ENTRIES, designPath } from '@/lib/design'
 import type { Draft, NamingOption, ProjectList } from '@/types/api'
 
 export default function ProjectPage() {
@@ -45,13 +50,16 @@ export default function ProjectPage() {
         commitInTodo={drafting}
         status={<ProjectStatus />}
         todo={
-          drafting ? (
-            <FinalizeTodo
-              conversationId={conversation}
-              drafts={detail.data?.drafts ?? []}
-              naming={detail.data?.naming ?? []}
-            />
-          ) : null
+          <>
+            {drafting && (
+              <FinalizeTodo
+                conversationId={conversation}
+                drafts={detail.data?.drafts ?? []}
+                naming={detail.data?.naming ?? []}
+              />
+            )}
+            <NextSteps locked={drafting} />
+          </>
         }
         onActiveChange={setConversation}
       />
@@ -196,6 +204,41 @@ function FinalizeTodo({
           </Typography.Text>
         </Space>
       </Modal>
+    </Space>
+  )
+}
+
+/**
+ * 待办下面的去处：聊完项目要什么，接下去就是进具体类别开工。
+ *
+ * 类别表跟顶栏菜单共用 `DESIGN_ENTRIES`，后续动作只列在一处。立项没收口时素材目录还没铺，
+ * 那几个页点进去只有一句「先完成立项」，所以跟菜单一样先锁着。
+ */
+function NextSteps({ locked }: { locked: boolean }) {
+  const navigate = useNavigate()
+
+  return (
+    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      <Divider style={{ margin: 0 }} />
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {locked ? '立项收口后开工：' : '接下去干什么：'}
+      </Typography.Text>
+      {DESIGN_ENTRIES.map((entry) => (
+        <Button
+          key={entry.slug}
+          block
+          size="small"
+          disabled={locked || !entry.ready}
+          title={entry.hint}
+          style={{ textAlign: 'left' }}
+          onClick={() => navigate(designPath(entry.slug))}
+        >
+          <Space size={4}>
+            <RightOutlined style={{ fontSize: 10 }} />
+            {entry.ready ? entry.label : `${entry.label}（即将开放）`}
+          </Space>
+        </Button>
+      ))}
     </Space>
   )
 }

@@ -1,5 +1,5 @@
 /**
- * 当前项目的人物素材。
+ * 当前项目的角色素材。
  *
  * 列表来自项目自带的库，所以切项目天然就隔离了，这里不需要按项目过滤。
  *
@@ -63,7 +63,7 @@ export default function CharacterTable() {
 
   const columns: ColumnsType<Character> = [
     {
-      title: '人物',
+      title: '角色',
       dataIndex: 'name',
       render: (name: string, row) => (
         <Space direction="vertical" size={0}>
@@ -104,11 +104,11 @@ export default function CharacterTable() {
   return (
     <Card
       size="small"
-      title="人物素材"
+      title="角色素材"
       extra={
         <Space>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setNaming(true)}>
-            新建人物
+            新建角色
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -141,14 +141,14 @@ export default function CharacterTable() {
           pagination={false}
           locale={{
             emptyText:
-              '还没有人物。点「新建人物」开一个，或把已有的素材目录拷进项目的 characters/ 下再扫描认领',
+              '还没有角色。点「新建角色」开一个，或把已有的素材目录拷进项目的 characters/ 下再扫描认领',
           }}
         />
       </Space>
 
       <Modal
         open={naming}
-        title="新建人物"
+        title="新建角色"
         okText="建吧"
         cancelText="算了"
         okButtonProps={{ disabled: name.trim() === '' }}

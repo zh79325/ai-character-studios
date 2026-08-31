@@ -567,6 +567,9 @@ def send(
     if not agent.conversational:
         raise Conflict(f"{agent.agent_code} 不是会话型 Agent")
 
+    # 上一轮的增量与它末尾那条 turn 得先清掉：留着会把这一轮新订上来的流当场收掉
+    BUS.reset(conversation.id)
+
     _add_message(project, conversation, "user", body, tokens.estimate_text(body))
     project.commit()
 

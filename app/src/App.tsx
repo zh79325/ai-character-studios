@@ -22,7 +22,7 @@ import { useUiStore } from '@/store/ui'
 /**
  * 顶部导航里除了项目那几栏（它们带动态子菜单，在 useProjectMenu 里）的固定部分。
  *
- * 角色工作台不进导航：得先有个角色才打开得开，入口在人物素材表里。
+ * 角色工作台不进导航：得先有个角色才打开得开，入口在角色素材表里。
  */
 const CONFIG_NAV: MenuProps['items'] = [
   {
@@ -108,7 +108,7 @@ export default function App() {
           <Route path="/project/config" element={<ProjectConfigPage />} />
           <Route path="/project/art-bible" element={<ArtBiblePage />} />
           <Route path="/design/:category" element={<DesignPage />} />
-          {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在人物素材表里 */}
+          {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在角色素材表里 */}
           <Route path="/characters/:id" element={<CharacterPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/agents" element={<AgentsPage />} />

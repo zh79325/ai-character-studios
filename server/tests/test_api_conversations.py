@@ -117,6 +117,11 @@ def read_stream(
     return [f for f in parse_sse(body) if f.event != "ready"]
 
 
+def _seq(frame: Frame) -> int:
+    """帧 id 是 `会话id:序号`。"""
+    return int(frame.id.rpartition(":")[2])
+
+
 # --------------------------------------------------------------------------- #
 # 会话
 # --------------------------------------------------------------------------- #
@@ -372,6 +377,19 @@ def test_重连时不重复推已看过的增量(client: TestClient, talk: str) 
 
     resumed = read_stream(client, talk, headers={"Last-Event-ID": whole[-2].id})
     assert [f.event for f in resumed] == ["turn"]
+
+
+def test_新一轮不会把上一轮重放一遍(client: TestClient, talk: str) -> None:
+    """缓冲里留着上一轮的话，新订上来的流会被那段末尾的 turn 当场收掉，这一轮就只剩转圈。"""
+    send(client, talk, "拟一版", stream=True)
+    first = read_stream(client, talk)
+
+    send(client, talk, "再拟一版", stream=True)
+
+    again = read_stream(client, talk)
+    assert [json.loads(f.data)["turn_no"] for f in again if f.event == "turn"] == [4]
+    # 序号接着数，但上一轮的那几帧已经不在缓冲里
+    assert min(_seq(f) for f in again) > max(_seq(f) for f in first)
 
 
 def test_不存在的会话订不了流(client: TestClient, project: ProjectRef) -> None:

@@ -9,6 +9,10 @@ SSE 那一路按游标取。落库反而更糟——一次回答几百个增量�
 
 每个会话一段环形缓冲，超出上限丢最老的——保住内存上限，不因为一个没人看的会话把进程
 撑大。发布与读取都加锁：发布方是跑对话的工作线程，读取方是 SSE 的事件循环。
+
+缓冲里只留当下这一轮：开工第一步先 `reset`。让上一轮的东西留着，新订上来的那条流会把
+上一轮重放一遍，而末尾那条 `turn` 一到就把流收了——这一轮的字一个也出不来，前端只能
+干转圈到 POST 返回。
 """
 
 from __future__ import annotations
@@ -63,6 +67,15 @@ class ConversationBus:
     def latest_seq(self, conversation_id: str) -> int:
         with self._lock:
             return self._seq.get(conversation_id, 0)
+
+    def reset(self, conversation_id: str) -> None:
+        """清掉上一轮，序号接着数。
+
+        序号不归零：`Last-Event-ID` 拿的就是它，归零后重连的客户端会拿着一个比当下大的
+        游标进来，这一轮的增量就全被当成看过的跳掉了。
+        """
+        with self._lock:
+            self._buffers.pop(conversation_id, None)
 
     def drop(self, conversation_id: str) -> None:
         """会话结束（沉淀或丢弃）后清掉缓冲。"""
