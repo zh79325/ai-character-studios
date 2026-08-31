@@ -300,6 +300,56 @@ def test_待选项只认最后一条消息(
     assert engine.choices_of(project_db, conversation.id) == ()
 
 
+NAMING_REPLY = """风格大致清楚了，名字我先报几个。
+
+[项目命名建议]
+- 名称: 都市神怪录 / 代号: urban_monkey_king / 理由: 识别度高
+"""
+
+
+def test_风格没落盘之前不把命名建议往外发(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """立项分两段：名字提前出去，用户就会在风格还没拍完的时候看见「确认立项」。"""
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat(NAMING_REPLY)
+
+    result = send(project_db, session, project, conversation, "叫什么名字好", chat)
+
+    assert result.naming == ()
+    assert engine.naming_of(project_db, conversation.id) == ()
+
+
+def test_风格落盘之后命名建议才算(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat(DRAFT_REPLY, NAMING_REPLY)
+    send(project_db, session, project, conversation, "先给一版风格", chat)
+    engine.commit(project_db, project, conversation)
+
+    result = send(project_db, session, project, conversation, "给几组项目名", chat)
+
+    assert [one.code for one in result.naming] == ["urban_monkey_king"]
+    assert [one.code for one in engine.naming_of(project_db, conversation.id)] == [
+        "urban_monkey_king"
+    ]
+
+
+def test_落过盘没有看得出来(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """前端靠这一口分阶段，所以它得看库里的既成事实，切页与重启都还算得出来。"""
+    conversation = start_project_talk(project_db)
+    send(project_db, session, project, conversation, "先给一版风格", ScriptedChat(DRAFT_REPLY))
+
+    assert engine.is_settled(project_db, conversation.id) is False
+
+    engine.commit(project_db, project, conversation)
+
+    assert engine.is_settled(project_db, conversation.id) is True
+
+
 # --------------------------------------------------------------------------- #
 # 会话级粘性绑定
 # --------------------------------------------------------------------------- #

@@ -4,12 +4,15 @@
  * 这一页只有一件事：跟设计师聊「这个项目要什么」。所以整页就是那个对话框，边上那条窄栏只放项目
  * 抬头与后续动作的入口，其余入口都在顶栏菜单里，不在这儿再摆一遍。
  *
- * 收口的两步都在待选项抽屉里，跟这一轮的题排在一起：
+ * 收口严格分两步，都在待选项抽屉里，跟这一轮的题排在一起：
  *
  * 1. **确认游戏风格**：抽屉里摆设计师写的那份 art-bible 全文，看完再拍——以前这一步叫「确认沉淀」，
  *    用户既看不出沉淀的是什么，也不知道点完会发生什么。
  * 2. **确认立项**：定下项目名与代号。落盘之后自动向设计师要几组命名建议（`[项目命名建议]`），
  *    用户点一组或自己写，再按确认立项。名字与代号不该让用户凭空填，聊过一路的是设计师。
+ *
+ * 第二步只在第一步拍完之后才出现，看的是后端的 `settled`（这场会话落过盘没有）而不是模型报没报
+ * 名字：模型会抢在风格拍完之前就把名字报出来，照那个摊抽屉等于请用户跳过聊风格。
  *
  * 两步的交互跟拍待选项一模一样：新东西到了抽屉自己弹出来，拍一下就过，不想现在拍就关掉接着聊，
  * 聊完再从那个按钮抽回来。
@@ -45,8 +48,8 @@ const STARTER =
 export default function ProjectPage() {
   const current = useCurrentProject()
   const [conversation, setConversation] = useState<string | null>(null)
-  // 落盘完那一瞬草稿就没了，而设计师的命名建议还在路上：不记一笔这中间一段就既无风格也无立项
-  const [settled, setSettled] = useState(false)
+  // 落盘完那一瞬草稿就没了，而详情还在路上：不记一笔这中间一段就既无风格也无立项
+  const [justSettled, setJustSettled] = useState(false)
   const drafting = current.data?.stage === 'drafting'
 
   // 与 ChatPanel 共用一个 key，看的就是它已经拉回来的那份详情
@@ -59,9 +62,11 @@ export default function ProjectPage() {
   // 基线过期的那几份后端会拒收，跳开它们：立项不该被一份对不上基线的草稿卡住
   const landing = (detail.data?.drafts ?? []).filter((one) => !one.stale)
   const naming = detail.data?.naming ?? []
+  // 风格落盘了没有：这是分阶段的唯一依据，后端看库里沉淀过的草稿，切页与重启都算得出来
+  const staged = justSettled || (detail.data?.settled ?? false)
 
-  // 聊到有东西可拍才摆收口：白纸一张就摆一个「确认立项」，等于请用户跳过聊风格这一步
-  const gate = landing.length > 0 ? 'style' : naming.length > 0 || settled ? 'launch' : null
+  // 第一段只聊风格：没落盘就不摆立项，即使设计师已经抢着报了几个名字
+  const gate = landing.length > 0 ? 'style' : staged ? 'launch' : null
   // 换了一份草稿、换了一批建议就重新弹出来；同一份反复刷详情不打扰已经关掉它的人
   const finaleKey =
     gate === 'style'
@@ -91,7 +96,7 @@ export default function ProjectPage() {
                     conversationId={conversation}
                     drafts={landing}
                     say={say}
-                    onDone={() => setSettled(true)}
+                    onDone={() => setJustSettled(true)}
                   />
                 ) : (
                   <LaunchGate naming={naming} say={say} />

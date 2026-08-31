@@ -43,6 +43,12 @@ DRAFT_REPLY = """给你一版。
 preference: 喜欢冷色调
 """
 
+NAMING_REPLY = """名字报几组。
+
+[项目命名建议]
+- 名称: 都市神怪录 / 代号: urban_monkey_king / 理由: 识别度高
+"""
+
 
 @pytest.fixture(autouse=True)
 def fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,6 +270,25 @@ def test_待选项带着单选多选与推荐出去(client: TestClient, talk: st
             "multiple": False,
         },
     ]
+
+
+def test_命名建议要等风格落盘之后才出去(client: TestClient, talk: str, chat: ScriptedChat) -> None:
+    """立项分两段：前端靠 `settled` 分阶段，名字提前出去等于请用户跳过聊风格。"""
+    chat.replies[:] = [NAMING_REPLY, DRAFT_REPLY, NAMING_REPLY]
+    send(client, talk, "叫什么名字好")
+
+    before = client.get(f"/api/conversations/{talk}").json()
+
+    assert before["settled"] is False
+    assert before["naming"] == []
+
+    send(client, talk, "先给一版风格")
+    client.post(f"/api/conversations/{talk}/commit", json={})
+    send(client, talk, "给几组项目名")
+    after = client.get(f"/api/conversations/{talk}").json()
+
+    assert after["settled"] is True
+    assert [one["code"] for one in after["naming"]] == ["urban_monkey_king"]
 
 
 def test_空内容不发(client: TestClient, talk: str) -> None:

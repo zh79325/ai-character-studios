@@ -561,8 +561,10 @@ export interface ConversationDetail {
   drafts: Draft[]
   /** 这场会话在改哪个定稿文件，diff 面板拿它做标题。 */
   artifact_path: string | null
-  /** 最近一轮给出的命名建议，没给过就是空。 */
+  /** 最近一轮给出的命名建议，没给过或风格还没落盘就是空。 */
   naming: NamingOption[]
+  /** 真则这场会话已经落过盘：立项页靠它分段，假的时候还在对焦风格，不摆立项。 */
+  settled: boolean
   /** 最近一轮要用户拍板的选项，摆在输入框上方。 */
   choices: ChoiceGroup[]
   /** 开场提示：项目现在是什么样、接下来该说什么。后端现算，只项目会话有。 */

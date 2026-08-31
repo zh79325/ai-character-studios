@@ -257,7 +257,12 @@ def naming_of(project: Session, conversation_id: str) -> tuple[parsing.NamingOpt
 
     不建表也不加列：建议本身就存在消息原文里，再存一份就多一处要对账的状态。只认最近那
     一条：聊到后面模型会改主意，把历史建议堆在一起只会让用户面对十几个过期选项。
+
+    没落盘过就一律当没有：立项分两段——先对焦需求、确认美术风格，落盘之后才轮到定项目名。
+    模型有时会抢在前面先把名字报出来，照着发出去用户就会在风格还没拍完的时候看见「确认立项」。
     """
+    if not is_settled(project, conversation_id):
+        return ()
     rows = project.scalars(
         select(Message)
         .where(Message.conversation_id == conversation_id, Message.role == "assistant")
@@ -277,6 +282,12 @@ def drafts_of(
     if status is not None:
         stmt = stmt.where(ArtifactDraft.status == status)
     return list(project.scalars(stmt.order_by(ArtifactDraft.created_at)))
+
+
+def is_settled(project: Session, conversation_id: str) -> bool:
+    """这场会话落过盘没有。前端拿它分阶段，所以看库里的既成事实而不是本地那点内存标记：
+    切走页面、重开进程都还认得出来聊到哪一步了。"""
+    return bool(drafts_of(project, conversation_id, status="committed"))
 
 
 PROJECT_SCOPE = ""
@@ -639,7 +650,8 @@ def send(
         prompt_tokens=reply.prompt_tokens,
         completion_tokens=reply.completion_tokens,
         provider_label=decision.candidate.label,
-        naming=parsed.naming,
+        # 落盘之前报的名字不往外发，理由见 naming_of
+        naming=parsed.naming if is_settled(project, conversation.id) else (),
         choices=parsed.choices,
     )
     BUS.publish(conversation.id, TURN, {"turn_no": assistant.turn_no, "drafts": list(draft_ids)})

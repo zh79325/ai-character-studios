@@ -700,7 +700,9 @@ class ConversationDetailOut(Schema):
     artifact_path: str | None = None
     """这场会话在改哪个定稿文件，供前端 diff 面板标题使用。"""
     naming: list[NamingOptionOut] = Field(default_factory=list)
-    """最近一轮给的命名建议，立项收口面板拿它做候选项。"""
+    """最近一轮给的命名建议，立项收口面板拿它做候选项。落盘之前一律为空。"""
+    settled: bool = False
+    """真则这场会话已经落过盘。立项页拿它分两段：假则还在对焦风格，真了才轮到定项目名。"""
     choices: list[ChoiceGroupOut] = Field(default_factory=list)
     """最近一轮要用户拍板的选项，前端摆在输入框上方。"""
     briefing: str = ""

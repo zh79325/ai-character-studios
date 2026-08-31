@@ -177,6 +177,7 @@ def _detail(project: Session, ref: ProjectRef, row: Conversation) -> Conversatio
         drafts=[_draft_out(ref, d) for d in engine.drafts_of(project, row.id)],
         artifact_path=artifact_path,
         naming=_naming_out(engine.naming_of(project, row.id)),
+        settled=engine.is_settled(project, row.id),
         choices=_choices_out(engine.choices_of(project, row.id)),
         briefing=briefing.text,
         briefing_blank=briefing.blank,
