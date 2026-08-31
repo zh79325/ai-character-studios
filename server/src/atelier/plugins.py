@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 
 from atelier import voice
@@ -53,6 +54,10 @@ class _Progress:
 
     status: str = "idle"  # idle | running | done | error
     message: str = ""
+    started_at: float | None = None
+    """开装时间戳（time.monotonic），算下载速率与剩余时间用。"""
+    start_bytes: int = 0
+    """开装时目录里已有的字节（断点续传的基线）。速率只算本次新增的，不把旧数据算进去。"""
     thread: threading.Thread | None = field(default=None, repr=False)
 
 
@@ -94,6 +99,25 @@ def _percent(plugin: Plugin, running: bool) -> int:
     return max(0, min(99, round(done / plugin.expected_bytes * 100)))
 
 
+def _eta_seconds(plugin: Plugin, running: bool, prog: _Progress | None) -> int | None:
+    """预估剩余秒数。速率只算「本次新增字节 / 已耗时」，再除剩余字节。
+
+    断点续传时目录里已有上次的字节，所以要减掉开装时的基线 `start_bytes`，
+    否则 done 一上来就很大而 elapsed 接近 0，速率被严重高估。还没新增字节时返回
+    None（前端显「估算中」）。
+    """
+    if not running or prog is None or prog.started_at is None:
+        return None
+    elapsed = time.monotonic() - prog.started_at
+    done = _disk_bytes(plugin)
+    downloaded = done - prog.start_bytes  # 本次会话新下的
+    if elapsed <= 0 or downloaded <= 0:
+        return None
+    rate = downloaded / elapsed  # 字节/秒
+    remaining = max(0, plugin.expected_bytes - done)
+    return int(remaining / rate)
+
+
 def _status_dict(plugin: Plugin) -> dict:
     with _lock:
         prog = _progress.get(plugin.id)
@@ -109,19 +133,27 @@ def _status_dict(plugin: Plugin) -> dict:
         "installed": installed,
         "running": running,
         "progress": _percent(plugin, running),
+        "eta_seconds": _eta_seconds(plugin, running, prog),
         "message": message,
     }
 
 
 def _download(plugin: Plugin) -> None:
     """真正拉模型。测试里整个替换掉，不触网。"""
+    # HF_ENDPOINT / HF_HUB_DISABLE_XET 是在 huggingface_hub 导入时读进 constants 的，
+    # 改环境变量为时已晚。所以这里既显式传 endpoint，又在运行时直接翻
+    # constants.HF_HUB_DISABLE_XET —— is_xet_available() 是每次调用动态读它的。
+    # 不禁 xet 的话，即便 endpoint 指到镜像，xet 也会绕去美区 CDN 拖死下载。
     os.environ.setdefault("HF_ENDPOINT", _HF_ENDPOINT)
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import constants, snapshot_download
+
+    constants.HF_HUB_DISABLE_XET = True
 
     snapshot_download(
         repo_id=plugin.repo_id,
         local_dir=str(_target_dir(plugin)),
+        endpoint=_HF_ENDPOINT,
         ignore_patterns=[".gitattributes", "README.md", ".git*"],
     )
 
@@ -155,7 +187,12 @@ def start_install(plugin_id: str) -> dict:
             prog = _progress.get(plugin_id)
             if not (prog and prog.status == "running"):
                 thread = threading.Thread(target=_install_worker, args=(plugin,), daemon=True)
-                _progress[plugin_id] = _Progress(status="running", thread=thread)
+                _progress[plugin_id] = _Progress(
+                    status="running",
+                    started_at=time.monotonic(),
+                    start_bytes=_disk_bytes(plugin),
+                    thread=thread,
+                )
                 thread.start()
     return _status_dict(plugin)
 

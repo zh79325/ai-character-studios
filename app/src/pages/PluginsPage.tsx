@@ -94,7 +94,24 @@ function PluginCard({
           )}
         </Space>
         {plugin.running && <Progress percent={plugin.progress} status="active" />}
+        {plugin.running && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {plugin.eta_seconds == null
+              ? '预计剩余：估算中…'
+              : `预计剩余：${formatEta(plugin.eta_seconds)}`}
+          </Typography.Text>
+        )}
       </Space>
     </Card>
   )
+}
+
+// 把剩余秒数揉成「X 分 Y 秒 / X 秒 / X 小时 Y 分」这种一眼能看的样子。
+function formatEta(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  if (s < 60) return `${s} 秒`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分 ${s % 60} 秒`
+  const h = Math.floor(m / 60)
+  return `${h} 小时 ${m % 60} 分`
 }

@@ -21,6 +21,7 @@ class PluginOut(BaseModel):
     installed: bool
     running: bool
     progress: int
+    eta_seconds: int | None = None
     message: str
 
 

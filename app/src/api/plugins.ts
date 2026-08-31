@@ -13,6 +13,8 @@ export interface Plugin {
   running: boolean
   /** 0-100，安装中才有意义。 */
   progress: number
+  /** 预计剩余秒数，安装中才有；刚开始测不到速率时为 null。 */
+  eta_seconds: number | null
   /** 失败时的原因，正常为空串。 */
   message: string
 }
