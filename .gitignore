@@ -46,6 +46,10 @@ provider_agents*.json
 **/tmp/*
 !**/tmp/.gitkeep
 
+# 语音模型：用到才从 gitee 克隆到 models/whisper-large-v3，模型文件不进 Git
+models/*
+!models/.gitkeep
+
 # Unity
 unity/**/Library/
 unity/**/Temp/

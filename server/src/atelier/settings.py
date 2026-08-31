@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8799, description="固定端口：Electron 靠它判后端是不是已经在跑")
 
+    # 语音转写（本地 Faster-Whisper）。模型目录固定、不可配置，见 voice.py：
+    # 用到才加载，本地没有就自动从 gitee 模型仓库克隆进去。这里只留运行期调参。
+    asr_device: str = "cpu"
+    asr_compute_type: str = "int8"
+    asr_language: str = "zh"
+
     @property
     def db_dir(self) -> Path:
         return self.repo_root / "db"
