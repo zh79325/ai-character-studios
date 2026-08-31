@@ -82,6 +82,12 @@ interface Props {
   finaleTitle?: string
   /** 收口内容的签名：换了抽屉自己弹出来，跟新一批待选项一模一样。空串就是没收口可做。 */
   finaleKey?: string
+  /**
+   * 用户还没开口时摆在输入框上面的一句示例说辞，点一下填进输入框。
+   *
+   * 新项目进来是一个空输入框，用户得自己想「该说到多细」。给一句写好的，他改几个词就能发。
+   */
+  starter?: string
 }
 
 /**
@@ -110,6 +116,7 @@ export default function ChatPanel({
   finale = null,
   finaleTitle = '收口',
   finaleKey = '',
+  starter = '',
 }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
@@ -358,6 +365,12 @@ export default function ChatPanel({
                         })
                 }
               />
+              {starter !== '' &&
+                input === '' &&
+                pending === null &&
+                !messages.some((one) => one.role === 'user') && (
+                  <Starter text={starter} onPick={() => setInput(starter)} />
+                )}
               <Input.TextArea
                 value={input}
                 rows={3}
@@ -435,6 +448,33 @@ function Layout({ aside, children }: { aside: boolean; children: [ReactNode, Rea
 /** 一场会话在下拉里的样子。 */
 function conversationLabel(one: Conversation): string {
   return `${one.title}（${one.message_count} 条）`
+}
+
+/**
+ * 开场那句话的示例。
+ *
+ * 只填不发：这句话是平台拟的，直接发出去等于拿用户的名义说了一句他没看过的话。
+ */
+function Starter({ text, onPick }: { text: string; onPick: () => void }) {
+  return (
+    <div
+      onClick={onPick}
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 6,
+        padding: '8px 10px',
+        background: '#fafafa',
+        cursor: 'pointer',
+      }}
+    >
+      <Space direction="vertical" size={2}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          不知道从哪儿说起，点这句填进输入框再改：
+        </Typography.Text>
+        <Typography.Text style={{ fontSize: 12 }}>{text}</Typography.Text>
+      </Space>
+    </div>
+  )
 }
 
 const BUBBLE: Record<string, { background: string; align: string }> = {
@@ -603,7 +643,7 @@ function MessageList({
                 <Space size={6}>
                   <Spin size="small" />
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    设计师在想，头几个字出来前先等一下
+                    设计师在正在思考中，请先等一下
                   </Typography.Text>
                 </Space>
               ) : (

@@ -37,6 +37,11 @@ const ASK_NAMING = '风格就按这版定了，已经落盘。给我几组项目
 
 const CODE_RULE = /^[a-z0-9][a-z0-9_-]*$/
 
+/** 开场那句话的示例：新项目进来还没开口时摆在输入框上面，点一下填进去。 */
+const STARTER =
+  '我要开发一款类似我的世界地下城的刷怪RPG，玩家扮演的角色是西游记中的人物例如孙悟空，' +
+  '猪八戒，二郎神等，怪物是类似奥特曼电视剧中的怪兽，场景是在现代各个城市的地标建筑附近。'
+
 export default function ProjectPage() {
   const current = useCurrentProject()
   const [conversation, setConversation] = useState<string | null>(null)
@@ -74,6 +79,7 @@ export default function ProjectPage() {
         managed
         draftsAside
         sidebar={<Sidebar />}
+        starter={STARTER}
         finaleTitle={gate === 'style' ? '确认游戏风格' : '确认立项'}
         finaleKey={!drafting ? '' : finaleKey}
         finale={
