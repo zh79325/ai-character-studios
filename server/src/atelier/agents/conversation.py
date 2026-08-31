@@ -41,7 +41,7 @@ from atelier.db.project_models import (
     ProjectMemory,
 )
 from atelier.db.task_events import record as record_event
-from atelier.errors import Conflict, NotFound
+from atelier.errors import Conflict, Interrupted, NotFound
 from atelier.providers import router, text_chat
 from atelier.providers.base import Decision, ProviderError
 from atelier.settings import get_settings
@@ -49,6 +49,14 @@ from atelier.settings import get_settings
 _log = structlog.get_logger(__name__)
 
 TARGET_KINDS = ("project", "character")
+
+THINKING = "thinking"
+DONE = "done"
+FAILED = "failed"
+CANCELLED = "cancelled"
+"""assistant 消息的四种下场。只有 `DONE` 进上下文：没回完的那条里一个字也没有。"""
+
+INTERRUPTED_REASON = "这一轮被你中断了"
 
 MAX_FOLD_ROUNDS = 5
 """一轮里最多折几次。
@@ -505,7 +513,8 @@ def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> Co
         config_text=config_snapshot(ref) if is_project else None,
         project_memories=enabled_memories(project, memory_scope(conversation)),
         memory=memory_of(project, conversation.id),
-        messages=messages_of(project, conversation.id),
+        # 没回完、炸了、被中断的那几条不往上下文里放：内容本来就是空的，发过去就是一句空回答
+        messages=[one for one in messages_of(project, conversation.id) if one.status == DONE],
     )
 
 
@@ -533,7 +542,13 @@ def _next_turn_no(project: Session, conversation_id: str) -> int:
 
 
 def _add_message(
-    project: Session, conversation: Conversation, role: str, content: str, token_count: int
+    project: Session,
+    conversation: Conversation,
+    role: str,
+    content: str,
+    token_count: int,
+    *,
+    status: str = DONE,
 ) -> Message:
     message = Message(
         conversation_id=conversation.id,
@@ -541,6 +556,7 @@ def _add_message(
         role=role,
         content=content,
         token_count=token_count,
+        status=status,
     )
     project.add(message)
     project.flush()
@@ -569,8 +585,12 @@ def send(
 
     # 上一轮的增量与它末尾那条 turn 得先清掉：留着会把这一轮新订上来的流当场收掉
     BUS.reset(conversation.id)
+    # 上一轮被中断过就会留下标记，不清新这一轮一开口就被它掐了
+    BUS.clear_cancel(conversation.id)
 
     _add_message(project, conversation, "user", body, tokens.estimate_text(body))
+    # 先落一条空的 assistant：「正在想」得能活过切页面与重启，只活在流里的状态一离开这一屏就没了
+    assistant = _add_message(project, conversation, "assistant", "", 0, status=THINKING)
     project.commit()
 
     inputs = _inputs(project, ref, conversation)
@@ -590,16 +610,19 @@ def send(
             raise ProviderError(f"{decision.candidate.label} 返回了空回答")
     except Exception as exc:
         # 炸了也要说一声：订流的那头只认这条广播，不发它前端就一直等着字出现
+        if isinstance(exc, Interrupted) or BUS.cancel_requested(conversation.id):
+            # 中断那一路已经把占位改成 cancelled，这里再写一次就是把用户的决定改回来
+            BUS.clear_cancel(conversation.id)
+            raise Interrupted(INTERRUPTED_REASON) from exc
+        assistant.content = str(exc)[:500]
+        assistant.status = FAILED
+        project.commit()
         BUS.publish(conversation.id, ERROR, str(exc))
         raise
 
-    assistant = _add_message(
-        project,
-        conversation,
-        "assistant",
-        content,
-        reply.completion_tokens or tokens.estimate_text(content),
-    )
+    assistant.content = content
+    assistant.token_count = reply.completion_tokens or tokens.estimate_text(content)
+    assistant.status = DONE
     parsed = parsing.parse_turn(content)
     _apply_progress(inputs.memory, parsed.progress)
     draft_ids = _store_drafts(project, ref, conversation, parsed.drafts)
@@ -625,9 +648,37 @@ def send(
 
 def _delta_publisher(conversation_id: str) -> Callable[[str], None]:
     def publish(piece: str) -> None:
+        # 中断就靠这里：回调里抛出去会一路把服务商那条 HTTP 流关掉，剩下的字不再生也不再计费
+        if BUS.cancel_requested(conversation_id):
+            raise Interrupted(INTERRUPTED_REASON)
         BUS.publish(conversation_id, DELTA, piece)
 
     return publish
+
+
+def interrupt(project: Session, conversation: Conversation) -> bool:
+    """中断这一轮：占位消息标成 `cancelled`，推理还在跑就下一段增量时停。
+
+    重启后卡在库里的那条 `thinking` 也靠它清：进程都换了一个，推理早没了，状态却还挂在那里。
+    返回真说明确实有一轮被掐了，假就是本来就没在跑。
+    """
+    rows = list(
+        project.scalars(
+            select(Message).where(
+                Message.conversation_id == conversation.id, Message.status == THINKING
+            )
+        )
+    )
+    if not rows:
+        return False
+
+    BUS.request_cancel(conversation.id)
+    for row in rows:
+        row.status = CANCELLED
+    project.commit()
+    # 订流的那头只认广播：不发这条，它要等到模型自己结束才知道这一轮已经不算了
+    BUS.publish(conversation.id, ERROR, INTERRUPTED_REASON)
+    return True
 
 
 def _select(

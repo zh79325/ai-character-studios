@@ -14,6 +14,7 @@ import type {
   ConversationDetail,
   Diff,
   DiscardResult,
+  InterruptResult,
   MemoryKind,
   ProjectMemoryItem,
   TargetKind,
@@ -86,6 +87,17 @@ export function commitConversation(id: string, draftIds?: string[]): Promise<Com
 
 export function discardConversation(id: string): Promise<DiscardResult> {
   return request<DiscardResult>(`/api/conversations/${encodeURIComponent(id)}/discard`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * 中断正在跑的那一轮：库里那条「正在想」改成取消，推理还在就叫停。
+ *
+ * 重启后卡住的那种也走这一口：叫停已经无人可叫，但状态总得能清。
+ */
+export function interruptConversation(id: string): Promise<InterruptResult> {
+  return request<InterruptResult>(`/api/conversations/${encodeURIComponent(id)}/interrupt`, {
     method: 'POST',
   })
 }

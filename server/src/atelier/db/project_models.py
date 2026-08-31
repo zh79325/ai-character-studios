@@ -208,7 +208,12 @@ class Conversation(ProjectBase):
 
 
 class Message(ProjectBase):
-    """会话消息原文，只折叠不删除。"""
+    """会话消息原文，只折叠不删除。
+
+    assistant 那条在这一轮开跑时就先落一条空的（`status="thinking"`），模型回完再把内容
+    填回同一行。「正在想」是一个跟着会话走的事实，只活在内存里的话，用户切走页面再回来就看不
+    见了，进程重启更是直接丢。
+    """
 
     __tablename__ = "messages"
     __table_args__ = (
@@ -223,6 +228,11 @@ class Message(ProjectBase):
     content: Mapped[str] = mapped_column(Text)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     folded: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), default="done")
+    """thinking=正在等回答、done=回答已落库、failed=这一轮炸了、cancelled=用户中断。
+
+    只有 done 进上下文。
+    """
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 

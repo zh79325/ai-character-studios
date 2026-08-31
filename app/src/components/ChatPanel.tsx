@@ -13,6 +13,9 @@
  *
  * 气泡里只摆给人看的那几段话：结构块（草稿、待选项、命名建议、进度）各自在界面上已经有位置，
  * 原文再摆一遍就是同一件事看两遍。
+ *
+ * 这一轮在跑的事实存在库里（assistant 那条的 `status=thinking`），不只存在这个面板的 state 里：切走
+ * 页面再回来、甚至进程重启，那条转圈依旧在。卡住就点「中断思考」：状态清掉，推理还在跑的话一并叫停。
  */
 import { PlusOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -35,6 +38,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import {
   ensureConversation,
+  interruptConversation,
   listConversations,
   readConversation,
   sendMessage,
@@ -126,6 +130,8 @@ export default function ChatPanel({
   /** 已经发出去、还没回到会话详情里的那句话。 */
   const [pending, setPending] = useState<string | null>(null)
   const stop = useRef<(() => void) | null>(null)
+  /** 这一轮是自己中断的：发消息那头随后会报 409，那不是意外，不弹错。 */
+  const cut = useRef(false)
 
   const list = useQuery({
     queryKey: ['conversations', targetKind, targetRef, agentCode],
@@ -224,13 +230,51 @@ export default function ChatPanel({
       const landed = fresh?.messages.some((one) => one.role === 'user' && one.content === content)
       setPending(null)
       if (landed !== true) setInput((prev) => (prev === '' ? content : prev))
+      // 自己掐的那一轮也会从这里回来：用户刚按的那下就是这个结果，再弹一句就是告诉他点错了
+      if (cut.current) {
+        cut.current = false
+        return
+      }
       toast.error(err.message)
     },
+  })
+
+  const interrupt = useMutation({
+    mutationFn: () => interruptConversation(chosen!),
+    onSuccess: async () => {
+      cut.current = true
+      stop.current?.()
+      stop.current = null
+      setStreaming(null)
+      setPending(null)
+      await queryClient.invalidateQueries({ queryKey: ['conversation', chosen] })
+    },
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const conversation = detail.data?.conversation
   const messages = (detail.data?.messages ?? []).filter((one) => one.role !== 'system')
   const preparing = managed && chosen === null
+  /** 库里那条「正在想」。它是这一轮在跑的凭据，切走页面再回来、甚至换个窗口都还在。 */
+  const thinkingId = messages.find((one) => one.status === 'thinking')?.id ?? null
+  // 这一轮不一定是这个面板发起的：库里说在跑就当在跑，不然会让用户往一个正在生成的会话里插话
+  const busy = send.isPending || thinkingId !== null
+
+  useEffect(() => {
+    // 别处发起的那一轮也把字接上：只有一个干转的圈，看着跟卡死没区别
+    if (thinkingId === null || chosen === null || send.isPending) return
+    setStreaming('')
+    const settle = () => {
+      setStreaming(null)
+      void queryClient.invalidateQueries({ queryKey: ['conversation', chosen] })
+    }
+    return subscribeConversation({
+      conversationId: chosen,
+      onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
+      onTurn: settle,
+      onError: settle,
+    })
+  }, [thinkingId, chosen, send.isPending, queryClient])
 
   // 只认 nonce：同一句话递两次是两件事，而重渲染不是
   const handled = useRef(0)
@@ -243,7 +287,8 @@ export default function ChatPanel({
 
   /** 发一句话出去。选择组件拼出来的那句也走这里，跟手打的一样进气泡。 */
   const dispatch = (content: string) => {
-    if (send.isPending) return
+    if (busy) return
+    cut.current = false
     // 先清输入框、先把话摆上去：点完发送还看见自己那段字蹲在输入框里，像没发出去
     setInput('')
     setPending(content)
@@ -344,6 +389,8 @@ export default function ChatPanel({
                 messages={messages}
                 pending={pending}
                 streaming={streaming}
+                interrupting={interrupt.isPending}
+                onInterrupt={() => interrupt.mutate()}
                 loading={detail.isLoading}
                 briefing={detail.data?.briefing ?? ''}
                 briefingBlank={detail.data?.briefing_blank ?? false}
@@ -351,7 +398,7 @@ export default function ChatPanel({
               />
               <ChoicePicker
                 groups={detail.data?.choices ?? []}
-                disabled={send.isPending}
+                disabled={busy}
                 onSubmit={dispatch}
                 finaleTitle={finaleTitle}
                 finaleKey={finaleKey}
@@ -374,9 +421,9 @@ export default function ChatPanel({
               <Input.TextArea
                 value={input}
                 rows={3}
-                disabled={send.isPending}
+                disabled={busy}
                 placeholder={
-                  send.isPending
+                  busy
                     ? '等设计师回这一轮，回完再接着说'
                     : '说清你要什么。Enter 发送，Shift+Enter 换行'
                 }
@@ -387,14 +434,8 @@ export default function ChatPanel({
                   submit()
                 }}
               />
-              <Button
-                type="primary"
-                block
-                loading={send.isPending}
-                disabled={send.isPending}
-                onClick={submit}
-              >
-                {send.isPending ? '等回话' : '发送'}
+              <Button type="primary" block loading={busy} disabled={busy} onClick={submit}>
+                {busy ? '等回话' : '发送'}
               </Button>
             </Space>
           </div>
@@ -477,6 +518,74 @@ function Starter({ text, onPick }: { text: string; onPick: () => void }) {
   )
 }
 
+/**
+ * 正在想的那一轮：转圈或已经出来的那几个字，底下挂一个中断。
+ *
+ * 中断这颗按钮跟着这条气泡走，不摆在输入框边上：卡住的是这一轮，用户要掐的也是这一轮。
+ */
+function Thinking({
+  text,
+  interrupting,
+  onInterrupt,
+}: {
+  text: string
+  interrupting: boolean
+  onInterrupt: () => void
+}) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+      <div
+        style={{
+          maxWidth: '86%',
+          background: '#fafafa',
+          borderRadius: 8,
+          padding: '8px 12px',
+          wordBreak: 'break-word',
+          fontSize: 13,
+        }}
+      >
+        {text === '' ? (
+          <Space size={6}>
+            <Spin size="small" />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              设计师在正在思考中，请先等一下
+            </Typography.Text>
+          </Space>
+        ) : (
+          <Body text={text} />
+        )}
+        <div style={{ marginTop: 4 }}>
+          <Button size="small" type="text" danger loading={interrupting} onClick={onInterrupt}>
+            中断思考
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** 没走完的那一轮：炸了就把错因摆出来，被中断就说一句，都不当回答算。 */
+function Aborted({ status, reason }: { status: string; reason: string }) {
+  const failed = status === 'failed'
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+      <div
+        style={{
+          maxWidth: '86%',
+          background: failed ? '#fff2f0' : '#fafafa',
+          borderRadius: 8,
+          padding: '6px 12px',
+          wordBreak: 'break-word',
+        }}
+      >
+        <Typography.Text type={failed ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+          {failed ? `这一轮没成：${reason}` : '这一轮被你中断了'}
+        </Typography.Text>
+      </div>
+    </div>
+  )
+}
+
 const BUBBLE: Record<string, { background: string; align: string }> = {
   user: { background: '#e6f4ff', align: 'flex-end' },
   assistant: { background: '#fafafa', align: 'flex-start' },
@@ -504,6 +613,8 @@ function MessageList({
   messages,
   pending,
   streaming,
+  interrupting,
+  onInterrupt,
   loading,
   briefing,
   briefingBlank,
@@ -513,6 +624,8 @@ function MessageList({
   /** 本轮刚发出去的那句：先摆成气泡，不等落库后才看见。 */
   pending: string | null
   streaming: string | null
+  interrupting: boolean
+  onInterrupt: () => void
   loading: boolean
   /** 开场提示：项目现状与接下来该说什么。后端现算，摆在历史消息前面。 */
   briefing: string
@@ -584,6 +697,20 @@ function MessageList({
           </div>
         )}
         {messages.map((one) => {
+          if (one.status === 'thinking') {
+            // 库里说这一轮在跑：字有多少摆多少，一个字都还没有就摆转圈
+            return (
+              <Thinking
+                key={one.id}
+                text={streaming ?? ''}
+                interrupting={interrupting}
+                onInterrupt={onInterrupt}
+              />
+            )
+          }
+          if (one.status === 'failed' || one.status === 'cancelled') {
+            return <Aborted key={one.id} status={one.status} reason={one.content} />
+          }
           const style = BUBBLE[one.role] ?? BUBBLE.assistant!
           return (
             <div key={one.id} style={{ display: 'flex', justifyContent: style.align }}>
@@ -627,30 +754,8 @@ function MessageList({
             </div>
           </div>
         )}
-        {streaming !== null && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-            <div
-              style={{
-                maxWidth: '86%',
-                background: '#fafafa',
-                borderRadius: 8,
-                padding: '8px 12px',
-                wordBreak: 'break-word',
-                fontSize: 13,
-              }}
-            >
-              {streaming === '' ? (
-                <Space size={6}>
-                  <Spin size="small" />
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    设计师在正在思考中，请先等一下
-                  </Typography.Text>
-                </Space>
-              ) : (
-                <Body text={streaming} />
-              )}
-            </div>
-          </div>
+        {streaming !== null && !messages.some((one) => one.status === 'thinking') && (
+          <Thinking text={streaming} interrupting={interrupting} onInterrupt={onInterrupt} />
         )}
       </Space>
     </div>

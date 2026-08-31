@@ -511,8 +511,12 @@ export interface Message {
   token_count: number
   /** 已折进摘要。原文还在，面板默认收起、点开可看。 */
   folded: boolean
+  /** thinking=这一轮还在跑（内容是空的）、done、failed=炸了（内容是错因）、cancelled=被中断。 */
+  status: MessageStatus
   created_at: string
 }
+
+export type MessageStatus = 'thinking' | 'done' | 'failed' | 'cancelled'
 
 export interface ConversationMemory {
   summary: string
@@ -598,6 +602,12 @@ export interface CommitResult {
 export interface DiscardResult {
   conversation_id: string
   discarded: number
+}
+
+export interface InterruptResult {
+  conversation_id: string
+  /** 假就是本来就没在跑（早回完了、或别处已经中断过）。 */
+  interrupted: boolean
 }
 
 /** 两份全文，diff 怎么算、怎么显示都是前端的事。 */

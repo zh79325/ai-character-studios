@@ -21,6 +21,7 @@ from atelier.agents import conversation as engine
 from atelier.agents.stream_bus import BUS, ERROR
 from atelier.api import conversations as api
 from atelier.assets.projects import ProjectRef
+from atelier.db.project_models import Message
 from atelier.providers import text_chat
 from tests.conftest import ScriptedChat, bind_text_model
 
@@ -426,6 +427,41 @@ def test_新一轮不会把上一轮重放一遍(client: TestClient, talk: str) 
 
 def test_不存在的会话订不了流(client: TestClient, project: ProjectRef) -> None:
     assert client.get("/api/conversations/nope/stream").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# 中断
+# --------------------------------------------------------------------------- #
+
+
+def test_答完的消息带着已完成的状态(client: TestClient, talk: str) -> None:
+    send(client, talk, "拟一版")
+
+    rows = client.get(f"/api/conversations/{talk}").json()["messages"]
+    assert [one["status"] for one in rows] == ["done", "done"]
+
+
+def test_没在跑的时候中断也算成(client: TestClient, talk: str) -> None:
+    """点下去那一瞬刚好回完也不算错，报个错只会让用户以为自己把事情搞砸了。"""
+    response = client.post(f"/api/conversations/{talk}/interrupt")
+
+    assert response.status_code == 200
+    assert response.json() == {"conversation_id": talk, "interrupted": False}
+
+
+def test_重启卡住的那条正在想能被中断清掉(
+    client: TestClient, talk: str, project_db: Session
+) -> None:
+    """进程换了一个，推理早没了，库里那条 `thinking` 却还挂着——中断这一口就是它唯一的出路。"""
+    project_db.add(
+        Message(conversation_id=talk, turn_no=1, role="assistant", content="", status="thinking")
+    )
+    project_db.commit()
+
+    assert client.post(f"/api/conversations/{talk}/interrupt").json()["interrupted"] is True
+
+    rows = client.get(f"/api/conversations/{talk}").json()["messages"]
+    assert [one["status"] for one in rows] == ["cancelled"]
 
 
 # --------------------------------------------------------------------------- #

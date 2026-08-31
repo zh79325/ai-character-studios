@@ -650,6 +650,8 @@ class MessageOut(Schema):
     token_count: int = 0
     folded: bool = False
     """已折进摘要。原文仍在这里，前端默认收起、点开可看。"""
+    status: str = "done"
+    """thinking=正在等回答（前端摆转圈与中断按钮）、done、failed、cancelled。"""
     created_at: str
 
 
@@ -747,6 +749,12 @@ class CommitOut(Schema):
 class DiscardOut(Schema):
     conversation_id: str
     discarded: int
+
+
+class InterruptOut(Schema):
+    conversation_id: str
+    interrupted: bool
+    """假就是本来就没在跑（早回完了、或别处已经中断过）。"""
 
 
 class DiffOut(Schema):

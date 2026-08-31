@@ -14,3 +14,10 @@ class NotFound(LookupError):
 
 class Conflict(ValueError):
     """与现有数据冲突：重复的 code、已存在的目录、别人已经改过的版本。→ 409"""
+
+
+class Interrupted(Conflict):
+    """用户把正在跑的那一轮掐了。→ 409
+
+    算冲突而不算失败：这一轮的结果没有了，但没任何东西出错，服务商也不该因此被记一笔坏账。
+    """

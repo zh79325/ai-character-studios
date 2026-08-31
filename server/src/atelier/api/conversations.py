@@ -35,6 +35,7 @@ from atelier.api.schemas import (
     DiffOut,
     DiscardOut,
     DraftOut,
+    InterruptOut,
     MessageOut,
     NamingOptionOut,
     ProjectMemoryIn,
@@ -105,6 +106,7 @@ def _message_out(row: Message) -> MessageOut:
         content=row.content,
         token_count=row.token_count,
         folded=row.folded,
+        status=row.status,
         created_at=row.created_at.isoformat(),
     )
 
@@ -317,6 +319,17 @@ async def stream_conversation(
             await asyncio.sleep(POLL_SECONDS)
 
     return EventSourceResponse(stream(), ping=PING_SECONDS)
+
+
+@router.post("/{conversation_id}/interrupt", response_model=InterruptOut)
+def interrupt_conversation(conversation_id: str, project: ProjectDb) -> InterruptOut:
+    """中断正在跑的那一轮。
+
+    两件事：库里那条 `thinking` 改成 `cancelled`，紧接着叫停推理。进程重启过、推理早不在了的
+    那种卡死也走这一口：叫停落不到人头上，但状态总得能清。
+    """
+    row = engine.get(project, conversation_id)
+    return InterruptOut(conversation_id=conversation_id, interrupted=engine.interrupt(project, row))
 
 
 @router.post("/{conversation_id}/commit", response_model=CommitOut)

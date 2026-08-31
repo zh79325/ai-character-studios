@@ -11,6 +11,8 @@ A6 的三条验收标准都钉在这里：
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,7 +29,7 @@ from atelier.db.project_models import (
     TaskEvent,
 )
 from atelier.db.runtime_models import RouteLog
-from atelier.errors import Conflict, NotFound
+from atelier.errors import Conflict, Interrupted, NotFound
 from atelier.providers.base import NoCandidateError
 from tests.conftest import ScriptedChat, bind_text_model
 
@@ -172,15 +174,94 @@ def test_进度结论累加而开放问题整体替换(
     assert memory.open_questions == ["目标平台"]
 
 
-def test_空回答不写进消息(
+def test_空回答留一条炸了的记号而不是一句空话(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
+    """炸了也得留下痕：切走页面再回来的人得知道这一轮早就没了，而不是接着干等。"""
     conversation = start_project_talk(project_db)
 
     with pytest.raises(Exception, match="空回答"):
         send(project_db, session, project, conversation, "开聊", ScriptedChat("   "))
 
-    assert [m.role for m in engine.messages_of(project_db, conversation.id)] == ["user"]
+    rows = engine.messages_of(project_db, conversation.id)
+    assert [m.role for m in rows] == ["user", "assistant"]
+    assert rows[1].status == engine.FAILED
+    assert "空回答" in rows[1].content
+
+
+def test_跑的时候库里就摆着一条正在想(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """占位得在调模型之前就落库，否则切走页面再回来就只剩一个空屏幕。"""
+    conversation = start_project_talk(project_db)
+    seen: list[tuple[str, str]] = []
+
+    class Peeking(ScriptedChat):
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            rows = engine.messages_of(project_db, conversation.id)
+            seen.extend((one.role, one.status) for one in rows)
+            return super().__call__(*args, **kwargs)
+
+    send(project_db, session, project, conversation, "开聊", Peeking("好"))
+
+    assert seen == [("user", engine.DONE), ("assistant", engine.THINKING)]
+    rows = engine.messages_of(project_db, conversation.id)
+    assert [(m.role, m.status, m.content) for m in rows] == [
+        ("user", engine.DONE, "开聊"),
+        ("assistant", engine.DONE, "好"),
+    ]
+
+
+def test_中断把正在想那条标成取消并停下推理(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """中断不删行：删了就只剩用户那句话孤零零摆在那里，看不出这一轮到底去哪了。"""
+    conversation = start_project_talk(project_db)
+
+    class Cutting(ScriptedChat):
+        """字还没开始往外推用户就点了中断：下一段增量就应该抛出去，服务商那条流跟着关。"""
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            engine.interrupt(project_db, conversation)
+            return super().__call__(*args, **kwargs)
+
+    chat = Cutting("前半句\n后半句\n")
+    with pytest.raises(Interrupted):
+        engine.send(project_db, session, project, conversation, "开聊", chat=chat, stream=True)
+
+    assert chat.deltas == ["前半句\n"]
+    rows = engine.messages_of(project_db, conversation.id)
+    assert [(m.role, m.status) for m in rows] == [
+        ("user", engine.DONE),
+        ("assistant", engine.CANCELLED),
+    ]
+
+
+def test_没在跑的时候中断什么也不改(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    send(project_db, session, project, conversation, "开聊", ScriptedChat("好"))
+
+    assert engine.interrupt(project_db, conversation) is False
+    assert [m.status for m in engine.messages_of(project_db, conversation.id)] == [
+        engine.DONE,
+        engine.DONE,
+    ]
+
+
+def test_没回完的那几条不进下一轮的上下文(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    with pytest.raises(Exception, match="空回答"):
+        send(project_db, session, project, conversation, "先聊一句", ScriptedChat("   "))
+
+    chat = ScriptedChat("这回答得上")
+    send(project_db, session, project, conversation, "再聊一句", chat)
+
+    assert all(one["content"] != "" for one in chat.calls[-1])
+    assert not any("空回答" in one["content"] for one in chat.calls[-1])
 
 
 def test_丢弃草稿后还能接着聊(

@@ -47,6 +47,7 @@ class ConversationBus:
         self._lock = threading.Lock()
         self._buffers: dict[str, deque[StreamEvent]] = {}
         self._seq: dict[str, int] = {}
+        self._cancelled: set[str] = set()
         self._max_events = max_events
 
     def publish(self, conversation_id: str, event: str, data: Any = None) -> StreamEvent:
@@ -82,11 +83,31 @@ class ConversationBus:
         with self._lock:
             self._buffers.pop(conversation_id, None)
             self._seq.pop(conversation_id, None)
+            self._cancelled.discard(conversation_id)
+
+    def request_cancel(self, conversation_id: str) -> None:
+        """掐掉正在跑的那一轮。
+
+        模型那边没有「取消」接口，能停的只有我们自己这头：标一下，下一段增量到的时候发布那里抛
+        出去，整条 HTTP 流跟着关，剩下的字就不再生了。没开流的那一轮掐不断，只能等它自己回完。
+        """
+        with self._lock:
+            self._cancelled.add(conversation_id)
+
+    def cancel_requested(self, conversation_id: str) -> bool:
+        with self._lock:
+            return conversation_id in self._cancelled
+
+    def clear_cancel(self, conversation_id: str) -> None:
+        """清掉中断标记。下一轮开工前必须清，否则上一轮的决定会把新那一轮一进门就掐了。"""
+        with self._lock:
+            self._cancelled.discard(conversation_id)
 
     def clear(self) -> None:
         with self._lock:
             self._buffers.clear()
             self._seq.clear()
+            self._cancelled.clear()
 
 
 BUS = ConversationBus()

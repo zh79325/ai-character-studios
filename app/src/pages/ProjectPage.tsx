@@ -78,7 +78,7 @@ export default function ProjectPage() {
         title="立项对焦"
         managed
         draftsAside
-        sidebar={<Sidebar />}
+        sidebar={<Sidebar settled={detail.data?.memory.decisions ?? []} />}
         starter={STARTER}
         finaleTitle={gate === 'style' ? '确认游戏风格' : '确认立项'}
         finaleKey={!drafting ? '' : finaleKey}
@@ -103,49 +103,84 @@ export default function ProjectPage() {
   )
 }
 
-/** 边上那条窄栏：项目抬头 + 后续动作的入口。草稿的去处已经在抽屉里，这里不再摆一遍。 */
-function Sidebar() {
+/** 边上那条窄栏：项目抬头 + 后续动作的入口 + 已经拍定的那几条。草稿的去处已经在抽屉里，这里不再摆一遍。 */
+function Sidebar({ settled }: { settled: string[] }) {
   const current = useCurrentProject()
   const project = current.data
   const navigate = useNavigate()
   const locked = project?.stage === 'drafting'
 
   return (
-    <Card size="small" title="快捷导航">
-      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-        <Space direction="vertical" size={2} style={{ width: '100%' }}>
-          <Space size={6} wrap>
-            <Typography.Text strong>{project?.name ?? '…'}</Typography.Text>
-            {project && <Tag>{project.code}</Tag>}
-            {locked && <Tag color="processing">立项中</Tag>}
-            {project?.missing && <Tag color="error">目录不在</Tag>}
-          </Space>
-          <Typography.Text
-            type="secondary"
-            style={{ fontSize: 12, wordBreak: 'break-all' }}
-            copyable={{ text: project?.dir_path ?? '' }}
-          >
-            {project?.dir_path ?? ''}
-          </Typography.Text>
-        </Space>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {locked ? '立项收口后开工：' : '接下去干什么：'}
-        </Typography.Text>
-        {DESIGN_ENTRIES.map((entry) => (
-          <Button
-            key={entry.slug}
-            block
-            size="small"
-            disabled={locked || !entry.ready}
-            title={entry.hint}
-            style={{ textAlign: 'left' }}
-            onClick={() => navigate(designPath(entry.slug))}
-          >
-            <Space size={4}>
-              <RightOutlined style={{ fontSize: 10 }} />
-              {entry.ready ? entry.label : `${entry.label}（即将开放）`}
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Card size="small" title="快捷导航">
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+            <Space size={6} wrap>
+              <Typography.Text strong>{project?.name ?? '…'}</Typography.Text>
+              {project && <Tag>{project.code}</Tag>}
+              {locked && <Tag color="processing">立项中</Tag>}
+              {project?.missing && <Tag color="error">目录不在</Tag>}
             </Space>
-          </Button>
+            <Typography.Text
+              type="secondary"
+              style={{ fontSize: 12, wordBreak: 'break-all' }}
+              copyable={{ text: project?.dir_path ?? '' }}
+            >
+              {project?.dir_path ?? ''}
+            </Typography.Text>
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {locked ? '立项收口后开工：' : '接下去干什么：'}
+          </Typography.Text>
+          {DESIGN_ENTRIES.map((entry) => (
+            <Button
+              key={entry.slug}
+              block
+              size="small"
+              disabled={locked || !entry.ready}
+              title={entry.hint}
+              style={{ textAlign: 'left' }}
+              onClick={() => navigate(designPath(entry.slug))}
+            >
+              <Space size={4}>
+                <RightOutlined style={{ fontSize: 10 }} />
+                {entry.ready ? entry.label : `${entry.label}（即将开放）`}
+              </Space>
+            </Button>
+          ))}
+        </Space>
+      </Card>
+      <Settled items={settled} />
+    </Space>
+  )
+}
+
+/**
+ * 已经拍定的那几条（每轮的 `[对焦进度]` 里的「已定」）。
+ *
+ * 同一个题反复拍过就只留最后那一次：后端是只去重不认题的，不合一就会看到「写实卡通 7:3」
+ * 跟「3:7」同时摆在那里。
+ */
+function Settled({ items }: { items: string[] }) {
+  const latest = new Map<string, string>()
+  for (const one of items) {
+    const cut = one.search(/[：:]/)
+    latest.set(cut < 0 ? one : one.slice(0, cut), one)
+  }
+  const rows = [...latest.values()]
+  if (rows.length === 0) return null
+
+  return (
+    <Card size="small" title={`已经定下来的（${rows.length}）`}>
+      <Space
+        direction="vertical"
+        size={6}
+        style={{ width: '100%', maxHeight: 260, overflow: 'auto' }}
+      >
+        {rows.map((one) => (
+          <Typography.Text key={one} style={{ fontSize: 12 }}>
+            · {one}
+          </Typography.Text>
         ))}
       </Space>
     </Card>
