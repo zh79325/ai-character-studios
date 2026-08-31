@@ -161,9 +161,7 @@ def test_同名角色只能有一个(client: TestClient, ready: ProjectRef, cand
     assert again.status_code == 409
 
 
-def test_建在分组下且跨组允许同名(
-    client: TestClient, ready: ProjectRef, candidates: None
-) -> None:
+def test_建在分组下且跨组允许同名(client: TestClient, ready: ProjectRef, candidates: None) -> None:
     hero = client.post("/api/characters", json={"name": "赤瞳", "group": "玩家角色"})
     boss = client.post("/api/characters", json={"name": "赤瞳", "group": "boss角色"})
 
@@ -182,9 +180,7 @@ def test_覆盖为真时删旧重建(client: TestClient, ready: ProjectRef, cand
     assert again.json()["id"] == first["id"]  # dir_name 没变，id 由它派生
 
 
-def test_分组接口列出并新建空分组(
-    client: TestClient, ready: ProjectRef, candidates: None
-) -> None:
+def test_分组接口列出并新建空分组(client: TestClient, ready: ProjectRef, candidates: None) -> None:
     assert client.get("/api/projects/current/groups").json() == []
 
     created = client.post("/api/projects/current/groups", json={"path": "boss角色/精英"})

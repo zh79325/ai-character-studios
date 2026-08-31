@@ -53,6 +53,14 @@ class QuotaExhausted(ProviderError):
     """该候选本窗口额度已尽，重试无意义，直接换下一个。"""
 
 
+class EmptyReply(ProviderError):
+    """接得通、也没报错，但一个字也没说。
+
+    单独一类是为了不熔断：模型服务好的，只是这一句没说出来（安全策略、推理吃完了输出
+    预算都会这样）。当普通失败处置会把它关上几分钟，只配了一个模型的人重发一句就发不出去了。
+    """
+
+
 class NoCandidateError(ProviderError):
     """该 Agent 没有可用候选：没配、全禁用、全熔断或全部额度用尽。"""
 

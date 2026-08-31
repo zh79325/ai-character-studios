@@ -46,6 +46,12 @@ class ModelCatalog(ConfigBase):
     api_path: Mapped[str | None] = mapped_column(String(255), default=None)
     auth_style: Mapped[str] = mapped_column(String(16), default="bearer")
     key_prefix: Mapped[str | None] = mapped_column(String(16), default=None)
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    """调用参数的预置初值，随预设一起进 `ProviderModel.params`。
+
+    约定键 `context_window`：模型的上下文窗口 token 数，上下文预算按它的比例算。这是模型的
+    客观事实而不是用户偏好，所以跟端点、driver 一样随 seeds 进 Git，不该让人在 UI 里逐个填。
+    """
     remark: Mapped[str | None] = mapped_column(Text, default=None)
 
 

@@ -3,17 +3,19 @@
 顺序是定死的，因为它表达的是优先级——越靠前的越不可能被折叠掉：
 
 1. Agent 提示词（工程级 system + 项目级附加指令）
-2. 目标当前定稿全文（`art-bible.md` 或 `{角色名}角色设定.md`，没有则跳过）
+2. 项目美术规范全文（`art-bible.md`，只在角色这类子目标的会话里带——立项会话的定稿就是它）
+3. 目标当前定稿全文（`art-bible.md` 或 `{角色名}角色设定.md`，没有则跳过）
    外加项目配置现状（`project.json` 里 Agent 能改的那几段），立项会话要照它做增量调整
-3. 项目长期记忆（用户偏好、口味、明确禁忌）
-4. 会话记忆：滚动摘要 + 已拍板结论 + 待确认问题
-5. 最近 N 轮原文
+4. 项目长期记忆（用户偏好、口味、明确禁忌）
+5. 会话记忆：滚动摘要 + 已拍板结论 + 待确认问题
+6. 最近 N 轮原文
 
-前四项拼成一条 system 消息，只有第 5 项是真正的对话。这样做的理由：定稿与记忆是「事实」
+前五项拼成一条 system 消息，只有第 6 项是真正的对话。这样做的理由：定稿与记忆是「事实」
 而非「谁说过的话」，混进 user/assistant 序列里模型会把它当成上一轮发言去回应。
 
-总量卡 `context_budget`。超了不截断消息——截断会悄悄丢掉用户说过的话；改由调用方把最老
-的未折叠消息交给同一 Agent 压缩进摘要（`fold_plan`），原文留在库里仍可展开回看。
+总量卡预算：模型窗口已知时按 `effective_budget` 取窗口的一个比例，未知才回落 Agent 自己写的
+`context_budget`。超了不截断消息——截断会悄悄丢掉用户说过的话；改由调用方把最老的未折叠消息
+交给同一 Agent 压缩进摘要（`fold_plan`），原文留在库里仍可展开回看。
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ MIN_KEEP_MESSAGES = 2
 真的还塞不进去，那是模型窗口配小了，该报错而不是继续折。
 """
 
+SECTION_ART_BIBLE = "## 项目美术规范（{path}，全局约束，与它冲突的设计不算过关）"
 SECTION_ARTIFACT = "## 当前定稿全文（{path}）"
 SECTION_PROJECT_CONFIG = "## 项目配置现状（{path}，只有这几个键归你改）"
 SECTION_PROJECT_MEMORY = "## 项目长期记忆（用户明确表达过的，务必遵守）"
@@ -147,17 +150,39 @@ def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def effective_budget(agent: AgentDefinition, window: int | None, ratio: float) -> int:
+    """本轮的上下文预算。
+
+    Agent frontmatter 里的 `context_budget` 是写提示词时拍的保守值，当年的模型窗口就那么大；
+    现在一个 1M 窗口的模型拿 24k 的预算干活，明明装得下却每几轮就去折一次，每折一次就多
+    一层转述。所以窗口已知就按窗口算，留 `1 - ratio` 给输出与估算误差。
+
+    窗口比 Agent 预算还小时也听窗口的（比如只配了个 8k 的小模型）：窗口是硬上限，拍得比它大
+    只会把包发成超限。ratio 不超 1，所以直接按比例算就已经包含这一层约束。
+    """
+    if window is None or window <= 0:
+        return agent.context_budget
+    return max(1, int(window * ratio))
+
+
 def context_block(
     *,
     artifact_path: str | None,
     artifact_text: str | None,
+    art_bible_path: str | None = None,
+    art_bible_text: str | None = None,
     config_path: str | None = None,
     config_text: str | None = None,
     project_memories: Sequence[ProjectMemoryLike] = (),
     memory: MemoryLike | None = None,
 ) -> str:
-    """第 2-4 项拼成的上下文块，空的段落整段不出现。"""
+    """第 2-5 项拼成的上下文块，空的段落整段不出现。"""
     parts: list[str] = []
+
+    # 美术规范排在定稿前面：它是约束，得先看见约束再看当前稿子，否则容易顺着旧稿的口径接着写
+    if art_bible_path is not None and (art_bible_text or "").strip():
+        section = SECTION_ART_BIBLE.format(path=art_bible_path)
+        parts.append(f"{section}\n\n{(art_bible_text or '').strip()}")
 
     if artifact_path is not None:
         body = (artifact_text or "").strip() or NO_ARTIFACT
@@ -213,11 +238,13 @@ def assemble(
     addendum: str | None = None,
     artifact_path: str | None = None,
     artifact_text: str | None = None,
+    art_bible_path: str | None = None,
+    art_bible_text: str | None = None,
     config_path: str | None = None,
     config_text: str | None = None,
     project_memories: Sequence[ProjectMemoryLike] = (),
     memory: MemoryLike | None = None,
-    recent_turns: int = 8,
+    recent_turns: int = 20,
     budget: int | None = None,
 ) -> Assembled:
     """按固定顺序拼出这一轮要发的消息。"""
@@ -225,6 +252,8 @@ def assemble(
     block = context_block(
         artifact_path=artifact_path,
         artifact_text=artifact_text,
+        art_bible_path=art_bible_path,
+        art_bible_text=art_bible_text,
         config_path=config_path,
         config_text=config_text,
         project_memories=project_memories,
@@ -269,7 +298,7 @@ def fold_plan(assembled: Assembled, *, min_keep: int = MIN_KEEP_MESSAGES) -> tup
 
 
 def fold_request(
-    transcript: Sequence[MessageLike], existing_summary: str, *, limit: int = 500
+    transcript: Sequence[MessageLike], existing_summary: str, *, limit: int = 1500
 ) -> str:
     """压缩请求的正文。
 

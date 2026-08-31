@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 
 from atelier.agents.definitions import CAPABILITIES
 from atelier.db.config_models import AssetCategory, ConfigBase, ModelCatalog, WorkflowDef
-from atelier.db.seed import _prune, _upsert
+from atelier.db.runtime_models import Provider, ProviderModel, RuntimeBase
+from atelier.db.seed import SeedReport, _backfill_provider_models, _prune, _upsert
 from atelier.providers import period
 from atelier.settings import get_settings
 
@@ -35,6 +36,16 @@ def session() -> Iterator[Session]:
     engine = create_engine("sqlite://", future=True)
     ConfigBase.metadata.create_all(engine)
     with Session(engine) as s:
+        yield s
+
+
+@pytest.fixture
+def runtime() -> Iterator[Session]:
+    engine = create_engine("sqlite://", future=True)
+    RuntimeBase.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(Provider(code="ark", name="方舟", base_url="https://ark.example.com", driver="ark"))
+        s.commit()
         yield s
 
 
@@ -136,3 +147,50 @@ def test_meshy_actions_seed_is_an_honest_placeholder() -> None:
     raw = json.loads((get_settings().seeds_dir / "meshy_actions.json").read_text(encoding="utf-8"))
     assert raw["actions"] == []
     assert raw["synced_at"] is None
+
+
+def test_能聊天的型号都标了上下文窗口() -> None:
+    """窗口缺了不报错，只是默默回落到 Agent 的保守预算，没人发现。"""
+    for row in _seeds("model_catalog.json"):
+        if not {"text", "vision"} & set(row["capabilities"]):
+            continue
+        window = (row.get("params") or {}).get("context_window")
+        assert isinstance(window, int) and window > 0, row["model_id"]
+
+
+def test_回补只补缺的那一项(session: Session, runtime: Session) -> None:
+    for row in _seeds("model_catalog.json"):
+        _upsert(session, ModelCatalog, MODEL_CATALOG_PK, row)
+    session.commit()
+
+    runtime.add_all(
+        [
+            ProviderModel(provider_code="ark", model_id="glm-5.3", capabilities=["text"]),
+            ProviderModel(
+                provider_code="ark",
+                model_id="glm-5.3-flash",
+                capabilities=["text"],
+                params={"context_window": 200, "temperature": 0.3},
+            ),
+            ProviderModel(provider_code="ark", model_id="自己接的型号", capabilities=["text"]),
+        ]
+    )
+    runtime.commit()
+
+    report = SeedReport()
+    catalog = {
+        row["model_id"]: row["params"]
+        for row in _seeds("model_catalog.json")
+        if isinstance(row.get("params"), dict) and row["params"]
+    }
+    _backfill_provider_models(runtime, report, catalog)
+    runtime.commit()
+
+    by_id = {m.model_id: m for m in runtime.scalars(select(ProviderModel)).all()}
+    assert by_id["glm-5.3"].params["context_window"] == 1000000
+    # 设置页改过的数字比 seeds 更懂自己的账号，不能被盖
+    assert by_id["glm-5.3-flash"].params == {"context_window": 200, "temperature": 0.3}
+    # 目录里没这个型号，不臆造
+    assert by_id["自己接的型号"].params == {}
+    assert report["provider_models"]["updated"] == 1
+    assert report["provider_models"]["unchanged"] == 1

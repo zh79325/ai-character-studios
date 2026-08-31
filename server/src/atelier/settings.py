@@ -32,7 +32,14 @@ class Settings(BaseSettings):
 
     # 上下文与路由默认值
     default_context_budget: int = 24000
-    recent_turns: int = 8
+    """模型窗口未知时的兜底预算。窗口是模型自带的事实，配齐了就不该走到这一档。"""
+    context_budget_ratio: float = Field(
+        default=0.7, gt=0, le=1, description="上下文最多占模型窗口的这个比例，剩下的留给输出"
+    )
+    recent_turns: int = 20
+    default_max_output_tokens: int = Field(
+        default=8192, gt=0, description="模型没在 params 里指定 max_output_tokens 时用这个"
+    )
     circuit_breaker_seconds: int = 300
     provider_retry_attempts: int = 2
 

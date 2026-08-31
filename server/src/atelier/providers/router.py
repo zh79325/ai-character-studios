@@ -39,6 +39,7 @@ from atelier.providers.base import (
     CallOutcome,
     Candidate,
     Decision,
+    EmptyReply,
     NoCandidateError,
     ProviderError,
     QuotaExhausted,
@@ -410,6 +411,7 @@ def report_failure(
     """调用失败：额度用尽就标满，其余打开熔断。两种都记 route_log。
 
     限流（RetryableError）不熔断——退避重试还有救，熔断反而把好候选关掉。
+    空回答（EmptyReply）也不熔断——模型本身是通的，关它几分钟只会连带下一句正常提问也发不出去。
     """
     provider_model = session.get(ProviderModel, decision.candidate.provider_model_id)
     reason = str(error)
@@ -417,7 +419,7 @@ def report_failure(
     if isinstance(error, QuotaExhausted):
         if provider_model is not None:
             usage.mark_exhausted(session, provider_model, limit_kind)
-    elif not isinstance(error, RetryableError):
+    elif not isinstance(error, RetryableError | EmptyReply):
         open_breaker(session, decision.candidate.provider_model_id, reason)
 
     _log_route(

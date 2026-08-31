@@ -1,8 +1,9 @@
 /**
  * 套餐预设摊成表单行的行为。
  *
- * 钉的是「只填一个额度数字」这条路上最容易悄悄配错的四处：能力对不上的 Agent 不许绑、
- * 周期得用供应商自己的重置窗口、额度留空要落成不限量而不是上限 0、取消勾选的模型不许建。
+ * 钉的是「只填一个额度数字」这条路上最容易悄悄配错的几处：能力对不上的 Agent 不许绑、
+ * 周期得用供应商自己的重置窗口、额度留空要落成不限量而不是上限 0、取消勾选的模型不许建、
+ * 预设带的调用参数得原样进库。
  */
 import { describe, expect, it } from 'vitest'
 
@@ -42,6 +43,7 @@ const preset: ProviderPreset = {
       api_path: '/api/coding/v3',
       limit_kind: 'tokens',
       default_period: 'day+11H',
+      params: { context_window: 1_000_000 },
       remark: '每天 11 点重置',
     },
     {
@@ -51,6 +53,7 @@ const preset: ProviderPreset = {
       api_path: '/api/v3/images/generations',
       limit_kind: 'calls',
       default_period: 'day+11H',
+      params: {},
       remark: null,
     },
   ],
@@ -115,6 +118,10 @@ describe('一行变成一个模型', () => {
 
   it('建出来就是启用的，否则填完一堆额度还是不干活', () => {
     expect(toModelIn(row()).enabled).toBe(true)
+  })
+
+  it('预设带的上下文窗口要原样进库，不然预算只能回落到保守值', () => {
+    expect(toModelIn(row()).params).toEqual({ context_window: 1_000_000 })
   })
 })
 

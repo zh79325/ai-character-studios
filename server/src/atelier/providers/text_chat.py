@@ -38,6 +38,7 @@ from atelier.providers.base import (
     parse_remaining,
 )
 from atelier.providers.image_gen import reference_ref
+from atelier.settings import get_settings
 
 __all__ = [
     "CHAT_PATH",
@@ -47,6 +48,7 @@ __all__ = [
     "build_payload",
     "chat_url",
     "complete",
+    "output_budget",
     "vision_message",
 ]
 
@@ -83,6 +85,12 @@ class ChatReply:
     remaining: int | None = None
     latency_ms: int = 0
     finish_reason: str | None = None
+    reasoning: str = ""
+    """推理模型的思考过程（`reasoning_content`）。
+
+    收下但不并进 `content`：它不是给用户看的正文，混进去会污染定稿。留着是为了解释空回答——
+    推理几千字、正文一个字都没有，说明输出预算全烧在思考上了，这跟被安全策略拦掉是两回事。
+    """
 
     @property
     def truncated(self) -> bool:
@@ -149,6 +157,20 @@ def vision_message(
     return {"role": role, "content": parts}
 
 
+def output_budget(candidate: Candidate, explicit: int | None) -> int:
+    """这一轮最多让模型说多少 token。
+
+    从来不传 `max_tokens` 的坏处不是花钱，是各家默认值差得离谱（有的几百 token 就截断），
+    同一段提示词换个模型就答一半。显式参数优先，其次模型自己配的，最后全局兜底。
+    """
+    if explicit is not None:
+        return explicit
+    configured = candidate.params.get("max_output_tokens")
+    if isinstance(configured, int | float) and configured > 0:
+        return int(configured)
+    return get_settings().default_max_output_tokens
+
+
 def _usage_of(data: Mapping[str, Any]) -> tuple[int | None, int | None, int | None]:
     usage = data.get("usage")
     if not isinstance(usage, dict):
@@ -179,7 +201,11 @@ def complete(
 
     stream = on_delta is not None
     payload = build_payload(
-        candidate, messages, stream=stream, temperature=temperature, max_tokens=max_tokens
+        candidate,
+        messages,
+        stream=stream,
+        temperature=temperature,
+        max_tokens=output_budget(candidate, max_tokens),
     )
     started = time.perf_counter()
     limits = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
@@ -210,6 +236,7 @@ def complete(
         remaining=reply.remaining,
         latency_ms=elapsed,
         finish_reason=reply.finish_reason,
+        reasoning=reply.reasoning,
     )
 
 
@@ -236,6 +263,7 @@ def _read_once(client: httpx.Client, candidate: Candidate, payload: Mapping[str,
         total_tokens=total_tokens,
         remaining=parse_remaining(response.headers, "tokens"),
         finish_reason=choices[0].get("finish_reason"),
+        reasoning=str(message.get("reasoning_content") or ""),
     )
 
 
@@ -251,6 +279,7 @@ def _read_stream(
     回答作废。真正的失败在 HTTP 状态码上，那条路径照常抛。
     """
     chunks: list[str] = []
+    thinking: list[str] = []
     finish_reason: str | None = None
     prompt_tokens = completion_tokens = total_tokens = None
 
@@ -279,10 +308,15 @@ def _read_stream(
                 prompt_tokens, completion_tokens, total_tokens = got
 
             for choice in frame.get("choices") or []:
-                piece = (choice.get("delta") or {}).get("content")
+                delta = choice.get("delta") or {}
+                piece = delta.get("content")
                 if piece:
                     chunks.append(piece)
                     on_delta(piece)
+                # 思考片段不进 `on_delta`：前端那条流是直接往消息里拼的，混进去就成了定稿正文
+                thought = delta.get("reasoning_content")
+                if thought:
+                    thinking.append(thought)
                 if choice.get("finish_reason"):
                     finish_reason = choice["finish_reason"]
 
@@ -293,4 +327,5 @@ def _read_stream(
         total_tokens=total_tokens,
         remaining=remaining,
         finish_reason=finish_reason,
+        reasoning="".join(thinking),
     )

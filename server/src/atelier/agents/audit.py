@@ -177,6 +177,10 @@ class TurnAudit:
             f"- Latency：{reply.latency_ms} ms\n"
             f"- Finish reason：{reply.finish_reason}\n"
         )
+        # 推理只记字数不记原文：它动辄几千字，写进去就把审计文件撑成了思考日志。而光看字数
+        # 已经能分清空回答是哪一种：推理上千、正文为空是预算烧完了，两边都空是被拦了。
+        if reply.reasoning.strip():
+            usage += f"- 推理字数：{len(reply.reasoning.strip())}\n"
         self._write(f"\n### Response\n\n{_code_block(reply.content, 'markdown')}\n{usage}")
 
     def write_error(self, error: Exception, partial_response: str = "") -> None:

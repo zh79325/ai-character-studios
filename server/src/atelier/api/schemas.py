@@ -229,6 +229,8 @@ class PresetModelOut(Schema):
     api_path: str | None
     limit_kind: str
     default_period: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    """调用参数的预置初值，含上下文窗口 `context_window`，建账号时原样带走。"""
     remark: str | None
 
 

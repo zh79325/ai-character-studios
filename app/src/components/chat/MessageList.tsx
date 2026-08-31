@@ -19,8 +19,8 @@ import type { Message } from '@/types/api'
 
 /** 各 Agent 在气泡上的称谓。表里没有的用面板给的 `who` 兜底。 */
 const WHO: Record<string, string> = {
-  game_designer: '设计师',
-  spec_writer: '设定作者',
+  game_designer: '规范设计师',
+  spec_writer: '角色设计师',
   spec_reviewer: '评审',
   prompt_smith: '提示词师',
   image_t2i: '画师',

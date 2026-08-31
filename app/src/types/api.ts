@@ -94,6 +94,8 @@ export interface PresetModel {
   limit_kind: string
   /** 建议的额度窗口，如 `day+11H`（每天 11 点重置）。 */
   default_period: string
+  /** 调用参数的预置初值，含上下文窗口 `context_window`，建账号时原样带走。 */
+  params: Record<string, unknown>
   remark: string | null
 }
 

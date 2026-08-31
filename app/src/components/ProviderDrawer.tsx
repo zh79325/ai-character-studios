@@ -117,9 +117,10 @@ export default function ProviderDrawer({ open, provider, onClose, onSaved }: Pro
       base_url: preset.base_url,
       driver: preset.driver,
       auth_style: preset.auth_style as FormValues['auth_style'],
-      // 不绑 Agent 的模型永远轮不到，所以按能力先绑上，用户再减
-      models: rowsFromPreset(preset, agentList.data ?? []),
     })
+    // 单独一步：`setFieldsValue` 的递归 Partial 认不了 params 里的 unknown 值
+    // 不绑 Agent 的模型永远轮不到，所以按能力先绑上，用户再减
+    form.setFieldValue('models', rowsFromPreset(preset, agentList.data ?? []))
   }
 
   const save = useMutation({

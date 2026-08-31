@@ -92,6 +92,13 @@ def test_reviewers_declare_verdict_contract() -> None:
         assert get_agent(code).output_contract == "verdict"
 
 
+def test_写设定的那个岗位就叫角色设计师() -> None:
+    """岗位名会直接进提示词，行业里不存在的叫法会拉偏模型的自我定位。"""
+    agent = get_agent("spec_writer")
+    assert agent.role == "角色设计师"
+    assert agent.system_prompt.startswith("你是这个项目的角色设计师（Character Designer）")
+
+
 def test_parse_ok(tmp_path: Path) -> None:
     definition = parse_agent_file(_write(tmp_path, "demo"))
     assert definition.agent_code == "demo"

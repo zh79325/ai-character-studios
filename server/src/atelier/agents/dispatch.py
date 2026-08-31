@@ -28,6 +28,7 @@ from atelier.providers.base import (
     CallOutcome,
     Candidate,
     Decision,
+    EmptyReply,
     ProviderError,
     RetryableError,
 )
@@ -142,9 +143,33 @@ def _drive[Reply](
         if switch == MAX_CANDIDATE_SWITCHES - 1 or reselect is None:
             break
         # 记完账再重选：额度已标满、熔断已打开，select 自然会挑到别人身上
+        previous = current.candidate.provider_model_id
         current = reselect(last_error)
+        if current.candidate.provider_model_id == previous:
+            # 没人可换（只配了一个模型，而这类失败又不熔断）。同一份请求原封不动再发一遍，大
+            # 概率同一个下场，而 prompt 的钱是要再交一次的——直接把原因报给用户。
+            break
 
     raise last_error if last_error is not None else ProviderError("没有可用候选")
+
+
+def _reject_empty(candidate: Candidate, reply: text_chat.ChatReply) -> text_chat.ChatReply:
+    """一字未回的应答当失败算。
+
+    不报 `RetryableError`：同一个模型刚才没说出话，退避几秒再原封不动发一遍大概率还是不说话，
+    有别的候选就直接换人。也不报普通 `ProviderError`：那会把这个模型熔断几分钟，而它并没坏。
+
+    错误文案带上 finish_reason 与用量：空回答最常见的两个因为——输出预算被推理链吃完（length +
+    有推理字数）与内容安全拦截（既没 usage 也没 finish_reason）——靠这两个数字就能分开。
+    """
+    if reply.content.strip():
+        return reply
+    facts = [f"finish_reason={reply.finish_reason or '未给'}"]
+    if reply.completion_tokens:
+        facts.append(f"completion={reply.completion_tokens}")
+    if reply.reasoning.strip():
+        facts.append(f"推理 {len(reply.reasoning.strip())} 字")
+    raise EmptyReply(f"{candidate.label} 返回了空回答（{', '.join(facts)}）")
 
 
 def call(
@@ -159,13 +184,13 @@ def call(
     on_delta: Callable[[str], None] | None = None,
     reselect: Reselect | None = None,
 ) -> text_chat.ChatReply:
-    """发一轮对话。"""
+    """发一轮对话。空回答当失败，跟报错一样换候选（`run` 也走这里，因此评审、翻译一并覆盖）。"""
     body = [dict(one) for one in payload]
     return _drive(
         runtime,
         agent_code,
         decision,
-        lambda candidate: chat(candidate, body, on_delta=on_delta),
+        lambda candidate: _reject_empty(candidate, chat(candidate, body, on_delta=on_delta)),
         outcome_of,
         limit_kind="tokens",
         project_code=project_code,

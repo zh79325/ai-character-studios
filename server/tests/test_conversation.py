@@ -278,6 +278,28 @@ def test_没回完的那几条不进下一轮的上下文(
     assert not any("空回答" in one["content"] for one in chat.calls[-1])
 
 
+def test_失败轮留一句占位保住一问一答(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """只滤掉炸了的那条回答，剩下的就是连着几条 user 在说话、一条回答也没有，模型很容易
+    把上一句当成被忽略了。换成一句固定占位：交替还在，也看得出那一轮确实没给出东西。
+
+    附带一件事：空回答不能把这个模型熔断，否则只配了一个模型的人重发一句就发不出去了。
+    """
+    conversation = start_project_talk(project_db)
+    with pytest.raises(Exception, match="空回答"):
+        send(project_db, session, project, conversation, "这一句炸了", ScriptedChat("   "))
+
+    chat = ScriptedChat("这回答得上")
+    send(project_db, session, project, conversation, "再聊一句", chat)
+
+    assert [one["role"] for one in chat.calls[-1]] == ["system", "user", "assistant", "user"]
+    assert chat.calls[-1][2]["content"] == engine.FAILED_TURN_PLACEHOLDER
+    # 库里那行还是当时的错误文本，用户展开还要看
+    failed = [m for m in engine.messages_of(project_db, conversation.id) if m.status == "failed"]
+    assert failed and engine.FAILED_TURN_PLACEHOLDER not in failed[0].content
+
+
 def test_丢弃草稿后还能接着聊(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
@@ -487,14 +509,14 @@ def test_消息没多到要折时一条也不折(
     assert not any(m.folded for m in engine.messages_of(project_db, conversation.id))
 
 
-def test_摘要为空就停手不空转(
+def test_折叠压不出摘要就报错不静默降级(
     project_db: Session,
     project: ProjectRef,
     session: Session,
     candidate: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """模型压不出摘要时继续折也压不下来，别在这儿转满上限。"""
+    """摘要是空的就意味着那几轮对话要么丢得无声无息、要么又超预算发出去，那得让用户知道。"""
     conversation = start_project_talk(project_db)
     chat = ScriptedChat()
     for i in range(1, 5):
@@ -508,8 +530,10 @@ def test_摘要为空就停手不空转(
     with pytest.raises(Exception, match="空回答"):
         send(project_db, session, project, conversation, "第五轮", chat)
 
-    # 折叠只试了一次就收手，没有把 MAX_FOLD_ROUNDS 跑满
-    assert len(chat.calls) - calls_before == 2
+    # 折叠那一次就报了，不会拿着空摘要接着往下跑，也没把 MAX_FOLD_ROUNDS 转满
+    assert len(chat.calls) - calls_before == 1
+    # 压缩没成就不算折过：原文还在，下一轮还能重新折
+    assert not any(m.folded for m in engine.messages_of(project_db, conversation.id))
 
 
 # --------------------------------------------------------------------------- #
@@ -602,6 +626,44 @@ def test_角色会话不看项目配置(project_db: Session, project: ProjectRef
     send(project_db, session, project, conversation, "写设定", chat)
 
     assert "项目配置现状" not in chat.system_of_last
+
+
+def test_角色会话带上项目美术规范(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    """世界观只写在 art bible 里，不带就只能凭用户那几句自己编一套风格。"""
+    bind_text_model(session, WRITER)
+    make_character(project_db)
+    project.absolute("art-bible.md").write_text(
+        "# 视觉规范\n冷光下的湿滑金属。\n", encoding="utf-8"
+    )
+    conversation = engine.start(
+        project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
+    )
+    chat = ScriptedChat("知道了。")
+
+    send(project_db, session, project, conversation, "写设定", chat)
+
+    system = chat.system_of_last
+    assert "项目美术规范" in system
+    assert "湿滑金属" in system
+    # 规范是约束，得摆在角色自己那份定稿前面（提示词正文里也提到这两个词，只认小节标题）
+    assert system.index("## 项目美术规范") < system.index("## 当前定稿全文")
+
+
+def test_立项会话不把美术规范带两份(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """立项会话的定稿本身就是 art bible，再带一份是同一段文字占两份预算。"""
+    project.absolute("art-bible.md").write_text("# 视觉规范\n冷光。\n", encoding="utf-8")
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat("知道了。")
+
+    send(project_db, session, project, conversation, "接着聊", chat)
+
+    system = chat.system_of_last
+    assert "当前定稿全文" in system
+    assert "项目美术规范" not in system
 
 
 def test_立项会话只写得了项目根上那两份(project_db: Session, project: ProjectRef) -> None:

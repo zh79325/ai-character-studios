@@ -15,6 +15,8 @@ export interface ModelRow {
   api_path: string | null
   limit_kind: string
   remark: string | null
+  /** 预设带来的调用参数（含上下文窗口 `context_window`），原样进库。 */
+  params: Record<string, unknown>
   /** 取消勾选就不建这个模型。 */
   picked: boolean
   /** 额度上限；留空或 0 就是不限量。 */
@@ -37,6 +39,7 @@ export function rowsFromPreset(preset: ProviderPreset, agents: AgentDef[]): Mode
     api_path: one.api_path,
     limit_kind: one.limit_kind,
     remark: one.remark,
+    params: one.params ?? {},
     picked: true,
     max_value: null,
     period_expr: one.default_period,
@@ -53,7 +56,7 @@ export function toModelIn(row: ModelRow): ModelIn {
     api_path: row.api_path,
     enabled: true,
     sort_no: 0,
-    params: {},
+    params: row.params ?? {},
     remark: row.remark,
     agents: row.agents,
     limits: row.max_value

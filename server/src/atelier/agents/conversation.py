@@ -43,7 +43,7 @@ from atelier.db.project_models import (
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict, Interrupted, NotFound
 from atelier.providers import router, text_chat
-from atelier.providers.base import Decision, ProviderError
+from atelier.providers.base import Candidate, Decision, ProviderError
 from atelier.settings import get_settings
 
 _log = structlog.get_logger(__name__)
@@ -54,7 +54,9 @@ THINKING = "thinking"
 DONE = "done"
 FAILED = "failed"
 CANCELLED = "cancelled"
-"""assistant 消息的四种下场。只有 `DONE` 进上下文：没回完的那条里一个字也没有。"""
+"""assistant 消息的四种下场。`THINKING` 不进上下文（里面一个字也没有），炸了与被中断的换成占位。"""
+
+FAILED_TURN_PLACEHOLDER = "（这一轮调用失败，没有给出回答）"
 
 INTERRUPTED_REASON = "这一轮被你中断了"
 
@@ -119,11 +121,16 @@ class ContextInputs:
     addendum: str | None = None
     artifact_path: str | None = None
     artifact_text: str | None = None
+    art_bible_path: str | None = None
+    art_bible_text: str | None = None
     config_path: str | None = None
     config_text: str | None = None
     project_memories: list[ProjectMemory] = field(default_factory=list)
     memory: ConversationMemory | None = None
-    messages: list[Message] = field(default_factory=list)
+    messages: list[context.MessageLike] = field(default_factory=list)
+    """进上下文的那几条。失败轮在这里是占位而不是库里的原行，所以只按协议读，不当 ORM 用。"""
+    rows: dict[int, Message] = field(default_factory=dict)
+    """turn_no 到库里真实行的映射。折叠要把 `folded` 落到真实行上，改占位副本是白改。"""
 
 
 # --------------------------------------------------------------------------- #
@@ -514,9 +521,72 @@ def addendum(project: Session, agent_code: str) -> str | None:
     return row.content if row is not None else None
 
 
+def _art_bible_for(ref: ProjectRef, conversation: Conversation) -> tuple[str | None, str | None]:
+    """这场会话要额外带上的项目美术规范。
+
+    只给角色这类子目标的会话：立项会话的定稿本身就是 `art-bible.md`，再带一份就是同一段文字
+    占两份预算，而且两段内容一旦不一致（草稿还没沉淀时就会）模型不知道该信哪一份。
+
+    角色会话必须带：角色设计得跟项目世界观对得上，而那份只写在 art-bible 里。不带的后果是
+    模型只能凭用户那几句话自己编一套风格，出来的设定看着没错但跟项目对不上。
+    """
+    if conversation.target_kind == "project":
+        return None, None
+    config = projects.read_config(ref.dir)
+    path = layout.art_bible_path(ref.dir, config.art_bible)
+    if not path.is_file():
+        return None, None
+    return config.art_bible, path.read_text(encoding="utf-8")
+
+
+@dataclass(slots=True)
+class _FailedTurn:
+    """失败轮在上下文里的占位。
+
+    不拿 ORM 行改一份副本：库里那行存的是当时的错误文本（用户展开还要看），而游离的 ORM
+    对象拖在手里只会让人分不清哪一份会落库。
+    """
+
+    turn_no: int
+    role: str
+    content: str
+    folded: bool
+
+
+def _placeholder_of(message: Message) -> _FailedTurn:
+    return _FailedTurn(
+        turn_no=message.turn_no,
+        role=message.role,
+        content=FAILED_TURN_PLACEHOLDER,
+        folded=message.folded,
+    )
+
+
+def _history_for_context(messages: list[Message]) -> list[context.MessageLike]:
+    """进上下文的历史消息。
+
+    没回完的（thinking）丢掉：它的 content 本来就是空的，发过去就是一句空回答。
+
+    炸了、被中断的不能跟着丢——那一轮的 user 消息是 DONE、assistant 是 FAILED，只滤后者会留下
+    连续几条 user 说话、一条回答也没有的序列，模型看到这种很容易把上一句当成被忽略。改成把
+    回答换成一句固定占位：交替还在，模型也看得出那一轮确实没给出东西。
+    """
+    kept: list[context.MessageLike] = []
+    for one in messages:
+        if one.status == THINKING:
+            continue
+        if one.status in (FAILED, CANCELLED) and one.role == "assistant":
+            kept.append(_placeholder_of(one))
+            continue
+        kept.append(one)
+    return kept
+
+
 def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> ContextInputs:
     agent = get_agent(orchestrator.actor_for(conversation))
     artifact_path, artifact_text = artifact_of(project, ref, conversation)
+    art_bible_path, art_bible_text = _art_bible_for(ref, conversation)
+    history = messages_of(project, conversation.id)
     # 只有立项会话改得动 project.json，角色会话看见它也用不上，白占预算
     is_project = conversation.target_kind == "project"
     return ContextInputs(
@@ -524,28 +594,43 @@ def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> Co
         addendum=addendum(project, conversation.agent_code),
         artifact_path=artifact_path,
         artifact_text=artifact_text,
+        art_bible_path=art_bible_path,
+        art_bible_text=art_bible_text,
         config_path=layout.PROJECT_JSON if is_project else None,
         config_text=config_snapshot(ref) if is_project else None,
         project_memories=enabled_memories(project, memory_scope(conversation)),
         memory=memory_of(project, conversation.id),
-        # 没回完、炸了、被中断的那几条不往上下文里放：内容本来就是空的，发过去就是一句空回答
-        messages=[one for one in messages_of(project, conversation.id) if one.status == DONE],
+        messages=_history_for_context(history),
+        rows={one.turn_no: one for one in history},
     )
 
 
-def _assemble(inputs: ContextInputs) -> context.Assembled:
+def _assemble(inputs: ContextInputs, candidate: Candidate | None = None) -> context.Assembled:
+    """本轮的消息与预算。
+
+    得知道这一轮落在哪个候选上：上下文预算按那个模型的窗口算，换了候选预算也跟着变。
+    拿不到候选（测试里直接拼上下文）就回落 Agent 自己写的保守预算。
+    """
     settings = get_settings()
+    window = candidate.params.get("context_window") if candidate is not None else None
     return context.assemble(
         inputs.agent,
         inputs.messages,
         addendum=inputs.addendum,
         artifact_path=inputs.artifact_path,
         artifact_text=inputs.artifact_text,
+        art_bible_path=inputs.art_bible_path,
+        art_bible_text=inputs.art_bible_text,
         config_path=inputs.config_path,
         config_text=inputs.config_text,
         project_memories=inputs.project_memories,
         memory=inputs.memory,
         recent_turns=settings.recent_turns,
+        budget=context.effective_budget(
+            inputs.agent,
+            int(window) if isinstance(window, int | float) else None,
+            settings.context_budget_ratio,
+        ),
     )
 
 
@@ -619,7 +704,7 @@ def send(
         folded = _fold_until_fits(
             project, runtime, ref, conversation, inputs, decision, caller, turn_audit
         )
-        assembled = _assemble(inputs)
+        assembled = _assemble(inputs, decision.candidate)
 
         on_delta = _delta_publisher(conversation.id) if stream else None
         reply = _call(
@@ -635,9 +720,8 @@ def send(
             turn_audit,
         )
 
+        # 空回答不在这里拦：它得算这个候选没干成活儿，得在 dispatch 里招下一个候选重试
         content = reply.content.strip()
-        if not content:
-            raise ProviderError(f"{decision.candidate.label} 返回了空回答")
     except Exception as exc:
         # 炸了也要说一声：订流的那头只认这条广播，不发它前端就一直等着字出现
         if isinstance(exc, Interrupted) or BUS.cancel_requested(conversation.id):
@@ -780,8 +864,10 @@ def _call(
 
     def rebind(error: ProviderError) -> Decision:
         picked = _select(runtime, project, ref, conversation, agent)
-        conversation.rebind_reason = str(error)[:255]
-        project.commit()
+        # 选回同一个候选就不写原因：绑定根本没换，记上只会让人以为刚才换过人
+        if picked.candidate.provider_model_id != decision.candidate.provider_model_id:
+            conversation.rebind_reason = str(error)[:255]
+            project.commit()
         return picked
 
     payload = assembled.payload()
@@ -839,7 +925,7 @@ def _fold_until_fits(
     folded: list[int] = []
 
     for _ in range(MAX_FOLD_ROUNDS):
-        assembled = _assemble(inputs)
+        assembled = _assemble(inputs, decision.candidate)
         # 窗口外的一定要折（不折就真丢了），超预算那批跟它们合成一次压缩，省一轮调用
         plan = set(context.overflow_turns(inputs.messages, recent_turns))
         plan.update(context.fold_plan(assembled))
@@ -861,30 +947,31 @@ def _fold_until_fits(
         if turn_audit is not None:
             turn_audit.write_request("上下文折叠", decision.candidate, payload)
         try:
-            reply = chat(decision.candidate, payload)
+            # 走 dispatch 而不是直接 chat：折叠跟主回答一样会遇限流与空回答，自己发就没了重试、
+            # 换候选与记账。候选变了不回写会话绑定：这只是一次内部压缩，不该改变主对话粘在谁身上。
+            reply = dispatch.call(
+                runtime,
+                inputs.agent.agent_code,
+                decision,
+                payload,
+                chat,
+                project_code=ref.code,
+            )
         except Exception as exc:
             if turn_audit is not None:
                 turn_audit.write_error(exc)
             raise
         if turn_audit is not None:
             turn_audit.write_response(reply)
-        summary = reply.content.strip()
-        if not summary:
-            _log.warning("fold_empty_summary", conversation=conversation.id)
-            break
 
-        memory.summary = summary
+        memory.summary = reply.content.strip()
         memory.folded_turns += len(victims)
         for message in victims:
             message.folded = True
+            row = inputs.rows.get(message.turn_no)
+            if row is not None:
+                row.folded = True
         folded.extend(m.turn_no for m in victims)
-        router.report_success(
-            runtime,
-            inputs.agent.agent_code,
-            decision,
-            dispatch.outcome_of(reply),
-            project_code=ref.code,
-        )
         project.commit()
         _log.info(
             "conversation_folded",

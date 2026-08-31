@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,7 @@ import respx
 
 from atelier.providers import text_chat
 from atelier.providers.base import Candidate, ProviderError, QuotaExhausted, RetryableError
+from atelier.settings import get_settings
 
 URL = "https://example.invalid/v1/chat/completions"
 
@@ -74,6 +76,20 @@ def test_非流式不加usage开关() -> None:
 
     assert "stream_options" not in payload
     assert payload["temperature"] == 0.3
+
+
+def test_输出预算按模型自己配的算() -> None:
+    """从不传 max_tokens 的后果不是花钱，是各家默认值差得离谱，同一段提示词换个模型就答一半。"""
+    assert text_chat.output_budget(candidate(params={"max_output_tokens": 32768}), None) == 32768
+
+
+def test_模型没配输出预算就用全局兜底() -> None:
+    assert text_chat.output_budget(candidate(), None) == get_settings().default_max_output_tokens
+
+
+def test_显式传的输出预算优先() -> None:
+    """调用方比配置更知道这一次要多长（比如只要一句摘要）。"""
+    assert text_chat.output_budget(candidate(params={"max_output_tokens": 32768}), 512) == 512
 
 
 # --------------------------------------------------------------------------- #
@@ -177,6 +193,56 @@ def test_坏帧跳过而不是整轮作废() -> None:
     reply = text_chat.complete(candidate(), MESSAGES, on_delta=lambda _: None)
 
     assert reply.content == "前半后半"
+
+
+@respx.mock
+def test_每次调用都带上输出上限() -> None:
+    """不传就是任由供应商的默认值说算，那个值换个模型就变。"""
+    route = respx.post(URL).respond(json={"choices": [{"message": {"content": "好"}}]})
+
+    text_chat.complete(candidate(params={"max_output_tokens": 4096}), MESSAGES)
+
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 4096
+
+
+@respx.mock
+def test_非流式收下推理内容但不并进正文() -> None:
+    """推理是解释空回答的唯一线索，丢了就只能猜；混进正文又会污染定稿。"""
+    respx.post(URL).respond(
+        json={
+            "choices": [
+                {
+                    "message": {"content": "", "reasoning_content": "想了很久"},
+                    "finish_reason": "length",
+                }
+            ]
+        }
+    )
+
+    reply = text_chat.complete(candidate(), MESSAGES)
+
+    assert reply.content == ""
+    assert reply.reasoning == "想了很久"
+
+
+@respx.mock
+def test_流式的推理片段不往前端推() -> None:
+    """前端那条流是直接往消息里拼的，混进去就成了定稿正文。"""
+    respx.post(URL).respond(
+        text=sse(
+            '{"choices": [{"delta": {"reasoning_content": "先想想"}}]}',
+            '{"choices": [{"delta": {"content": "冷光金属"}, "finish_reason": "stop"}]}',
+            "[DONE]",
+        ),
+        headers={"content-type": "text/event-stream"},
+    )
+    pieces: list[str] = []
+
+    reply = text_chat.complete(candidate(), MESSAGES, on_delta=pieces.append)
+
+    assert pieces == ["冷光金属"]
+    assert reply.content == "冷光金属"
+    assert reply.reasoning == "先想想"
 
 
 # --------------------------------------------------------------------------- #

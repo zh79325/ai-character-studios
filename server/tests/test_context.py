@@ -141,6 +141,49 @@ def test_没给配置就不出这一段() -> None:
     assert "项目配置现状" not in assembled.messages[0].content
 
 
+def test_美术规范摆在当前定稿前面() -> None:
+    """规范是约束，得先看见约束再看手里这份稿子，否则容易顺着旧稿的口径接着写。"""
+    assembled = context.assemble(
+        agent(),
+        [],
+        art_bible_path="art-bible.md",
+        art_bible_text="# 视觉规范\n冷光金属。",
+        artifact_path="characters/孙悟空/孙悟空角色设定.md",
+        artifact_text="# 孙悟空",
+    )
+    system = assembled.messages[0].content
+
+    assert system.index("项目美术规范") < system.index("当前定稿全文")
+    assert "冷光金属" in system
+
+
+def test_没美术规范就不出这一段() -> None:
+    """空文件不能摆一个光标题：模型会以为项目真的声明了「没有任何风格要求」。"""
+    assembled = context.assemble(agent(), [], art_bible_path="art-bible.md", art_bible_text="  ")
+
+    assert "项目美术规范" not in assembled.messages[0].content
+
+
+# --------------------------------------------------------------------------- #
+# 预算
+# --------------------------------------------------------------------------- #
+
+
+def test_窗口已知就按窗口的比例给预算() -> None:
+    """1M 窗口的模型拿 24k 预算干活，明明装得下却每几轮就去折一次，每折一次多一层转述。"""
+    assert context.effective_budget(agent(budget=24000), 1000000, 0.7) == 700000
+
+
+def test_窗口不知道就回落_Agent自己写的预算() -> None:
+    assert context.effective_budget(agent(budget=24000), None, 0.7) == 24000
+    assert context.effective_budget(agent(budget=24000), 0, 0.7) == 24000
+
+
+def test_窗口比Agent预算小时听窗口的() -> None:
+    """窗口是硬上限，拍得比它大只会把包发成超限。"""
+    assert context.effective_budget(agent(budget=24000), 8192, 0.7) == 5734
+
+
 def test_空的会话记忆不产生空段落() -> None:
     assembled = context.assemble(agent(), [], memory=FakeMemory())
     system = assembled.messages[0].content

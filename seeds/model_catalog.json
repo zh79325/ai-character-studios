@@ -12,6 +12,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 262144 },
     "remark": "在方舟开通管理页切换实际模型，切换后 3-5 分钟生效，支持 Auto 模式。切勿把 base_url 配成 /api/v3，那不消耗套餐额度而是另行计费"
   },
   {
@@ -27,6 +28,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "Coding Plan 套餐内模型，适合 game_designer / spec_writer 长对焦"
   },
   {
@@ -42,6 +44,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 256000 },
     "remark": "速度优先，适合 spec_reviewer / prompt_smith 等单次调用"
   },
   {
@@ -57,6 +60,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 256000 },
     "remark": "轻量档，适合会话摘要压缩这类低价值调用"
   },
   {
@@ -72,6 +76,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "Coding Plan 套餐内第三方模型"
   },
   {
@@ -87,6 +92,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "别名 glm-latest"
   },
   {
@@ -102,6 +108,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "Coding Plan 套餐内第三方模型"
   },
   {
@@ -117,6 +124,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "Coding Plan 套餐内第三方模型"
   },
   {
@@ -132,6 +140,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 1000000 },
     "remark": "Coding Plan 套餐内第三方模型"
   },
   {
@@ -147,6 +156,7 @@
     "api_path": "/api/coding/v3",
     "auth_style": "bearer",
     "key_prefix": null,
+    "params": { "context_window": 262144 },
     "remark": "Coding Plan 套餐内第三方模型"
   },
   {
@@ -387,6 +397,7 @@
     "api_path": "/compatible-mode/v1",
     "auth_style": "bearer",
     "key_prefix": "sk-sp-",
+    "params": { "context_window": 1000000 },
     "remark": "系列名，确切 model_id 以百炼模型列表为准。另有 Anthropic 兼容端点 /apps/anthropic。内置 Harness 工具仅在 Responses API 下触发，Chat Completions 调用不消耗 Harness 额度"
   },
   {
@@ -402,6 +413,7 @@
     "api_path": "/compatible-mode/v1",
     "auth_style": "bearer",
     "key_prefix": "sk-sp-",
+    "params": { "context_window": 1000000 },
     "remark": "系列名，确切 model_id 以百炼模型列表为准"
   },
   {
@@ -507,6 +519,7 @@
     "api_path": "/compatible-mode/v1",
     "auth_style": "bearer",
     "key_prefix": "sk-",
+    "params": { "context_window": 131072 },
     "remark": "vision_reviewer 用。Token Plan 与 Coding Plan 文档均未列 vision 模型，四视图逐条校验需另配按量 key，按量 key 与套餐 key 完全隔离、不可混用"
   },
   {

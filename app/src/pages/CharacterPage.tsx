@@ -82,7 +82,7 @@ export default function CharacterPage() {
           onActiveChange={setConversationId}
           handoff={handoff}
           heading="设定对焦"
-          who="设定作者"
+          who="角色设计师"
           starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
         />
 

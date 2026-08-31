@@ -13,6 +13,7 @@ from atelier.db.runtime_models import CircuitBreaker, ModelLimit, ProviderModel,
 from atelier.providers import router, usage
 from atelier.providers.base import (
     CallOutcome,
+    EmptyReply,
     NoCandidateError,
     ProviderError,
     QuotaExhausted,
@@ -346,6 +347,19 @@ def test_rate_limit_does_not_open_the_breaker(session: Session) -> None:
 
     router.report_failure(session, AGENT, decision, RetryableError("HTTP 429 限流"))
     assert not router.is_open(session, model.id)
+
+
+def test_empty_reply_does_not_open_the_breaker(session: Session) -> None:
+    """模型本身是通的，只是这一句没说出来；关它几分钟会连带下一句正常提问也发不出去。"""
+    provider = make_provider(session, "p1")
+    model = make_model(session, provider, "m1", agent_code=AGENT)
+    decision = router.select_candidate(session, AGENT)
+
+    router.report_failure(session, AGENT, decision, EmptyReply("p1/m1 返回了空回答"))
+
+    assert not router.is_open(session, model.id)
+    # 不熔断不等于不记账：后面排查「这个模型老不说话」靠的就是这条
+    assert _logs(session)[-1].outcome == "failed"
 
 
 def test_retry_attempts_leave_a_trail(session: Session) -> None:

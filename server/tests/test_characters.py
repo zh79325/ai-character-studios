@@ -183,9 +183,7 @@ def test_覆盖删旧重建_id不变且旧事件清掉(project: ProjectRef, proj
 
     assert fresh.id == old_id  # dir_name 没变，id 由它派生
     assert not (project.absolute(fresh.dir_name) / "images" / "旧图.png").exists()
-    assert [one.event for one in task_events.history(project_db, fresh.id)] == [
-        "character_created"
-    ]
+    assert [one.event for one in task_events.history(project_db, fresh.id)] == ["character_created"]
 
 
 def test_取不到的角色是找不到而不是空(project_db: Session) -> None:

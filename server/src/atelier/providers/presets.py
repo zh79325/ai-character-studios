@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ class PresetModel:
     api_path: str | None
     limit_kind: str
     default_period: str
+    params: dict[str, Any]
     remark: str | None
 
 
@@ -107,6 +109,7 @@ def list_presets(session: Session) -> list[Preset]:
                         api_path=row.api_path,
                         limit_kind=row.limit_kind,
                         default_period=row.default_period,
+                        params=dict(row.params or {}),
                         remark=row.remark,
                     )
                     for row in group

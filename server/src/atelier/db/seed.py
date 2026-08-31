@@ -4,6 +4,9 @@
     uv run atelier-seed --only model_catalog
     uv run atelier-seed --prune            # 同时删掉 seeds 里已不存在的记录
 
+灌完型号目录还会把其中的客观参数（如上下文窗口）回补进运行库已建好的账号，否则老账号
+得靠人在设置页一个个手填。只单跑这一步：`--only provider_models`。
+
 提示词不走这里：工程级提示词是代码资产，住在 atelier/prompts/，运行时直读文件，
 改完即生效，不入库也不必重跑本命令。
 """
@@ -22,7 +25,8 @@ from sqlalchemy.orm import Session
 from atelier.settings import get_settings
 
 from .config_models import AssetCategory, MeshyAction, ModelCatalog, WorkflowDef
-from .session import config_session
+from .runtime_models import ProviderModel
+from .session import config_session, runtime_session
 
 
 def _load_json(path: Path) -> Any:
@@ -99,6 +103,32 @@ def _seed_json_table(
             report.bump(table, "pruned")
 
 
+def _backfill_provider_models(
+    session: Session, report: SeedReport, catalog: dict[str, dict[str, Any]]
+) -> None:
+    """把型号目录里的客观参数回补进已建好的账号。
+
+    上下文窗口这类参数是模型自带的事实，用户建账号时预设还没带它、或者账号是手工建的，库里就
+    缺这一项。缺了只是回落到 Agent 的保守预算，不会报错——所以必须主动补，否则没人知道自己
+    正拿 24k 的预算调一个 1M 窗口的模型。
+
+    已有值一律不动：用户在设置页改过的数字比 seeds 更懂自己的账号。
+    """
+    if not catalog:
+        return
+    for model in session.scalars(select(ProviderModel)).all():
+        preset = catalog.get(model.model_id)
+        if not preset:
+            continue
+        missing = {k: v for k, v in preset.items() if k not in model.params}
+        if not missing:
+            report.bump("provider_models", "unchanged")
+            continue
+        # JSON 列认的是整个对象，原地改 key 不会被 flush
+        model.params = {**model.params, **missing}
+        report.bump("provider_models", "updated")
+
+
 def seed_all(only: str | None = None, prune: bool = False) -> SeedReport:
     settings = get_settings()
     seeds = settings.seeds_dir
@@ -106,14 +136,10 @@ def seed_all(only: str | None = None, prune: bool = False) -> SeedReport:
 
     meshy_raw = _load_json(seeds / "meshy_actions.json")
     meshy_rows = meshy_raw.get("actions") if isinstance(meshy_raw, dict) else meshy_raw
+    catalog_rows = _load_json(seeds / "model_catalog.json")
 
     plan: list[tuple[str, type[Any], Sequence[str], Any]] = [
-        (
-            "model_catalog",
-            ModelCatalog,
-            ("vendor", "plan", "model_id"),
-            _load_json(seeds / "model_catalog.json"),
-        ),
+        ("model_catalog", ModelCatalog, ("vendor", "plan", "model_id"), catalog_rows),
         ("meshy_actions", MeshyAction, ("action_id",), meshy_rows),
         ("asset_categories", AssetCategory, ("code",), _load_json(seeds / "asset_categories.json")),
         ("workflow_defs", WorkflowDef, ("code",), _load_json(seeds / "workflow_defs.json")),
@@ -132,6 +158,16 @@ def seed_all(only: str | None = None, prune: bool = False) -> SeedReport:
                 rows=rows,
                 prune=prune,
             )
+
+    if only in (None, "provider_models"):
+        params_by_model = {
+            row["model_id"]: row["params"]
+            for row in (catalog_rows or [])
+            if isinstance(row.get("params"), dict) and row["params"]
+        }
+        with runtime_session() as session:
+            _backfill_provider_models(session, report, params_by_model)
+
     return report
 
 
@@ -144,6 +180,7 @@ def main() -> None:
             "meshy_actions",
             "asset_categories",
             "workflow_defs",
+            "provider_models",
         ],
         default=None,
     )
