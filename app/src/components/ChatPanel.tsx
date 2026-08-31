@@ -10,6 +10,9 @@
  *
  * 聊过的每一条都摆在消息区里，向上滚就能回看，折进摘要的那几条只是淡一档并标一句「已折进摘要」
  * ——它们没被删，只是不再进上下文。收起来会让人以为聊过的东西丢了。
+ *
+ * 气泡里只摆给人看的那几段话：结构块（草稿、待选项、命名建议、进度）各自在界面上已经有位置，
+ * 原文再摆一遍就是同一件事看两遍。
  */
 import { PlusOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -41,6 +44,7 @@ import {
 import ChoicePicker from '@/components/ChoicePicker'
 import DraftDiffPanel from '@/components/DraftDiffPanel'
 import MarkdownText from '@/components/MarkdownText'
+import { visibleText } from '@/lib/message'
 import type { Conversation, ConversationDetail, Message, TargetKind } from '@/types/api'
 
 interface Props {
@@ -298,71 +302,74 @@ export default function ChatPanel({
             </Empty>
           )
         ) : (
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            {conversation && (
-              <Space size={6} wrap>
-                <Tag color="blue">{conversation.bound_provider_label}</Tag>
-                {conversation.rebind_count > 0 && (
-                  <Tag color="orange" title={conversation.rebind_reason ?? undefined}>
-                    换过 {conversation.rebind_count} 次服务商
-                  </Tag>
-                )}
-              </Space>
-            )}
-            {detail.data?.memory.summary && (
-              <Alert
-                type="info"
-                message="前几轮的摘要"
-                description={
-                  <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                    <span>{detail.data.memory.summary}</span>
-                    {detail.data.memory.open_questions.length > 0 && (
-                      <span>还没定：{detail.data.memory.open_questions.join('；')}</span>
-                    )}
-                  </Space>
-                }
+          // 待选项抽屉贴着这一层往上抽，盖住输入框与消息区；relative 是它的定位锚
+          <div style={{ position: 'relative', overflow: 'hidden' }}>
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {conversation && (
+                <Space size={6} wrap>
+                  <Tag color="blue">{conversation.bound_provider_label}</Tag>
+                  {conversation.rebind_count > 0 && (
+                    <Tag color="orange" title={conversation.rebind_reason ?? undefined}>
+                      换过 {conversation.rebind_count} 次服务商
+                    </Tag>
+                  )}
+                </Space>
+              )}
+              {detail.data?.memory.summary && (
+                <Alert
+                  type="info"
+                  message="前几轮的摘要"
+                  description={
+                    <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                      <span>{detail.data.memory.summary}</span>
+                      {detail.data.memory.open_questions.length > 0 && (
+                        <span>还没定：{detail.data.memory.open_questions.join('；')}</span>
+                      )}
+                    </Space>
+                  }
+                />
+              )}
+              <MessageList
+                messages={messages}
+                pending={pending}
+                streaming={streaming}
+                loading={detail.isLoading}
+                briefing={detail.data?.briefing ?? ''}
+                briefingBlank={detail.data?.briefing_blank ?? false}
+                height={draftsAside ? 560 : 420}
               />
-            )}
-            <MessageList
-              messages={messages}
-              pending={pending}
-              streaming={streaming}
-              loading={detail.isLoading}
-              briefing={detail.data?.briefing ?? ''}
-              briefingBlank={detail.data?.briefing_blank ?? false}
-              height={draftsAside ? 560 : 420}
-            />
-            <ChoicePicker
-              groups={detail.data?.choices ?? []}
-              disabled={send.isPending}
-              onSubmit={dispatch}
-            />
-            <Input.TextArea
-              value={input}
-              rows={3}
-              disabled={send.isPending}
-              placeholder={
-                send.isPending
-                  ? '等设计师回这一轮，回完再接着说'
-                  : '说清你要什么。Enter 发送，Shift+Enter 换行'
-              }
-              onChange={(event) => setInput(event.target.value)}
-              onPressEnter={(event) => {
-                if (event.shiftKey) return
-                event.preventDefault()
-                submit()
-              }}
-            />
-            <Button
-              type="primary"
-              block
-              loading={send.isPending}
-              disabled={send.isPending}
-              onClick={submit}
-            >
-              {send.isPending ? '等回话' : '发送'}
-            </Button>
-          </Space>
+              <ChoicePicker
+                groups={detail.data?.choices ?? []}
+                disabled={send.isPending}
+                onSubmit={dispatch}
+              />
+              <Input.TextArea
+                value={input}
+                rows={3}
+                disabled={send.isPending}
+                placeholder={
+                  send.isPending
+                    ? '等设计师回这一轮，回完再接着说'
+                    : '说清你要什么。Enter 发送，Shift+Enter 换行'
+                }
+                onChange={(event) => setInput(event.target.value)}
+                onPressEnter={(event) => {
+                  if (event.shiftKey) return
+                  event.preventDefault()
+                  submit()
+                }}
+              />
+              <Button
+                type="primary"
+                block
+                loading={send.isPending}
+                disabled={send.isPending}
+                onClick={submit}
+              >
+                {send.isPending ? '等回话' : '发送'}
+              </Button>
+            </Space>
+          </div>
         )}
       </Card>
       {chosen === null ? (
@@ -423,6 +430,24 @@ function conversationLabel(one: Conversation): string {
 const BUBBLE: Record<string, { background: string; align: string }> = {
   user: { background: '#e6f4ff', align: 'flex-end' },
   assistant: { background: '#fafafa', align: 'flex-start' },
+}
+
+/**
+ * 一条助手消息的正文。
+ *
+ * 结构块已经在草稿区、待选项抽屉与立项收口上各自摆过了，这里只给剩下的话。整轮全是块的时候
+ * 报一句去哪里看，而不是留一个空气泡。
+ */
+function Body({ text }: { text: string }) {
+  const body = visibleText(text)
+  if (body === '') {
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        这一轮的东西都在草稿与待选项里
+      </Typography.Text>
+    )
+  }
+  return <MarkdownText text={body} />
 }
 
 function MessageList({
@@ -530,7 +555,7 @@ function MessageList({
                     已折进摘要 ·{' '}
                   </Typography.Text>
                 )}
-                {one.role === 'user' ? one.content : <MarkdownText text={one.content} />}
+                {one.role === 'user' ? one.content : <Body text={one.content} />}
               </div>
             </div>
           )
@@ -572,7 +597,7 @@ function MessageList({
                   </Typography.Text>
                 </Space>
               ) : (
-                <MarkdownText text={streaming} />
+                <Body text={streaming} />
               )}
             </div>
           </div>

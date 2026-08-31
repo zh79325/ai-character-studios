@@ -1,12 +1,17 @@
 /**
- * 待选项面板。
+ * 待选项抽屉。
  *
  * Agent 一次给完建议，剩下要用户拍板的几处摆在这儿点，一轮最多四项（后端截的）。以前这些
  * 分歧写在正文里（「你倾向 A 还是 B」），用户得把选项文字手抄回输入框——抄错一个字，模型
  * 下一轮就照错的那个往下写。
  *
- * 每项都留了「其他」与一句补充：列出来的几个选项覆盖不到用户真正想要的时候，逼他在这几个里
- * 挑一个等于替他改了需求。自填值与补充都原样拼进那句话，Agent 下一轮照着它对。
+ * 摆成从底部抽出来的抽屉，而不是夹在输入框上面的卡片：选项文字是模型写的整句，四项一起铺在
+ * 消息区与输入框中间会把两头都挤没了。抽屉盖住它们，按钮固定在底，选项再长也只是抽屉里滚。
+ *
+ * 一项一行、一个选项一行：选项之间长短差得远，横着排会折成参差的几行，看着像分组错位。
+ *
+ * 每项都留了「其他」：列出来的几个覆盖不到用户真正想要的时候，逼他在这几个里挑一个等于替他改
+ * 了需求。选了「其他」就只写自填值，不再多给一个补充框——同一件事两个框，用户得猜该写哪个。
  *
  * 点完拼出来的那句话用的是 Agent 自己给的字面值，不写「选 B」：指代要靠模型回头数选项，
  * 而它数错的时候没人看得出来。
@@ -14,11 +19,10 @@
  * 没点的项不拼进去，只在末尾点名一句「按你的推荐来」。把没点的也按推荐值写成用户的选择，
  * 等于替用户认了几个他没看的结论。
  *
- * 拍完就不再是表单：点过「就按这些」之后这张卡片翻成定下来的那几行结果。继续摆着可点的单选框，
- * 用户改一下以为改得掉，而那句话已经发出去了。
+ * 发出去就关掉，不留结果卡片：那句话已经进了消息区，再在旁边留一份就是同一件事摆两遍。
  */
-import { Button, Card, Input, Radio, Space, Tag, Typography } from 'antd'
-import { useState } from 'react'
+import { Button, Drawer, Input, Radio, Space, Typography } from 'antd'
+import { useState, type ReactNode } from 'react'
 
 import type { ChoiceGroup } from '@/types/api'
 
@@ -35,14 +39,6 @@ interface Props {
 
 type Table = Record<string, string>
 
-/** 拍完那一下定成了什么。 */
-interface Answer {
-  /** 定下的那几项，按面板上的顺序。 */
-  settled: { item: string; value: string; note: string }[]
-  /** 没点的那几项：那些是按设计师的推荐走的。 */
-  rest: string[]
-}
-
 /** 一批选项的内容签名：详情每次刷新都是新数组，认内容才知道是不是换了一批。 */
 function signatureOf(groups: ChoiceGroup[]): string {
   return groups.map((one) => `${one.item}=${one.options.join('|')}`).join('\n')
@@ -56,21 +52,31 @@ function defaultsOf(groups: ChoiceGroup[]): Table {
   return picked
 }
 
+/**
+ * 抽屉多高。
+ *
+ * 项少就只抽出装得下的那么高，项多就一直顶到离对话区顶部 30px：留这一条才看得出摆在上面的
+ * 是聊天，而不是一整屏表单。
+ */
+function heightOf(count: number): string {
+  return `min(${240 + count * 200}px, calc(100% - 30px))`
+}
+
 export default function ChoicePicker({ groups, disabled = false, onSubmit }: Props) {
   const signature = signatureOf(groups)
   const [picked, setPicked] = useState<Table>(() => defaultsOf(groups))
   const [custom, setCustom] = useState<Table>({})
   const [note, setNote] = useState<Table>({})
-  const [answer, setAnswer] = useState<Answer | null>(null)
+  const [open, setOpen] = useState(true)
   const [seen, setSeen] = useState(signature)
 
-  // 换了一批选项就重新预选：上一轮的选择与补充留着会让用户以为新的项也已经定了
+  // 换了一批选项就重新预选并重新抽出来：上一轮的选择与补充留着会让用户以为新的项也已经定了
   if (seen !== signature) {
     setSeen(signature)
     setPicked(defaultsOf(groups))
     setCustom({})
     setNote({})
-    setAnswer(null)
+    setOpen(true)
   }
 
   if (groups.length === 0) return null
@@ -96,115 +102,122 @@ export default function ChoicePicker({ groups, disabled = false, onSubmit }: Pro
 
   const submit = () => {
     onSubmit(compose())
-    setAnswer({
-      settled: settled.map((one) => ({
-        item: one.item,
-        value: valueOf(one.item),
-        note: (note[one.item] ?? '').trim(),
-      })),
-      rest: groups.filter((one) => valueOf(one.item) === '').map((one) => one.item),
-    })
+    setOpen(false)
   }
 
-  if (answer !== null) return <Answered answer={answer} />
-
   return (
-    <Card
-      size="small"
-      title={<span style={{ fontSize: 13 }}>这几项等你拍板</span>}
-      styles={{ body: { padding: 12 } }}
-    >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        {groups.map((one) => (
-          <Space key={one.item} direction="vertical" size={4} style={{ width: '100%' }}>
+    <>
+      {!open && (
+        <Button block size="small" disabled={disabled} onClick={() => setOpen(true)}>
+          还有 {groups.length} 项等你拍板
+        </Button>
+      )}
+      <Drawer
+        open={open}
+        placement="bottom"
+        height={heightOf(groups.length)}
+        getContainer={false}
+        rootStyle={{ position: 'absolute' }}
+        title={<span style={{ fontSize: 13 }}>这几项等你拍板</span>}
+        styles={{ body: { padding: 12 }, header: { padding: '8px 12px' } }}
+        onClose={() => setOpen(false)}
+        footer={
+          <Space size={8} wrap>
+            <Button
+              type="primary"
+              size="small"
+              disabled={disabled || settled.length === 0}
+              onClick={submit}
+            >
+              就按这些
+            </Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {one.item}
+              {settled.length === groups.length
+                ? '发出去之后设计师会照这些接着往下定'
+                : `已定 ${settled.length}/${groups.length}，没定的按它的推荐走`}
             </Typography.Text>
-            <Radio.Group
-              size="small"
-              optionType="button"
-              disabled={disabled}
-              value={picked[one.item]}
-              style={{ display: 'flex', flexWrap: 'wrap', rowGap: 6 }}
-              onChange={(event) =>
-                setPicked((prev) => ({ ...prev, [one.item]: event.target.value as string }))
-              }
-              options={[
-                ...one.options.map((option) => ({
-                  value: option,
-                  label: option === one.recommended ? `${option}（推荐）` : option,
-                })),
-                { value: CUSTOM, label: '其他' },
-              ]}
-            />
-            {picked[one.item] === CUSTOM && (
-              <Input
-                size="small"
-                disabled={disabled}
-                value={custom[one.item] ?? ''}
-                placeholder="你想要的是什么样，写清楚一点"
-                onChange={(event) =>
-                  setCustom((prev) => ({ ...prev, [one.item]: event.target.value }))
-                }
-              />
-            )}
-            <Input
-              size="small"
-              disabled={disabled}
-              value={note[one.item] ?? ''}
-              placeholder="补充一句（可选）"
-              onChange={(event) => setNote((prev) => ({ ...prev, [one.item]: event.target.value }))}
-            />
           </Space>
-        ))}
-        <Space size={8} wrap>
-          <Button
-            type="primary"
-            size="small"
-            disabled={disabled || settled.length === 0}
-            onClick={submit}
-          >
-            就按这些
-          </Button>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {settled.length === groups.length
-              ? '发出去之后设计师会照这些接着往下定'
-              : `已定 ${settled.length}/${groups.length}，没定的按它的推荐走`}
-          </Typography.Text>
+        }
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {groups.map((one) => (
+            <Space key={one.item} direction="vertical" size={6} style={{ width: '100%' }}>
+              <Typography.Text strong style={{ fontSize: 13 }}>
+                {one.item}
+              </Typography.Text>
+              <Radio.Group
+                disabled={disabled}
+                value={picked[one.item]}
+                style={{ width: '100%' }}
+                onChange={(event) =>
+                  setPicked((prev) => ({ ...prev, [one.item]: event.target.value as string }))
+                }
+              >
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  {one.options.map((option) => (
+                    <Row key={option} active={picked[one.item] === option}>
+                      <Radio value={option} style={ROW_LABEL}>
+                        {option}
+                        {option === one.recommended && (
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            （推荐）
+                          </Typography.Text>
+                        )}
+                      </Radio>
+                    </Row>
+                  ))}
+                  <Row active={picked[one.item] === CUSTOM}>
+                    <Radio value={CUSTOM} style={ROW_LABEL}>
+                      其他
+                    </Radio>
+                  </Row>
+                </Space>
+              </Radio.Group>
+              {picked[one.item] === CUSTOM ? (
+                <Input
+                  size="small"
+                  disabled={disabled}
+                  value={custom[one.item] ?? ''}
+                  placeholder="你想要的是什么样，写清楚一点"
+                  onChange={(event) =>
+                    setCustom((prev) => ({ ...prev, [one.item]: event.target.value }))
+                  }
+                />
+              ) : (
+                <Input
+                  size="small"
+                  disabled={disabled}
+                  value={note[one.item] ?? ''}
+                  placeholder="补充一句（可选）"
+                  onChange={(event) =>
+                    setNote((prev) => ({ ...prev, [one.item]: event.target.value }))
+                  }
+                />
+              )}
+            </Space>
+          ))}
         </Space>
-      </Space>
-    </Card>
+      </Drawer>
+    </>
   )
 }
 
-/** 拍完之后这张卡片的样子：只报定下来的结果，不再给控件。 */
-function Answered({ answer }: { answer: Answer }) {
+/** 单选铺满整行：点框里任何地方都算点这一项，选项文字长了在框里自己折。 */
+const ROW_LABEL = { display: 'flex', alignItems: 'flex-start', fontSize: 13 } as const
+
+/** 一个选项一行：整行都框起来，选中的那行描边跟着变。 */
+function Row({ active, children }: { active: boolean; children: ReactNode }) {
   return (
-    <Card
-      size="small"
-      title={<span style={{ fontSize: 13 }}>这几项已经拍了</span>}
-      styles={{ body: { padding: 12 } }}
+    <div
+      style={{
+        width: '100%',
+        padding: '6px 10px',
+        borderRadius: 6,
+        border: `1px solid ${active ? '#1677ff' : '#f0f0f0'}`,
+        background: active ? '#e6f4ff' : '#fff',
+      }}
     >
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        {answer.settled.map((one) => (
-          <Space key={one.item} size={6} wrap>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {one.item}
-            </Typography.Text>
-            <Tag color="blue">{one.value}</Tag>
-            {one.note !== '' && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                补充：{one.note}
-              </Typography.Text>
-            )}
-          </Space>
-        ))}
-        {answer.rest.length > 0 && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            剩下的（{answer.rest.join('、')}）按设计师的推荐走
-          </Typography.Text>
-        )}
-      </Space>
-    </Card>
+      {children}
+    </div>
   )
 }
