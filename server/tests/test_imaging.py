@@ -29,6 +29,75 @@ def subject(
     return image
 
 
+def grid(
+    *,
+    background: tuple[int, int, int] = (255, 255, 255),
+    empty: str | None = None,
+    transparent: str | None = None,
+) -> Image.Image:
+    """四格分别放主体，可按格位制造空格或透明问题。"""
+    mode = "RGBA" if transparent else "RGB"
+    color = (*background, 255) if transparent else background
+    image = Image.new(mode, (2048, 2048), color)
+    cells = {
+        "front": (0, 0, 1024, 1024),
+        "right": (1024, 0, 2048, 1024),
+        "back": (0, 1024, 1024, 2048),
+        "left": (1024, 1024, 2048, 2048),
+    }
+    for code, (left, top, right, bottom) in cells.items():
+        if code == empty:
+            continue
+        body = (30, 40, 60, 255) if transparent else (30, 40, 60)
+        image.paste(body, (left + 360, top + 180, right - 360, bottom - 180))
+        if code == transparent:
+            image.paste(
+                (255, 255, 255, 0),
+                (left + 400, top + 240, right - 400, bottom - 240),
+            )
+    return image
+
+
+def test_四宫格逐格校验通过() -> None:
+    report = imaging.measure_grid(render(grid()), background_color="#FFFFFF")
+
+    assert report.ok
+    assert report.size == "2048x2048"
+    assert [one.code for one in report.regions] == ["front", "right", "back", "left"]
+    assert all(one.subject > imaging.MIN_SUBJECT for one in report.regions)
+
+
+def test_四宫格必须严格为2048() -> None:
+    report = imaging.measure_grid(render(subject((2000, 2000))), background_color="#FFFFFF")
+
+    assert not report.ok
+    assert report.regions == ()
+    assert any("必须严格为 2048x2048" in one for one in report.problems)
+
+
+def test_四宫格空格会指出具体位置() -> None:
+    report = imaging.measure_grid(render(grid(empty="back")), background_color="#FFFFFF")
+
+    assert not report.ok
+    assert any("左下背面" in one and "主体没画出来" in one for one in report.problems)
+
+
+def test_四宫格错误背景逐格告警() -> None:
+    report = imaging.measure_grid(
+        render(grid(background=(220, 220, 220))), background_color="#FFFFFF"
+    )
+
+    assert not report.ok
+    assert any("右上右侧 30°" in one and "目标纯色 #FFFFFF" in one for one in report.problems)
+
+
+def test_四宫格透明区域逐格告警() -> None:
+    report = imaging.measure_grid(render(grid(transparent="left")), background_color="#FFFFFF")
+
+    assert not report.ok
+    assert any("右下左侧 30°" in one and "透明" in one for one in report.problems)
+
+
 def test_白底图过关() -> None:
     report = imaging.measure(render(subject()))
 

@@ -288,19 +288,6 @@ def reject_render(character_id: str, body: GateIn, project: ProjectDb) -> Charac
 # --------------------------------------------------------------------------- #
 
 
-def _variants(codes: list[str]) -> tuple[views.Variant, ...]:
-    """要生哪几个视角。不给就四个都生，给了不认识的名字就报错而不静静跳过。
-
-    静静跳过的后果是用户点了「重生背面」但什么都没发生，而界面上看不出来。
-    """
-    if not codes:
-        return views.VARIANTS
-    unknown = [one for one in codes if one not in views.BY_CODE]
-    if unknown:
-        raise Conflict(f"不认识的视角 {unknown[0]}，只有 {'/'.join(views.BY_CODE)}")
-    return tuple(views.BY_CODE[one] for one in codes)
-
-
 def _views_out(result: views.ViewSet, character: Character) -> ViewSetOut:
     return ViewSetOut(
         character_id=result.character_id,
@@ -337,18 +324,15 @@ def generate_views(
     runtime: RuntimeDb,
     ref: CurrentProject,
 ) -> ViewSetOut:
-    """出一批四视图：两张参考图必传，四张并发，产物落 `tmp/`，四面齐了推到 S4。
-
-    同步阻塞且内部并发：一张 4K 图三五十秒，串行等于让用户干等四倍时间。`variants` 只给几个就是
-    重生那几个视角——评审驳回往往只有背面不合格，四张全重来会把已经认可的三张也换掉。
-    """
+    """一次生成一张 2048×2048 的 2×2 四视图四宫格。"""
+    if body.variants:
+        raise Conflict("四视图现在只能整张生成，不再支持单独重生某个视角")
     character = characters.get(project, character_id)
     result = views.generate_views(
         project,
         runtime,
         ref,
         character,
-        variants=_variants(body.variants),
         seed=body.seed,
     )
     return _views_out(result, character)
@@ -356,7 +340,7 @@ def generate_views(
 
 @router.get("/{character_id}/views", response_model=list[GenerationOut])
 def list_views(character_id: str, project: ProjectDb) -> list[GenerationOut]:
-    """四视图的全部候选，新的在前。`variant` 告诉前端这一张是哪个面。"""
+    """四视图候选，`variant=sheet` 是新版单张四宫格，旧分图仍可只读。"""
     characters.get(project, character_id)
     rows = generations.candidates(project, target_ref=character_id, stage=views.STAGE)
     return [_generation_out(row) for row in rows]
@@ -409,16 +393,12 @@ def review_views(
 def confirm_views(
     character_id: str, body: ViewsAdoptIn, project: ProjectDb, ref: CurrentProject
 ) -> CharacterOut:
-    """人选输入：把指名的四张拷进定稿位并推到 S5。
-
-    要逐个指名 `generation_id`：用户可能某个视角重生过好几张，默认取「每个面最新那张」就不是
-    他在界面上挑的那一组。这不是第三道门禁，但同样得人按一下：建模只吃定稿位上那四张。
-    """
+    """选择一张完整四宫格定稿；请求仍使用 `picks`，固定键为 `sheet`。"""
     character = characters.get(project, character_id)
+    if set(body.picks) != {views.SHEET_CODE}:
+        raise Conflict('新四视图只能提交 {"sheet": generation_id} 定稿')
     chosen: dict[str, Generation] = {}
     for code, generation_id in body.picks.items():
-        if code not in views.BY_CODE:
-            raise Conflict(f"不认识的视角 {code}，只有 {'/'.join(views.BY_CODE)}")
         row = generations.get(project, generation_id)
         if row is None:
             raise NotFound(f"产物 {generation_id} 不存在")

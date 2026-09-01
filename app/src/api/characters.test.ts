@@ -200,7 +200,7 @@ describe('门禁 2', () => {
 })
 
 describe('四视图', () => {
-  it('不指定视角就是四个角度都生', async () => {
+  it('生成请求固定为空 variants，表示整张四宫格', async () => {
     await generateViews(PROJECT, 'c1')
     expect(onlyCall()).toMatchObject({
       url: 'http://127.0.0.1:62066/api/projects/p%20one/characters/c1/views',
@@ -209,9 +209,9 @@ describe('四视图', () => {
     })
   })
 
-  it('只重生被点名的那几张，不把已认可的也换掉', async () => {
-    await generateViews(PROJECT, 'c1', ['back'])
-    expect(onlyCall().body).toEqual({ variants: ['back'], seed: null })
+  it('第三个参数是整图 seed', async () => {
+    await generateViews(PROJECT, 'c1', 42)
+    expect(onlyCall().body).toEqual({ variants: [], seed: 42 })
   })
 
   it('候选列表是只读的', async () => {
@@ -236,19 +236,14 @@ describe('四视图', () => {
     expect(onlyCall().body).toEqual({ mode: 'full', regenerate: true })
   })
 
-  it('定稿四个视角要逐个指名，不默认各取最新', async () => {
-    await confirmViews(
-      PROJECT,
-      'c1',
-      { front: 'g1', right: 'g2', back: 'g3', left: 'g4' },
-      '就这一组',
-    )
+  it('定稿完整四宫格只提交 sheet', async () => {
+    await confirmViews(PROJECT, 'c1', { sheet: 'g1' }, '就这一张')
     expect(onlyCall()).toMatchObject({
       url: 'http://127.0.0.1:62066/api/projects/p%20one/characters/c1/views/confirm',
       method: 'POST',
       body: {
-        picks: { front: 'g1', right: 'g2', back: 'g3', left: 'g4' },
-        note: '就这一组',
+        picks: { sheet: 'g1' },
+        note: '就这一张',
       },
     })
   })

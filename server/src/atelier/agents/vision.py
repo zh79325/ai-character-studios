@@ -1,26 +1,7 @@
-"""四视图评审：`vision_reviewer` 看图裁决，`REJECT` 就把被点名的那几张重生。
-
-跟设定评审同一套骨架（单次调用、裁决全文进 `task_events`、自动重生有上限），差别在三处：
-
-1. **审的是磁盘上那几张**。每个视角取台账里最近的一条，图现场重新量一遍再送审：台账里存的
-   是生成当时的读数，而用户可能已经重生过某一张，拿旧读数评审等于评审一张不存在的图。
-2. **机器读数一并交给模型**。目标纯色背景是否匹配是像素统计题，模型看图判断并不可靠，所以
-   边缘匹配率、透明比例与主体占比由 `imaging` 量出来写进请求里；模型负责数量、分离度、一致性
-   与视角这些语义判断。
-3. **粒度跟项目的 `review_mode` 走**。`full` 每张单独审（贵，但理由能对上具体那一张）、
-   `lean` 四张一次审（默认，一次调用就能看出四个面之间对不对得上）、`solo` 不审（用户自己
-   看，平台不拦）。
-
-`REJECT` 之后只重生被点名的视角：四张全重来既多烧三次额度，又会把用户已经认可的三张换掉。
-点名靠在「修正建议」那一节里找视角名，找不到就整批重生——宁可多花额度，也不能因为解析不出
-名字就把一张不合格的图留在那儿等着进建模。
-
-`APPROVE` 只表示审校没发现问题：状态一步不动，定稿仍要人来选。
-"""
+"""单张四视图四宫格评审：机器逐格检查，`vision_reviewer` 整图裁决。"""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -61,18 +42,19 @@ REVIEW_REQUEST = """## 硬性约束清单（逐条比对，一条都不能跳）
 
 {constraints}
 
-## 这一批图（按顺序对应下面附的图）
+## 四宫格布局
 
-{shots}
+这是一张 2048×2048 的 2×2 四视图：左上正面、右上右侧 30°、左下背面、右下左侧 30°。
 
-## 机器已经量过的背景数据
+## 机器逐格检查结果
 
 {machine}
 
 ---
 
-请审上面这 {count} 张图，按你的输出格式回答：首行裁决 token，其下按节写硬性约束逐条、五项
-检查清单与修正建议。修正建议里请点明是哪一个视角不合格，平台按你点的名重生那一张。
+请只审这一张四宫格。逐格确认位置与视角正确、四个角色造型一致、硬性约束均满足，且每格只有
+一个完整角色。人物不得出现披风、斗篷、披肩、长袍、长外套、垂布、飘带或其他遮挡躯干和四肢
+轮廓的服装。任意一格不合格都应 REJECT，并在修正建议中点明格位。
 """
 
 NO_CONSTRAINTS = "（这个角色还没有硬性约束清单，只按五项检查清单判）"
@@ -146,39 +128,25 @@ def mode_of(ref: ProjectRef) -> str:
 
 
 def shots(project: Session, ref: ProjectRef, character: Character) -> tuple[Shot, ...]:
-    """每个视角最近那一张，按 `VARIANTS` 的顺序，图现场量一遍。
-
-    顺序固定是给模型看的：请求里第 n 张写的是哪个视角，附的图就得是那一张，否则它给的理由会
-    指向错的图，而用户根本看不出这层错位。
-    """
-    latest = views.latest_by_variant(project, character)
+    """取最新一张四宫格，旧版四张分图只读保留，不再进入新评审。"""
+    row = views.latest_sheet(project, character)
+    if row is None:
+        raise Conflict(f"{character.name} 还没有新版四视图四宫格，请重新生成")
+    path = ref.absolute(row.file_path)
+    if not path.is_file():
+        raise Conflict(f"四视图 {row.file_path} 不在磁盘上了，重新生成一张再评审")
     card = views.base_card(project, character)
-    expect = views.image_size(ref, card)
-
-    picked: list[Shot] = []
-    for variant in views.VARIANTS:
-        row = latest.get(variant.code)
-        if row is None:
-            continue
-        path = ref.absolute(row.file_path)
-        if not path.is_file():
-            raise Conflict(f"{variant.label}那张图 {row.file_path} 不在磁盘上了，重生一张再评审")
-        picked.append(
-            Shot(
-                variant=variant.code,
-                label=variant.label,
-                generation_id=row.id,
-                file_path=row.file_path,
-                report=imaging.measure_file(
-                    path,
-                    expect=expect,
-                    background_color=str(card["view_background_color"]),
-                ),
-            )
-        )
-    if not picked:
-        raise Conflict(f"{character.name} 还没有四视图可审，先生成一批")
-    return tuple(picked)
+    return (
+        Shot(
+            variant=views.SHEET_CODE,
+            label=views.SHEET_LABEL,
+            generation_id=row.id,
+            file_path=row.file_path,
+            report=imaging.measure_grid(
+                path.read_bytes(), background_color=str(card["view_background_color"])
+            ),
+        ),
+    )
 
 
 def constraint_lines(character: Character) -> str:
@@ -197,20 +165,21 @@ def _shot_lines(picked: Sequence[Shot]) -> str:
 
 
 def _machine_lines(picked: Sequence[Shot]) -> str:
-    """机器读数写成人话。有疑点的连问题一起写，没疑点也要写读数。
-
-    读数一律写出来而不是只报问题：模型看到「边缘目标色匹配率 99.7%」才知道这一项不用它再判。
-    """
-    lines: list[str] = []
-    for one in picked:
-        head = (
-            f"- {one.label}：尺寸 {one.report.size}，目标背景 {one.report.target_color}，"
-            f"边缘匹配率 {one.report.edge_match:.1%}，透明像素 {one.report.transparent:.1%}，"
-            f"主体像素 {one.report.subject:.1%}"
+    one = picked[0]
+    lines = [
+        f"- 整图：尺寸 {one.report.size}，目标背景 {one.report.target_color}，"
+        f"透明像素 {one.report.transparent:.1%}"
+    ]
+    lines.extend(
+        f"- {region.label}：边缘匹配率 {region.edge_match:.1%}，"
+        f"透明像素 {region.transparent:.1%}，主体像素 {region.subject:.1%}"
+        + (
+            "\n" + "\n".join(f"  - 机器判定问题：{problem}" for problem in region.problems)
+            if region.problems
+            else ""
         )
-        if one.problems:
-            head += "\n" + "\n".join(f"  - 机器判定问题：{problem}" for problem in one.problems)
-        lines.append(head)
+        for region in one.report.regions
+    )
     return "\n".join(lines)
 
 
@@ -228,9 +197,7 @@ def _payload(
     spec = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else None
     request = REVIEW_REQUEST.format(
         constraints=constraint_lines(character),
-        shots=_shot_lines(picked),
         machine=_machine_lines(picked),
-        count=len(picked),
     )
     assembled = context.assemble(
         agent,
@@ -323,28 +290,9 @@ def review_once(
     return verdict
 
 
-def blamed(verdict: Verdict, picked: Sequence[Shot]) -> tuple[str, ...]:
-    """裁决点名了哪几个视角。点不出来就是这一批全部。
-
-    先在「修正建议」那一节里找，找不到再翻全文：建议那一节才是「要改哪张」的地方，全文里
-    「正面没问题」这种话也会带上视角名，只按全文匹配会把过关的那张也拖去重生。
-    """
-    section = next(
-        (items for name, items in verdict.sections.items() if ADVICE_SECTION in name), ()
-    )
-    for scope in ("\n".join(section), verdict.text):
-        named = tuple(one.variant for one in picked if _named_in(scope, one.variant))
-        if named:
-            return named
-    return tuple(one.variant for one in picked)
-
-
-def _named_in(text: str, code: str) -> bool:
-    variant = views.BY_CODE[code]
-    if variant.label in text or variant.stem in text:
-        return True
-    # 英文代码得卡词边界：`back` 不卡的话，一句 `pure white background` 就会被当成在点名背面那张
-    return re.search(rf"\b{re.escape(variant.code)}\b", text, re.I) is not None
+def blamed(_verdict: Verdict, _picked: Sequence[Shot]) -> tuple[str, ...]:
+    """四宫格任一格不合格都必须整张重生。"""
+    return (views.SHEET_CODE,)
 
 
 # --------------------------------------------------------------------------- #
@@ -362,7 +310,7 @@ def review(
     generate: dispatch.ImageFn | None = None,
     mode: str | None = None,
 ) -> VisionResult:
-    """按 `review_mode` 审这一批四视图，`REJECT` 就重生被点名的那几张再审。
+    """按 `review_mode` 整图评审四宫格，`REJECT` 就重生整张后再审。
 
     `generate` 不给就只审不重生：重生要花额度，调用方（API、CLI）得明确表示它接受这笔开销。
     """
@@ -385,7 +333,7 @@ def review(
     regenerated = 0
     while True:
         current = shots(project, ref, character)
-        batches = tuple((one,) for one in current) if picked_mode == FULL else ((tuple(current)),)
+        batches = (tuple(current),)
         verdicts = tuple(
             ViewVerdict(
                 variants=tuple(one.variant for one in batch),
@@ -433,22 +381,9 @@ def review(
             runtime,
             ref,
             character,
-            variants=_regenerate(result, current),
             generate=generate,
         )
         attempt += 1
-
-
-def _regenerate(result: VisionResult, picked: Sequence[Shot]) -> tuple[views.Variant, ...]:
-    """要重生哪几个视角：被 REJECT 的那几批里点名的那些。"""
-    named: list[str] = []
-    by_code = {one.variant: one for one in picked}
-    for one in result.verdicts:
-        if not one.verdict.rejected:
-            continue
-        scope = [by_code[code] for code in one.variants if code in by_code]
-        named.extend(code for code in blamed(one.verdict, scope) if code not in named)
-    return tuple(views.BY_CODE[code] for code in named if code in views.BY_CODE)
 
 
 def _write_meta(ref: ProjectRef, character: Character, result: VisionResult) -> None:

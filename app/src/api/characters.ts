@@ -185,21 +185,15 @@ export function rejectRender(projectCode: string, id: string, note: string): Pro
   )
 }
 
-/**
- * 出一批四视图：后端拿姿势模版与定稿渲染图当参考图，四张并发。
- *
- * `variants` 空着就是四个角度都生；只给几个就是重生那几张——评审驳回往往只有背面不合格，四
- * 张全重来会把用户已经认可的三张也换掉。四张 4K 图几十秒是应该的，这里不设超时。
- */
+/** 生成一张 2048×2048 的 2×2 四视图四宫格。 */
 export function generateViews(
   projectCode: string,
   id: string,
-  variants: string[] = [],
   seed: number | null = null,
 ): Promise<ViewSet> {
   return request<ViewSet>(charactersPath(projectCode, `${encodeURIComponent(id)}/views`), {
     method: 'POST',
-    body: { variants, seed },
+    body: { variants: [], seed },
   })
 }
 
@@ -229,11 +223,7 @@ export function reviewViews(
   )
 }
 
-/**
- * 人选输入：把指名的四张拷进定稿位并推到 S5。
- *
- * 四个视角要逐个指名：建模吃的是一整组图，默认取「每个面最新那张」就不是他在界面上挑的那一组。
- */
+/** 选择一张完整四宫格定稿，`picks` 固定为 `{ sheet: generation_id }`。 */
 export function confirmViews(
   projectCode: string,
   id: string,

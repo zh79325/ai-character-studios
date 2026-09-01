@@ -49,6 +49,15 @@ def test_negative_prompt_includes_scene_and_art_bible() -> None:
     assert "禁止机械外壳" in merged
 
 
+def test_character_images_forbid_capes_and_flowing_garments() -> None:
+    for scene in ("render", "views"):
+        merged = negative_prompt(scene)
+        assert "cape" in merged
+        assert "cloak" in merged
+        assert "long robe" in merged
+        assert "loose flowing cloth" in merged
+
+
 def test_negative_prompt_ignores_other_scenes() -> None:
     render_only = next(p for p in load_negative_presets() if p.scene == "render")
     marker = render_only.content.split(",")[0].strip()

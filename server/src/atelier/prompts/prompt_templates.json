@@ -68,8 +68,8 @@
     "category": "character",
     "slot": "environment",
     "sort_no": 80,
-    "content": "Solid {view_background_color} background, perfectly uniform, no gradient, no ground plane, no cast shadow, no environment",
-    "remark": "环境层，S4 四视图使用渲染卡片选定的统一不透明纯色"
+    "content": "One 2048x2048 image in a strict 2x2 grid: top-left front, top-right right-side 30 degrees, bottom-left back, bottom-right left-side 30 degrees; exactly one full-body character per cell; same scale and baseline; solid {view_background_color} background; no labels or divider lines; no cape, cloak, mantle, poncho, long robe, long coat, hanging fabric or trailing garment; torso and limbs fully visible for modeling and rigging",
+    "remark": "S4 单张四宫格布局与统一纯色背景"
   },
   {
     "code": "layer_light",

@@ -549,13 +549,13 @@ class RenderAdoptIn(GateIn):
 class ViewsIn(Schema):
     variants: list[str] = Field(
         default_factory=list,
-        description="只生这几个视角（front/right/back/left），空着就是四个都生",
+        description="兼容旧客户端；新版四视图只能整张生成，必须留空",
     )
-    seed: int | None = Field(default=None, description="四张共用一个种子，不给就交给供应商随机")
+    seed: int | None = Field(default=None, description="整张四宫格的随机种子")
 
 
 class ViewImageOut(Schema):
-    """一个视角出来的一张候选。"""
+    """单张四视图四宫格候选。"""
 
     variant: str
     label: str
@@ -583,7 +583,7 @@ class ViewSetOut(Schema):
     state_label: str
     images: list[ViewImageOut] = Field(default_factory=list)
     failures: list[ViewFailureOut] = Field(default_factory=list)
-    """没出来的那几个视角。一个失败不拖累其他三个，用户重生那一张就行。"""
+    """生成失败时固定为 `sheet`；整张失败需整张重生。"""
 
     references: list[str] = Field(default_factory=list)
     """两张参考图：姿势模版与定稿渲染图。"""
@@ -597,7 +597,7 @@ class ViewReviewIn(Schema):
         default=None, description="盖掉项目的 review_mode，只对这一次生效"
     )
     regenerate: bool = Field(
-        default=False, description="REJECT 时要不要自动重生被点名的那几张（要花额度）"
+        default=False, description="REJECT 时要不要自动重生整张四宫格（要花额度）"
     )
 
 
@@ -624,7 +624,7 @@ class ViewReviewOut(Schema):
 
 
 class ViewsAdoptIn(GateIn):
-    picks: dict[str, str] = Field(description="`{视角: generation_id}`，四个视角一个都不能少")
+    picks: dict[str, str] = Field(description='固定为 `{"sheet": generation_id}`')
 
 
 class AdvanceIn(Schema):

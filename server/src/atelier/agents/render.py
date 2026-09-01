@@ -41,6 +41,29 @@ PAINTER = "image_t2i"
 
 STAGE = generations.RENDER
 
+CHARACTER_IMAGE_SIZE = 2048
+"""角色效果图与四视图画布的固定边长。"""
+
+NO_CAPE_NEGATIVE = (
+    "cape, cloak, mantle, poncho, long robe, long coat, loose flowing cloth, "
+    "hanging fabric, trailing garment"
+)
+"""建模与动作绑定要求四肢和躯干轮廓无遮挡。"""
+
+_FORBIDDEN_GARMENT_TERMS = (
+    "cape",
+    "cloak",
+    "mantle",
+    "poncho",
+    "long robe",
+    "long coat",
+    "披风",
+    "斗篷",
+    "披肩",
+    "长袍",
+    "长外套",
+)
+
 SPEC_REQUEST = """## 项目视觉规范（art-bible.md）
 
 {art_bible}
@@ -54,11 +77,14 @@ SPEC_REQUEST = """## 项目视觉规范（art-bible.md）
 请为角色「{name}」出**渲染图（S2，文生图）**的素材规格卡片，只出这一张，按你的输出格式：
 
 - 项目缩写用 `{code}`，编号从 001 起。
-- 尺寸写 `{size}x{size}`，格式 png。
+- 尺寸固定写 `2048x2048`，格式 png。
 - 环境策略按渲染图那一档：可以带环境背景、氛围光与镜头感，不要求透明背景。
 - 必须选择四视图统一使用的不透明纯色背景，填写 `四视图背景色：#RRGGBB（颜色名）`。
 - 底色应避开角色主色、发光色和半透明部件颜色，优先最大化色相与明度反差。
 - prompt 层序不得缺层，附属结构层写明数量与分离状态。
+- 人物不得设计或绘制披风、斗篷、披肩、长袍、长外套、垂布或飘带。
+- 躯干和四肢轮廓必须清楚，便于建模与动作绑定。
+- negative_prompt 必须包含 cape、cloak、long robe、long coat、loose flowing cloth 等禁止词。
 """
 
 RETRY_REQUEST = """这张卡片还不能用，问题如下：
@@ -97,12 +123,24 @@ _TRANSPARENT_TERMS = (
 
 
 def _spec_gaps(spec: AssetSpec) -> tuple[str, ...]:
-    """角色渲染卡片除通用字段外，不得把旧项目的透明要求带进生图。"""
+    """角色渲染卡片必须使用固定尺寸，且不得带入旧项目的透明要求。"""
     gaps = list(spec.gaps())
+    if (spec.width, spec.height) != (CHARACTER_IMAGE_SIZE, CHARACTER_IMAGE_SIZE):
+        gaps.append(f"尺寸必须是 {CHARACTER_IMAGE_SIZE}x{CHARACTER_IMAGE_SIZE}")
     prompt = spec.prompt.lower()
     if any(term in prompt for term in _TRANSPARENT_TERMS):
         gaps.append("prompt 不得要求透明背景或 alpha channel")
+    if any(term in prompt for term in _FORBIDDEN_GARMENT_TERMS):
+        gaps.append("prompt 不得要求披风、斗篷、长袍、长外套等遮挡身体轮廓的服装")
     return tuple(gaps)
+
+
+def _negative_prompt(spec: AssetSpec) -> str:
+    """即使旧卡片没有写禁用服装，也在实际请求中补齐建模硬约束。"""
+    written = spec.negative_prompt.strip()
+    lowered = written.lower()
+    missing = [term for term in NO_CAPE_NEGATIVE.split(", ") if term not in lowered]
+    return ", ".join([written, *missing])
 
 
 REPORT = """IMAGE-RESULT: {status}
@@ -132,16 +170,9 @@ class RenderResult:
 # --------------------------------------------------------------------------- #
 
 
-def image_size(ref: ProjectRef, spec: AssetSpec | None = None) -> tuple[int, int]:
-    """这张图多大：卡片 > 项目 `defaults.image_size` > 代码内置缺省。
-
-    卡片优先是因为它才知道这张图是干什么用的（渲染图与四视图的尺寸诉求不同），项目默认值
-    是给「卡片没说」兜底的。
-    """
-    if spec is not None and spec.width > 0 and spec.height > 0:
-        return spec.width, spec.height
-    size = projects.read_config(ref.dir).defaults.image_size or image_gen.DEFAULT_SIZE
-    return size, size
+def image_size(_ref: ProjectRef, _spec: AssetSpec | None = None) -> tuple[int, int]:
+    """角色效果图固定为 2048×2048，不受项目默认值或旧 art bible 覆盖。"""
+    return CHARACTER_IMAGE_SIZE, CHARACTER_IMAGE_SIZE
 
 
 def _style_text(ref: ProjectRef) -> str:
@@ -206,13 +237,11 @@ def make_spec(
     elif note:
         request = DIRECTION_REQUEST.format(note=note)
     else:
-        size, _ = image_size(ref)
         request = SPEC_REQUEST.format(
             art_bible=projects.read_art_bible(ref).strip() or "（这个项目还没写视觉规范）",
             style=_style_text(ref),
             name=character.name,
             code=ref.code,
-            size=size,
         )
 
     attempt = 1
@@ -285,19 +314,26 @@ def render(
     if gaps:
         raise Conflict(f"渲染图卡片还不能使用：{'、'.join(gaps)}")
     width, height = image_size(ref, card)
+    negative_prompt = _negative_prompt(card)
 
     reply = dispatch.draw(
         runtime,
         PAINTER,
         card.prompt,
         generate or image_gen.generate,
-        negative_prompt=card.negative_prompt,
+        negative_prompt=negative_prompt,
         width=width,
         height=height,
         project_code=ref.code,
         task_id=character.id,
     )
 
+    if (reply.width, reply.height) != (width, height):
+        raise Conflict(
+            f"生图实际返回 {reply.width}x{reply.height}，角色效果图必须是 {width}x{height}"
+        )
+
+    params = {**reply.params, "effective_negative_prompt": negative_prompt}
     relative = archive.stage_bytes(
         ref,
         asset_dir=character.dir_name,
@@ -312,18 +348,18 @@ def render(
         file_path=relative,
         file_hash=archive.file_hash(ref.absolute(relative)),
         task_id=character.id,
-        asset_spec={**card.as_dict(), "params": reply.params},
+        asset_spec={**card.as_dict(), "params": params},
     )
     record_event(
         project,
         character.id,
         "render_generated",
-        _report(path=relative, size=reply.size_text, params=reply.params),
+        _report(path=relative, size=reply.size_text, params=params),
         {
             "generation_id": row.id,
             "file_path": relative,
             "spec": card.as_dict(),
-            "params": reply.params,
+            "params": params,
         },
     )
     if not characters.at_least(character, characters.RENDER_GENERATED):
@@ -338,7 +374,7 @@ def render(
                 "generation_id": row.id,
                 "file_path": relative,
                 "asset_spec": card.as_dict(),
-                "params": reply.params,
+                "params": params,
                 "generated_at": datetime.now(UTC).isoformat(),
             }
         },
@@ -356,7 +392,7 @@ def render(
         generation_id=row.id,
         file_path=relative,
         spec=card,
-        params=reply.params,
+        params=params,
         width=reply.width,
         height=reply.height,
     )

@@ -678,11 +678,7 @@ def test_驳回渲染图时状态停在S2(
 
 
 def staged(client: TestClient, chat: ScriptedChat, draw: ScriptedDraw) -> dict[str, object]:
-    """渲染图已经定稿（S3）的角色，够开工出四视图。
-
-    假图改成卡片写的那个画幅与纯白底：四视图要拿它当参考图，尺寸对不上或底不白会在结果里
-    多出一堆说明，把接口契约那几条断言泷得看不清。
-    """
+    """渲染图已经定稿（S3）的角色，够开工出单张四宫格。"""
     character = confirmed(client, chat)
     chat.replies.append(CARD)
     draw.data = white_png(2048, 2048)
@@ -702,7 +698,7 @@ def four(client: TestClient, character_id: str) -> dict[str, object]:
 
 
 def picks(client: TestClient, character_id: str) -> dict[str, str]:
-    """每个视角最新那一张，当作用户在界面上挑的那一组。"""
+    """最新一张 sheet，当作用户在界面上选择的完整四宫格。"""
     listed = client.get(f"/api/projects/demo/characters/{character_id}/views").json()
     chosen: dict[str, str] = {}
     for one in listed:
@@ -723,15 +719,15 @@ def test_渲染图没定稿就出不了四视图(
     assert draw.calls == []
 
 
-def test_一次出四张并推到S4(
+def test_一次出一张四宫格并推到S4(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
     character = staged(client, chat, draw)
 
     body = four(client, str(character["id"]))
 
-    assert [one["variant"] for one in body["images"]] == [one.code for one in views.VARIANTS]
-    assert [one["label"] for one in body["images"]] == [one.label for one in views.VARIANTS]
+    assert [one["variant"] for one in body["images"]] == [views.SHEET_CODE]
+    assert [one["label"] for one in body["images"]] == [views.SHEET_LABEL]
     assert body["failures"] == []
     assert len(body["references"]) == 2, "姿势模版与定稿渲染图两张都必传"
     assert body["state"] == characters.VIEWS_GENERATED
@@ -742,10 +738,10 @@ def test_一次出四张并推到S4(
     assert all(one["problems"] == [] for one in body["images"])
 
 
-def test_不认识的视角当场报错(
+def test_旧局部视角参数当场拒绝(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
-    """静静跳过的后果是用户点了「重生背面」但什么都没发生，而界面上看不出来。"""
+    """新版四视图只能整张重出，任何非空 variants 都会被拒绝。"""
     character = staged(client, chat, draw)
     before = len(draw.calls)
 
@@ -754,11 +750,11 @@ def test_不认识的视角当场报错(
     )
 
     assert response.status_code == 409
-    assert "不认识的视角" in response.json()["detail"]
+    assert "只能整张生成" in response.json()["detail"]
     assert len(draw.calls) == before
 
 
-def test_只重生点名的那一个视角(
+def test_点名单格重生也会拒绝(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
     character = staged(client, chat, draw)
@@ -769,9 +765,9 @@ def test_只重生点名的那一个视角(
         f"/api/projects/demo/characters/{character['id']}/views", json={"variants": ["back"]}
     )
 
-    assert response.status_code == 200, response.text
-    assert [one["variant"] for one in response.json()["images"]] == ["back"]
-    assert len(draw.calls) == before + 1
+    assert response.status_code == 409
+    assert "只能整张生成" in response.json()["detail"]
+    assert len(draw.calls) == before
 
 
 def test_候选列表标出是哪个面(
@@ -783,7 +779,7 @@ def test_候选列表标出是哪个面(
 
     listed = client.get(f"/api/projects/demo/characters/{character['id']}/views").json()
 
-    assert sorted(one["variant"] for one in listed) == sorted(one.code for one in views.VARIANTS)
+    assert [one["variant"] for one in listed] == [views.SHEET_CODE]
     assert all(one["is_final"] is False for one in listed)
 
 
@@ -802,7 +798,7 @@ def test_评审给出裁决与理由(
     assert body["approved"] is True
     assert body["mode"] == vision.LEAN
     assert body["skipped"] is False
-    assert body["verdicts"][0]["variants"] == [one.code for one in views.VARIANTS]
+    assert body["verdicts"][0]["variants"] == [views.SHEET_CODE]
     assert body["verdicts"][0]["text"] == VIEW_APPROVE.strip()
     assert "检查清单" in body["verdicts"][0]["sections"]
 
@@ -842,10 +838,10 @@ def test_驳回后可以让平台自己重生(
 
     assert body["decision"] == "APPROVE"
     assert body["regenerated"] == 1
-    assert len(draw.calls) == before + 1, "只重生被点名的背面那一张"
+    assert len(draw.calls) == before + 1, "驳回后整张四宫格重生"
 
 
-def test_定稿四张进定稿位并推到S5(
+def test_定稿一张四宫格进定稿位并推到S5(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
     character = staged(client, chat, draw)
@@ -860,27 +856,26 @@ def test_定稿四张进定稿位并推到S5(
     body = response.json()
     assert body["state"] == characters.VIEWS_CONFIRMED
     assert body["state_label"] == "四视图已确认"
-    assert sorted(body["view_paths"]) == sorted(one.code for one in views.VARIANTS)
-    assert all(one.startswith("characters/赤瞳/images/") for one in body["view_paths"].values())
+    assert list(body["view_paths"]) == [views.SHEET_CODE]
+    assert body["view_paths"][views.SHEET_CODE].endswith("character_赤瞳_四视图.png")
     listed = client.get(f"/api/projects/demo/characters/{character['id']}/views").json()
-    assert sum(1 for one in listed if one["is_final"]) == 4
+    assert sum(1 for one in listed if one["is_final"]) == 1
 
 
-def test_四个角度不齐就不给定稿(
+def test_旧分图结构不给定稿(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
-    """只定两张等于允许一组里两张新两张旧，而新旧混用出来的模型是错的却看不出为什么。"""
+    """新版只接受 {sheet: generation_id}，旧 front/right/back/left 不能混入。"""
     character = staged(client, chat, draw)
     four(client, str(character["id"]))
-    chosen = picks(client, str(character["id"]))
-    chosen.pop("back")
+    chosen = {"front": picks(client, str(character["id"]))[views.SHEET_CODE]}
 
     response = client.post(
         f"/api/projects/demo/characters/{character['id']}/views/confirm", json={"picks": chosen}
     )
 
     assert response.status_code == 409
-    assert "还差 背面" in response.json()["detail"]
+    assert "只能提交" in response.json()["detail"]
 
 
 def test_不存在的产物定不了稿(
@@ -889,7 +884,7 @@ def test_不存在的产物定不了稿(
     character = staged(client, chat, draw)
     four(client, str(character["id"]))
     chosen = picks(client, str(character["id"]))
-    chosen["front"] = "nope"
+    chosen[views.SHEET_CODE] = "nope"
 
     response = client.post(
         f"/api/projects/demo/characters/{character['id']}/views/confirm", json={"picks": chosen}

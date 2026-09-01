@@ -29,6 +29,7 @@ const MEMORY_LABELS: Record<string, string> = {
 }
 
 const VIEW_LABELS: Record<string, string> = {
+  sheet: '四视图',
   front: '正面',
   right: '右侧 30°',
   back: '背面',

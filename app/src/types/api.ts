@@ -430,9 +430,9 @@ export interface RenderResult {
   params: Record<string, unknown>
 }
 
-/** 四视图里的一张。`problems` 是机器量出来的病，空数组就是白底与画幅都过了。 */
+/** 单张 2048×2048 四视图四宫格候选。 */
 export interface ViewImage {
-  /** `front` / `right` / `back` / `left`。定稿时要拿它当键。 */
+  /** 新流程固定为 `sheet`；旧候选仍可能是 `front/right/back/left`。 */
   variant: string
   /** 视角的人话说法，直接显。 */
   label: string
@@ -445,14 +445,14 @@ export interface ViewImage {
   params: Record<string, unknown>
 }
 
-/** 没画出来的那一个视角。其他三张照旧留着，重生只重这一张。 */
+/** 整张四宫格生成失败。 */
 export interface ViewFailure {
   variant: string
   label: string
   reason: string
 }
 
-/** 一批四视图的结果。四张齐了才会推到 S4。 */
+/** 一次四视图生成结果；新流程 `images` 最多一项。 */
 export interface ViewSet {
   character_id: string
   state: string
@@ -461,9 +461,9 @@ export interface ViewSet {
   failures: ViewFailure[]
   /** 传进去的两张参考图：姿势模版在前，定稿渲染图在后。 */
   references: string[]
-  /** 四张画幅不一致时的说明。不拦，但建模前得让人看见。 */
+  /** 兼容旧响应；新流程单张图不存在画幅不一致。 */
   size_complaint: string | null
-  /** 四个角度都在且机器没量出问题。 */
+  /** 四宫格已生成且机器未发现问题。 */
   ok: boolean
 }
 
@@ -479,7 +479,7 @@ export interface ViewVerdict {
 /** 一轮四视图评审的结果。裁决只能拦不能放行，定稿仍要人来选。 */
 export interface ViewReview {
   character_id: string
-  /** `full` 每张一次、`lean` 整批一次、`solo` 不审。 */
+  /** `full` 与 `lean` 均整图审一次，`solo` 不审。 */
   mode: string
   decision: string
   approved: boolean

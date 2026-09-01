@@ -58,7 +58,7 @@ class ScriptedDraw:
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
-        self.data = png()
+        self.data = png(2048, 2048)
 
     def __call__(
         self,
@@ -262,20 +262,32 @@ def test_透明背景要求会触发补卡且不会进入生图(
 # --------------------------------------------------------------------------- #
 
 
-def test_尺寸按卡片优先(project: ProjectRef) -> None:
+def test_尺寸始终固定2048(project: ProjectRef) -> None:
     from atelier.agents.parsing import parse_asset_specs
 
-    (spec,) = parse_asset_specs(CARD.replace("2048x2048", "1024x1536"))
+    (spec,) = parse_asset_specs(CARD)
 
-    assert render.image_size(project, spec) == (1024, 1536)
+    assert render.image_size(project, spec) == (2048, 2048)
+    assert render.image_size(project) == (2048, 2048)
 
 
-def test_卡片没说就取项目默认(project: ProjectRef) -> None:
-    config = projects.read_config(project.dir)
-    config.defaults.image_size = 3072
-    projects.write_config(project.dir, config)
+def test_非2048卡片触发补卡且不按旧尺寸生图(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    chat: ScriptedChat,
+    draw: ScriptedDraw,
+    candidates: None,
+    confirmed: characters.Character,
+) -> None:
+    old = CARD.replace("2048x2048", "1024x1536")
+    chat.replies.extend([old, CARD])
 
-    assert render.image_size(project) == (3072, 3072)
+    run(project_db, session, project, confirmed, chat, draw)
+
+    assert len(chat.calls) == 2
+    assert "尺寸必须是 2048x2048" in chat.calls[-1][-1]["content"]
+    assert (draw.calls[-1]["width"], draw.calls[-1]["height"]) == (2048, 2048)
 
 
 # --------------------------------------------------------------------------- #
@@ -303,7 +315,7 @@ def test_图落在tmp里而不是定稿位(
     assert not project.absolute("characters/赤瞳/images/character_赤瞳_渲染图.png").exists()
 
 
-def test_卡片里的prompt原样送出去(
+def test_卡片prompt原样且negative补齐无披风约束(
     project_db: Session,
     project: ProjectRef,
     session: Session,
@@ -318,7 +330,9 @@ def test_卡片里的prompt原样送出去(
 
     sent = draw.calls[-1]
     assert sent["prompt"] == result.spec.prompt
-    assert sent["negative_prompt"] == "background clutter, watermark"
+    assert sent["negative_prompt"].startswith("background clutter, watermark")
+    assert "cape" in sent["negative_prompt"]
+    assert "loose flowing cloth" in sent["negative_prompt"]
     assert (sent["width"], sent["height"]) == (2048, 2048)
 
 
@@ -453,7 +467,7 @@ def test_换定稿时旧的退位到tmp(
     chat.replies.extend([CARD, CARD])
     run(project_db, session, project, confirmed, chat, draw)
     adopt_latest(project_db, project, confirmed)
-    draw.data = png(96, 96)
+    draw.data = png(2048, 2048)
     run(project_db, session, project, confirmed, chat, draw)
     row = generations.latest(project_db, target_ref=confirmed.id, stage=render.STAGE)
     assert row is not None

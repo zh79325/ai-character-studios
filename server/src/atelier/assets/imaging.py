@@ -31,8 +31,28 @@ SIZE_TOLERANCE = 0.02
 """尺寸容差。供应商按支持档位取整时允许少量偏差。"""
 
 
+GRID_SIZE = 2048
+GRID_CELLS: tuple[tuple[str, str, tuple[int, int, int, int]], ...] = (
+    ("front", "左上正面", (0, 0, 1024, 1024)),
+    ("right", "右上右侧 30°", (1024, 0, 2048, 1024)),
+    ("back", "左下背面", (0, 1024, 1024, 2048)),
+    ("left", "右下左侧 30°", (1024, 1024, 2048, 2048)),
+)
+"""四视图画布与固定格位。"""
+
+
 class ImageUnreadable(ValueError):
     """字节解不开成图。"""
+
+
+@dataclass(frozen=True, slots=True)
+class RegionReport:
+    code: str
+    label: str
+    edge_match: float
+    subject: float
+    transparent: float
+    problems: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +73,7 @@ class Report:
     """半透明及全透明像素的占比。"""
 
     problems: tuple[str, ...]
+    regions: tuple[RegionReport, ...] = ()
 
     @property
     def edge_white(self) -> float:
@@ -127,6 +148,55 @@ def measure(
     if not report.ok:
         _log.info("imaging.rejected", size=report.size, problems=report.problems)
     return report
+
+
+def measure_grid(
+    raw: bytes,
+    *,
+    background_color: str,
+) -> Report:
+    """校验单张 2048×2048 四宫格，并逐格检查背景、透明像素与主体占比。"""
+    report = measure(raw, expect=(GRID_SIZE, GRID_SIZE), background_color=background_color)
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            image.load()
+            canvas = image.copy()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ImageUnreadable(f"这堆字节解不开成图：{exc}") from exc
+
+    regions: list[RegionReport] = []
+    problems = list(report.problems)
+    if canvas.size != (GRID_SIZE, GRID_SIZE):
+        problems.append(f"四视图必须严格为 {GRID_SIZE}x{GRID_SIZE}，不能使用尺寸容差")
+    else:
+        for code, label, box in GRID_CELLS:
+            buffer = BytesIO()
+            canvas.crop(box).save(buffer, format="PNG")
+            cell = measure(buffer.getvalue(), background_color=background_color)
+            cell_problems = tuple(f"{label}：{one}" for one in cell.problems)
+            problems.extend(cell_problems)
+            regions.append(
+                RegionReport(
+                    code=code,
+                    label=label,
+                    edge_match=cell.edge_match,
+                    subject=cell.subject,
+                    transparent=cell.transparent,
+                    problems=cell_problems,
+                )
+            )
+
+    return Report(
+        width=report.width,
+        height=report.height,
+        fmt=report.fmt,
+        target_color=report.target_color,
+        edge_match=report.edge_match,
+        subject=report.subject,
+        transparent=report.transparent,
+        problems=tuple(dict.fromkeys(problems)),
+        regions=tuple(regions),
+    )
 
 
 def measure_file(

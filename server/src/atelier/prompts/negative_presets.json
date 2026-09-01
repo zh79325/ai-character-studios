@@ -2,7 +2,7 @@
   {
     "code": "neg_common",
     "scene": "common",
-    "content": "lowres, blurry, jpeg artifacts, bad anatomy, extra limbs, missing limbs, fused fingers, deformed hands, mutated, disfigured, watermark, signature, text, logo",
+    "content": "lowres, blurry, jpeg artifacts, bad anatomy, extra limbs, missing limbs, fused fingers, deformed hands, mutated, disfigured, watermark, signature, text, logo, cape, cloak, mantle, poncho, long robe, long coat, loose flowing cloth, hanging fabric, trailing garment",
     "remark": "所有生图通用"
   },
   {
@@ -14,8 +14,8 @@
   {
     "code": "neg_views",
     "scene": "views",
-    "content": "environment, scenery, gradient background, textured background, ground plane, cast shadow, transparent background, alpha channel, checkerboard, text, watermark, reflection, multiple characters, cropped body",
-    "remark": "S4 四视图专用，保留指定纯色背景并剥离环境、渐变、投影与透明底"
+    "content": "environment, scenery, gradient background, textured background, ground plane, cast shadow, transparent background, alpha channel, checkerboard, text, watermark, reflection, cropped body, missing view, duplicate view, wrong panel order, character crossing cells, panel labels, divider lines, cape, cloak, mantle, poncho, long robe, long coat, loose flowing cloth, hanging fabric, trailing garment",
+    "remark": "S4 单张四宫格专用，禁止缺格、重复视角、跨格及非纯色背景"
   },
   {
     "code": "neg_views_back",
