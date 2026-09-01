@@ -254,20 +254,19 @@ function Thinking({
           fontSize: 13,
         }}
       >
-        {text === '' ? (
+        {text !== '' && <Body text={text} />}
+        <div style={{ marginTop: text === '' ? 0 : 4 }}>
           <Space size={6}>
             <Spin size="small" />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {who}正在思考中，请先等一下
-            </Typography.Text>
+            {text === '' && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {who}正在思考中，请先等一下
+              </Typography.Text>
+            )}
+            <Button size="small" type="text" danger loading={interrupting} onClick={onInterrupt}>
+              中断思考
+            </Button>
           </Space>
-        ) : (
-          <Body text={text} />
-        )}
-        <div style={{ marginTop: 4 }}>
-          <Button size="small" type="text" danger loading={interrupting} onClick={onInterrupt}>
-            中断思考
-          </Button>
         </div>
       </div>
     </div>
