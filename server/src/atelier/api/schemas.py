@@ -346,7 +346,7 @@ class ProjectConfigOut(Schema):
     pose_template: str | None = None
     art_bible: str = "art-bible.md"
     review_mode: Literal["full", "lean", "solo"] = "lean"
-    conversation_audit: bool = False
+    conversation_audit: bool = True
     stage: Literal["drafting", "ready"] = "ready"
     state: str = "P0_project_shaping"
 

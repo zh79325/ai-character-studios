@@ -104,7 +104,7 @@ class ProjectConfig(BaseModel):
     """相对项目目录的姿势模版；为空则回落全局 `templates/人物姿势模版.jpg`。"""
     art_bible: str = layout.ART_BIBLE
     review_mode: ReviewMode = "lean"
-    conversation_audit: bool = False
+    conversation_audit: bool = True
     stage: Stage = "ready"
     state: str = DEFAULT_STATE
     """立项工作流推到哪一步。跟 `stage` 不是一回事：`stage` 是「名字定下来了没」，它是整套
