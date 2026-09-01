@@ -26,6 +26,7 @@ from atelier.db.project_models import (
     ArtifactDraft,
     Character,
     Conversation,
+    Message,
     TaskEvent,
 )
 from atelier.db.runtime_models import RouteLog
@@ -106,6 +107,64 @@ def test_非会话型agent不能开会话(project_db: Session, project: ProjectR
 def test_角色会话必须指明角色(project_db: Session, project: ProjectRef) -> None:
     with pytest.raises(Conflict, match="哪个角色"):
         engine.start(project_db, agent_code=WRITER, target_kind="character")
+
+
+def test_角色会话id只由角色id确定(project_db: Session) -> None:
+    character = make_character(project_db)
+
+    first = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+    again = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    assert first.id == engine.conversation_id_for_character(character.id)
+    assert again.id == first.id
+    assert engine.conversation_id_for_character("另一个角色") != first.id
+    assert len(engine.list_conversations(project_db, target_ref=character.id)) == 1
+
+
+def test_ensure把旧随机角色会话迁到确定性id(project_db: Session) -> None:
+    character = make_character(project_db)
+    old_id = "legacy-random-conversation"
+    old = Conversation(
+        id=old_id,
+        target_kind="character",
+        target_ref=character.id,
+        agent_code=WRITER,
+        title="旧会话",
+    )
+    project_db.add_all(
+        [
+            old,
+            Message(
+                conversation_id=old_id,
+                turn_no=1,
+                role="user",
+                content="旧消息",
+            ),
+            ArtifactDraft(
+                id="legacy-draft",
+                conversation_id=old_id,
+                target_path="characters/赤瞳/赤瞳角色设定.md",
+                content="# 旧草稿",
+                based_on_hash="",
+                status="pending",
+            ),
+        ]
+    )
+    project_db.commit()
+
+    adopted = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    expected = engine.conversation_id_for_character(character.id)
+    assert adopted.id == expected
+    assert project_db.get(Conversation, old_id) is None
+    assert [row.content for row in engine.messages_of(project_db, expected)] == ["旧消息"]
+    assert [row.id for row in engine.drafts_of(project_db, expected)] == ["legacy-draft"]
 
 
 def test_没有可用候选时报清楚(project_db: Session, project: ProjectRef, session: Session) -> None:

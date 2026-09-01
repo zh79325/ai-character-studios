@@ -163,11 +163,12 @@ def create(
 ) -> Character:
     """建一个角色：铺目录、写 marker、登记库行，状态从 S0 起步。
 
-    角色按磁盘文件夹分层组织（`group` 可多级），身份是相对路径 `dir_name`：同一分组
-    内同名才算重名，跨分组允许同名。目录名过 `safe_dir_name`，库里的 `name` 留用户写的原文。
+    角色按磁盘文件夹分层组织（`group` 可多级），身份是 `.model.json` 中的随机 ID；目录路径
+    `dir_name` 只表示当前位置。同一分组内同名会占用同一目录，跨分组允许同名。目录名过
+    `safe_dir_name`，库里的 `name` 留用户写的原文。
 
-    目标目录已存在时：`overwrite` 为假就拒；为真就删旧目录（含已生成素材）+ 删旧库行与
-    它的 task_events 再重建。asset_id 由 dir_name 派生，覆盖后 id 不变。
+    目标目录已存在时：`overwrite` 为假就拒；为真就删旧目录（含已生成素材）及该目录下的旧
+    记录再重建。每次新建都生成随机 ID，并写入 `.model.json` 作为不随目录移动的身份。
     """
     display = name.strip()
     if not display:
@@ -179,18 +180,16 @@ def create(
     dir_name = "/".join(["characters", *([group] if group else []), seg])
     asset_dir = ref.dir / dir_name
 
-    stale = project.scalar(select(Character).where(Character.dir_name == dir_name))
     if asset_dir.exists():
         if not overwrite:
             raise Conflict(f"角色「{display}」在该分组已存在")
         _remove_existing(project, ref, dir_name)
-    elif stale is not None:
-        raise Conflict(f"角色「{display}」的数据库记录仍存在，请先扫描目录并手动删除缺失记录")
 
+    character_id = projects.new_asset_id()
     layout.ensure_asset_dirs(asset_dir)
-    layout.write_model_marker(asset_dir, display)
+    layout.write_model_marker(asset_dir, display, character_id)
 
-    character = Character(id=projects.asset_id(ref.code, dir_name), name=display, dir_name=dir_name)
+    character = Character(id=character_id, name=display, dir_name=dir_name)
     project.add(character)
     record_event(
         project,
@@ -205,7 +204,7 @@ def create(
 
 
 def _delete_records(project: Session, character: Character) -> None:
-    """清掉角色及其过程数据，避免稳定角色 ID 重建后继承旧会话和产物。"""
+    """清掉角色及其过程数据。"""
     conversation_ids = list(
         project.scalars(
             select(Conversation.id).where(
@@ -242,9 +241,13 @@ def _delete_records(project: Session, character: Character) -> None:
 
 
 def remove_missing(project: Session, ref: ProjectRef, character_id: str) -> None:
-    """手动删除扫描确认已缺失的角色记录；仍能识别到角色目录时拒绝。"""
+    """删除 marker 已不存在或已经指向其他身份的角色记录。"""
     character = get(project, character_id)
-    if layout.is_character_dir(ref.absolute(character.dir_name)):
+    marker = layout.read_model_marker(ref.absolute(character.dir_name))
+    marker_id = layout.model_marker_id(marker)
+    if marker_id is None and layout.is_character_dir(ref.absolute(character.dir_name)):
+        raise Conflict(f"{character.name} 的角色目录仍存在，不能删除数据库记录")
+    if marker_id == character.id:
         raise Conflict(f"{character.name} 的角色目录仍存在，不能删除数据库记录")
     _delete_records(project, character)
     project.commit()
@@ -256,9 +259,9 @@ def _remove_existing(project: Session, ref: ProjectRef, dir_name: str) -> None:
     asset_dir = ref.dir / dir_name
     if asset_dir.exists():
         shutil.rmtree(asset_dir)
-    stale = project.scalar(select(Character).where(Character.dir_name == dir_name))
-    if stale is not None:
-        _delete_records(project, stale)
+    stale = list(project.scalars(select(Character).where(Character.dir_name == dir_name)))
+    for character in stale:
+        _delete_records(project, character)
 
 
 # --------------------------------------------------------------------------- #

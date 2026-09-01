@@ -149,7 +149,7 @@ def test_同组重名默认不覆盖(project: ProjectRef, project_db: Session) -
 
 
 def test_跨分组允许同名(project: ProjectRef, project_db: Session) -> None:
-    """角色身份是相对路径，不同分组下同名各自成立。"""
+    """角色身份来自随机 ID，不同分组下同名各自成立。"""
     ready(project)
     hero = characters.create(project_db, project, "赤瞳", group="玩家角色")
     boss = characters.create(project_db, project, "赤瞳", group="boss角色")
@@ -167,11 +167,14 @@ def test_建在分组下并写了marker(project: ProjectRef, project_db: Session
     assert character.dir_name == "characters/boss角色/精英/赤瞳"
     asset_dir = project.absolute(character.dir_name)
     assert layout.is_character_dir(asset_dir)
-    assert layout.read_model_marker(asset_dir)["name"] == "赤瞳"
+    marker = layout.read_model_marker(asset_dir)
+    assert marker["schema"] == 2
+    assert marker["id"] == character.id
+    assert marker["name"] == "赤瞳"
 
 
-def test_覆盖删旧重建_id不变且旧事件清掉(project: ProjectRef, project_db: Session) -> None:
-    """覆盖 = 删旧目录（含素材）+ 删旧库行与其 task_events 再重建；dir_name 不变故 id 不变。"""
+def test_覆盖删旧重建会生成新id并清掉旧数据(project: ProjectRef, project_db: Session) -> None:
+    """覆盖 = 删旧目录与旧过程数据，再用新的随机身份重建。"""
     ready(project)
     old = characters.create(project_db, project, "赤瞳")
     old_id = old.id
@@ -181,8 +184,10 @@ def test_覆盖删旧重建_id不变且旧事件清掉(project: ProjectRef, proj
 
     fresh = characters.create(project_db, project, "赤瞳", overwrite=True)
 
-    assert fresh.id == old_id  # dir_name 没变，id 由它派生
+    assert fresh.id != old_id
+    assert layout.read_model_marker(project.absolute(fresh.dir_name))["id"] == fresh.id
     assert not (project.absolute(fresh.dir_name) / "images" / "旧图.png").exists()
+    assert task_events.history(project_db, old_id) == []
     assert [one.event for one in task_events.history(project_db, fresh.id)] == ["character_created"]
 
 

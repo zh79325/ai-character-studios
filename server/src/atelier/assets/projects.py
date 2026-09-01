@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import secrets
@@ -29,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from atelier.assets import layout
 from atelier.db.migrate import upgrade_project
-from atelier.db.project_models import Character
+from atelier.db.project_models import Character, Generation
 from atelier.db.runtime_models import ProjectRegistry
 from atelier.db.session import dispose_project_engine, project_session
 from atelier.errors import Conflict, NotFound
@@ -714,18 +713,39 @@ class ScanResult:
     total: int
 
 
-def asset_id(project_code: str, dir_name: str) -> str:
-    """按项目 + 目录名算出稳定 id：重扫、换机器都是同一个 id。"""
-    digest = hashlib.sha1(f"{project_code}/{dir_name}".encode()).hexdigest()[:10]
-    return f"CHAR-{digest}"
+def new_asset_id() -> str:
+    """生成与目录、项目无关的角色身份；持久化后只认 marker 中的值。"""
+    return f"CHAR-{secrets.token_hex(10)}"
+
+
+def _moved_asset_path(value: str | None, old_dir: str, new_dir: str) -> str | None:
+    if value == old_dir:
+        return new_dir
+    prefix = f"{old_dir}/"
+    return f"{new_dir}/{value[len(prefix) :]}" if value and value.startswith(prefix) else value
+
+
+def _move_character(session: Session, character: Character, dir_name: str) -> None:
+    """marker 跟着目录移动时，按持久 ID 更新所有直接保存的素材路径。"""
+    old_dir = character.dir_name
+    character.dir_name = dir_name
+    character.spec_path = _moved_asset_path(character.spec_path, old_dir, dir_name)
+    character.render_path = _moved_asset_path(character.render_path, old_dir, dir_name)
+    generations = session.scalars(
+        select(Generation).where(
+            Generation.target_kind == "character", Generation.target_ref == character.id
+        )
+    )
+    for generation in generations:
+        generation.file_path = _moved_asset_path(generation.file_path, old_dir, dir_name) or ""
 
 
 def scan_characters(ref: ProjectRef) -> ScanResult:
-    """把 `characters/` 下带 marker 的目录递归同步进项目库。
+    """按 `.model.json` 中的随机 ID 对账角色目录与数据库。
 
-    磁盘是素材存在与否的真相（用户会直接拷目录进来），库是可查询副本。角色按文件夹
-    分层，层级任意深，靠 `.model.json` marker 把「角色」从「分组」里认出来。扫描会登记
-    带 marker 的新目录，并返回库里有而磁盘没有的记录，交给用户确认后手动删除。
+    marker 跟着目录移动，因此扫描会更新已有角色的路径；旧 marker 没有 ID 时优先沿用同路径
+    数据库记录的 ID，否则生成新 ID 并回写。数据库中的旧 ID 没有对应 marker 时只报告缺失，
+    不阻止同一路径登记一个全新的角色。
     """
     root = ref.dir / "characters"
     dirs = (
@@ -734,35 +754,65 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
         else []
     )
     added: list[str] = []
-    missing: list[MissingCharacter] = []
 
     with project_session(ref.db_path) as session:
-        known = {row.dir_name: row for row in session.scalars(select(Character)).all()}
+        rows = list(session.scalars(select(Character)).all())
+        by_id = {row.id: row for row in rows}
+        by_dir: dict[str, list[Character]] = {}
+        for row in rows:
+            by_dir.setdefault(row.dir_name, []).append(row)
+
+        entries: list[tuple[Path, str, str, str]] = []
         for path in dirs:
             rel = layout.relative_to(ref.dir, path)
-            if rel in known:
-                continue
-            layout.ensure_asset_dirs(path)
-            name = str(layout.read_model_marker(path).get("name") or path.name)
-            session.add(
-                Character(
-                    id=asset_id(ref.code, rel),
+            marker = layout.read_model_marker(path)
+            name = str(marker.get("name") or path.name)
+            character_id = layout.model_marker_id(marker)
+            if character_id is None:
+                candidates = by_dir.get(rel, [])
+                existing = max(candidates, key=lambda row: row.updated_at) if candidates else None
+                character_id = existing.id if existing is not None else new_asset_id()
+                layout.write_model_marker(path, name, character_id)
+            entries.append((path, rel, name, character_id))
+
+        owners: dict[str, str] = {}
+        for _, rel, _, character_id in entries:
+            current = by_id.get(character_id)
+            if character_id not in owners or (current is not None and current.dir_name == rel):
+                owners[character_id] = rel
+
+        on_disk_ids: set[str] = set()
+        for path, rel, name, character_id in entries:
+            if owners[character_id] != rel:
+                character_id = new_asset_id()
+                layout.write_model_marker(path, name, character_id)
+
+            character = by_id.get(character_id)
+            if character is not None:
+                if character.dir_name != rel:
+                    _move_character(session, character, rel)
+            else:
+                layout.ensure_asset_dirs(path)
+                character = Character(
+                    id=character_id,
                     name=name,
                     dir_name=rel,
                     spec_path=_find_spec(path, ref.dir),
                 )
-            )
-            added.append(name)
-        on_disk = {layout.relative_to(ref.dir, p) for p in dirs}
+                session.add(character)
+                by_id[character_id] = character
+                added.append(name)
+            on_disk_ids.add(character_id)
+
         missing = sorted(
             (
                 MissingCharacter(id=row.id, name=row.name, dir_name=row.dir_name)
-                for rel, row in known.items()
-                if rel not in on_disk
+                for row in rows
+                if row.id not in on_disk_ids
             ),
             key=lambda row: row.dir_name,
         )
-        total = len(known) + len(added)
+        total = len(rows) + len(added)
 
     return ScanResult(added=added, missing=missing, total=total)
 

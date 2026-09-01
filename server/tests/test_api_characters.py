@@ -181,16 +181,16 @@ def test_覆盖为真时删旧重建(client: TestClient, ready: ProjectRef, cand
     again = client.post("/api/projects/demo/characters", json={"name": "赤瞳", "overwrite": True})
 
     assert again.status_code == 201, again.text
-    assert again.json()["id"] == first["id"]  # dir_name 没变，id 由它派生
+    assert again.json()["id"] != first["id"]
 
 
-def test_扫描缺失角色后可手动删除记录并重建(client: TestClient, ready: ProjectRef) -> None:
+def test_同路径孤儿不阻止新建且仍可手动删除(client: TestClient, ready: ProjectRef) -> None:
     first = create(client)
     shutil.rmtree(ready.dir / str(first["dir_name"]))
 
-    blocked = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
-    assert blocked.status_code == 409
-    assert "扫描目录" in blocked.json()["detail"]
+    rebuilt = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
+    assert rebuilt.status_code == 201, rebuilt.text
+    assert rebuilt.json()["id"] != first["id"]
 
     scanned = client.post("/api/projects/demo/scan")
 
@@ -202,10 +202,9 @@ def test_扫描缺失角色后可手动删除记录并重建(client: TestClient,
     removed = client.delete(f"/api/projects/demo/characters/{first['id']}")
 
     assert removed.status_code == 204, removed.text
-    assert client.get("/api/projects/demo/characters").json() == []
-    rebuilt = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
-    assert rebuilt.status_code == 201, rebuilt.text
-    assert rebuilt.json()["id"] == first["id"]
+    assert [row["id"] for row in client.get("/api/projects/demo/characters").json()] == [
+        rebuilt.json()["id"]
+    ]
 
 
 def test_角色目录仍存在时不能只删除数据库记录(client: TestClient, ready: ProjectRef) -> None:

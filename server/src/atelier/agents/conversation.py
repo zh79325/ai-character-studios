@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from atelier.agents import audit, context, dispatch, orchestrator, parsing, tokens
@@ -139,6 +140,11 @@ class ContextInputs:
 # --------------------------------------------------------------------------- #
 
 
+def conversation_id_for_character(character_id: str) -> str:
+    """角色会话 ID 只由角色 ID 决定，不依赖目录、查询历史或进程缓存。"""
+    return hashlib.md5(character_id.encode(), usedforsecurity=False).hexdigest()
+
+
 def start(
     project: Session,
     *,
@@ -149,8 +155,8 @@ def start(
 ) -> Conversation:
     """开一个新会话。
 
-    不复用旧会话：每次对焦都是一段独立的记录，摘要与结论也只在这段里滚。要在旧结论上继续
-    改，靠的是「新会话先把当前定稿读进上下文」，而不是把两次对话接成一条越来越长的流。
+    项目会话每次使用随机 ID；角色是一物一会话，ID 只由角色 ID 确定性推导。角色若已有会话，
+    调用方应走 `ensure()` 接回原会话，而不是另建一条并行消息流。
     """
     agent = get_agent(agent_code)
     if not agent.conversational:
@@ -160,8 +166,15 @@ def start(
     if target_kind == "character" and not target_ref:
         raise Conflict("角色会话必须指明是哪个角色")
 
+    conversation_id = (
+        conversation_id_for_character(target_ref)
+        if target_kind == "character" and target_ref is not None
+        else uuid.uuid4().hex
+    )
+    if project.get(Conversation, conversation_id) is not None:
+        raise Conflict(f"角色 {target_ref} 已有会话")
     conversation = Conversation(
-        id=uuid.uuid4().hex,
+        id=conversation_id,
         target_kind=target_kind,
         target_ref=target_ref,
         agent_code=agent_code,
@@ -178,6 +191,26 @@ def get(project: Session, conversation_id: str) -> Conversation:
     conversation = project.get(Conversation, conversation_id)
     if conversation is None:
         raise NotFound(f"会话 {conversation_id} 不存在")
+    return conversation
+
+
+def _adopt_conversation_id(
+    project: Session, conversation: Conversation, conversation_id: str
+) -> Conversation:
+    """把旧版随机会话 ID 原地迁到由角色 ID 推导出的固定值。"""
+    old_id = conversation.id
+    project.execute(
+        update(Message)
+        .where(Message.conversation_id == old_id)
+        .values(conversation_id=conversation_id)
+    )
+    project.execute(
+        update(ArtifactDraft)
+        .where(ArtifactDraft.conversation_id == old_id)
+        .values(conversation_id=conversation_id)
+    )
+    conversation.id = conversation_id
+    project.commit()
     return conversation
 
 
@@ -199,9 +232,20 @@ def ensure(
     `agents/orchestrator.py`。所以这里不比 `agent_code`：同一个对象上已经有一场就接着聊，库里
     那个主 Agent 说了算——换个 Agent 就另开一场的话，两场会各自满上一半上下文。
     """
-    rows = list_conversations(project, target_kind=target_kind, target_ref=target_ref)
-    if rows:
-        return rows[0]
+    if target_kind == "character" and target_ref:
+        conversation_id = conversation_id_for_character(target_ref)
+        current = project.get(Conversation, conversation_id)
+        if current is not None:
+            if current.target_kind != target_kind or current.target_ref != target_ref:
+                raise Conflict(f"角色 {target_ref} 的固定会话 ID 已被其他对象占用")
+            return current
+        rows = list_conversations(project, target_kind=target_kind, target_ref=target_ref)
+        if rows:
+            return _adopt_conversation_id(project, rows[0], conversation_id)
+    else:
+        rows = list_conversations(project, target_kind=target_kind, target_ref=target_ref)
+        if rows:
+            return rows[0]
     return start(
         project,
         agent_code=agent_code,

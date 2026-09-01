@@ -30,7 +30,7 @@ def make_character(ref: projects_mod.ProjectRef, name: str) -> Path:
     target = ref.dir / "characters" / name
     target.mkdir(parents=True)
     (target / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
-    layout.write_model_marker(target, name)
+    layout.write_model_marker(target, name, projects_mod.new_asset_id())
     return target
 
 
@@ -563,8 +563,8 @@ def test_scan_claims_directories_copied_in_by_hand(session: Session) -> None:
         assert (asset / name).is_dir()
 
 
-def test_scan_is_idempotent_and_keeps_ids_stable(session: Session) -> None:
-    """重扫不能生出第二条记录，也不能换 id——产物路径都挂在这个 id 上。"""
+def test_scan_is_idempotent_and_keeps_marker_id(session: Session) -> None:
+    """重扫不能生出第二条记录，角色 ID 以 marker 中持久化的值为准。"""
     ref = projects_mod.create_project(session, name="项目", code="p1")
     make_character(ref, "chitong_beast")
 
@@ -578,11 +578,42 @@ def test_scan_is_idempotent_and_keeps_ids_stable(session: Session) -> None:
     assert [row["id"] for row in projects_mod.character_rows(ref)] == ids
 
 
+def test_scan_uses_marker_id_after_character_directory_moves(session: Session) -> None:
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+    original = make_character(ref, "赤瞳")
+    projects_mod.scan_characters(ref)
+    character_id = projects_mod.character_rows(ref)[0]["id"]
+    moved = ref.dir / "characters" / "玩家角色" / "赤瞳"
+    moved.parent.mkdir()
+    shutil.move(str(original), str(moved))
+
+    result = projects_mod.scan_characters(ref)
+
+    [row] = projects_mod.character_rows(ref)
+    assert row["id"] == character_id
+    assert row["dir_name"] == "characters/玩家角色/赤瞳"
+    assert result.added == []
+    assert result.missing == []
+
+
+def test_scan_backfills_id_into_legacy_marker(session: Session) -> None:
+    ref = projects_mod.create_project(session, name="项目", code="p1")
+    asset = ref.dir / "characters" / "旧角色"
+    asset.mkdir(parents=True)
+    (asset / layout.MODEL_JSON).write_text('{"schema": 1, "name": "旧角色"}', encoding="utf-8")
+
+    projects_mod.scan_characters(ref)
+
+    [row] = projects_mod.character_rows(ref)
+    assert layout.read_model_marker(asset)["id"] == row["id"]
+
+
 def test_scan_reports_missing_characters_for_manual_cleanup(session: Session) -> None:
-    """库里有磁盘没有时返回稳定 id 与目录，供前端逐条确认删除。"""
+    """库里有磁盘没有时返回 marker ID 与目录，供前端逐条确认删除。"""
     ref = projects_mod.create_project(session, name="项目", code="p1")
     asset = make_character(ref, "chitong_beast")
     projects_mod.scan_characters(ref)
+    character_id = projects_mod.character_rows(ref)[0]["id"]
     shutil.rmtree(asset)
 
     result = projects_mod.scan_characters(ref)
@@ -590,7 +621,7 @@ def test_scan_reports_missing_characters_for_manual_cleanup(session: Session) ->
     assert [(one.name, one.dir_name) for one in result.missing] == [
         ("chitong_beast", "characters/chitong_beast")
     ]
-    assert result.missing[0].id == projects_mod.asset_id("p1", "characters/chitong_beast")
+    assert result.missing[0].id == character_id
     assert len(projects_mod.character_rows(ref)) == 1
 
 
@@ -608,7 +639,7 @@ def test_scan_claims_characters_nested_in_groups(session: Session) -> None:
     ref = projects_mod.create_project(session, name="项目", code="p1")
     boss = ref.dir / "characters" / "boss角色" / "赤瞳"
     boss.mkdir(parents=True)
-    layout.write_model_marker(boss, "赤瞳")
+    layout.write_model_marker(boss, "赤瞳", projects_mod.new_asset_id())
     (ref.dir / "characters" / "玩家角色").mkdir()  # 空分组，不应被当角色
 
     result = projects_mod.scan_characters(ref)
@@ -624,7 +655,7 @@ def test_list_groups_reads_folders_from_disk(session: Session) -> None:
     hero = ref.dir / "characters" / "玩家角色" / "赤瞳"
     hero.mkdir(parents=True)
     layout.ensure_asset_dirs(hero)
-    layout.write_model_marker(hero, "赤瞳")
+    layout.write_model_marker(hero, "赤瞳", projects_mod.new_asset_id())
     (ref.dir / "characters" / "boss角色" / "精英").mkdir(parents=True)  # 多级空分组
 
     assert projects_mod.list_groups(ref) == ["boss角色", "boss角色/精英", "玩家角色"]

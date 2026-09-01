@@ -108,16 +108,24 @@ def is_character_dir(path: Path) -> bool:
     return (path / MODEL_JSON).is_file()
 
 
-def write_model_marker(asset_dir: Path, name: str) -> Path:
-    """在角色目录里落 marker。判定角色目录只看它在不在，内容仅供人肉排查。"""
+def write_model_marker(asset_dir: Path, name: str, character_id: str) -> Path:
+    """写入角色身份 marker；已有 marker 的创建时间和扩展字段原样保留。"""
     target = asset_dir / MODEL_JSON
-    payload = {"schema": 1, "name": name, "created_at": datetime.now(UTC).isoformat()}
+    previous = read_model_marker(asset_dir)
+    created_at = previous.get("created_at")
+    payload = {
+        **previous,
+        "schema": 2,
+        "id": character_id,
+        "name": name,
+        "created_at": created_at if isinstance(created_at, str) else datetime.now(UTC).isoformat(),
+    }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
 
 
 def read_model_marker(path: Path) -> dict[str, Any]:
-    """读角色目录的 marker，读不出来就当空的——它不是真相，只是判定与展示用。"""
+    """读取角色目录的身份 marker；不可读时返回空字典。"""
     target = path / MODEL_JSON
     if not target.is_file():
         return {}
@@ -127,6 +135,15 @@ def read_model_marker(path: Path) -> dict[str, Any]:
         _log.warning("model_json_unreadable", path=str(target))
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def model_marker_id(marker: dict[str, Any]) -> str | None:
+    """取 marker 中持久化的角色 ID；旧 marker 或非法值交给扫描逻辑补齐。"""
+    value = marker.get("id")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and len(value) <= 64 else None
 
 
 def project_json_path(project_dir: Path) -> Path:

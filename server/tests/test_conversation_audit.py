@@ -57,7 +57,7 @@ def make_character(project_db: Session, project: ProjectRef, group: str = "玩�
     dir_name = f"characters/{group}/赤瞳"
     asset_dir = project.absolute(dir_name)
     layout.ensure_asset_dirs(asset_dir)
-    layout.write_model_marker(asset_dir, "赤瞳")
+    layout.write_model_marker(asset_dir, "赤瞳", "c-chitong")
     character = Character(id="c-chitong", name="赤瞳", dir_name=dir_name)
     project_db.add(character)
     project_db.commit()
