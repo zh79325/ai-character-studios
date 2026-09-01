@@ -6,6 +6,7 @@ max_turns: 20
 conversational: true
 memory_scope: character
 context_budget: 24000
+max_output_tokens: 16384
 output_contract: markdown_spec
 allow_tools: [read_project, read_art_bible, read_project_memory, read_spec, write_draft]
 ---

@@ -56,6 +56,7 @@ class AgentDefinition:
     system_prompt: str
     source_file: str
     source_hash: str
+    max_output_tokens: int | None = None
     allow_tools: list[str] = field(default_factory=list)
 
 
@@ -97,6 +98,14 @@ def parse_agent_file(path: Path) -> AgentDefinition:
     if not isinstance(allow_tools, list):
         raise AgentDefinitionError(f"{path.name}: allow_tools 必须是列表")
 
+    max_output_tokens = meta.get("max_output_tokens")
+    if max_output_tokens is not None and (
+        isinstance(max_output_tokens, bool)
+        or not isinstance(max_output_tokens, int)
+        or max_output_tokens <= 0
+    ):
+        raise AgentDefinitionError(f"{path.name}: max_output_tokens 必须是正整数")
+
     return AgentDefinition(
         agent_code=str(meta["agent_code"]),
         capability=str(meta["capability"]),
@@ -106,6 +115,7 @@ def parse_agent_file(path: Path) -> AgentDefinition:
         memory_scope=str(meta["memory_scope"]),
         context_budget=int(meta["context_budget"]),
         output_contract=str(meta["output_contract"]),
+        max_output_tokens=max_output_tokens,
         allow_tools=[str(t) for t in allow_tools],
         system_prompt=body,
         source_file=path.name,

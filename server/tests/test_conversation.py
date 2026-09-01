@@ -304,6 +304,28 @@ def test_推理耗尽预算但正文为空时自动重试并直接回答(
     assert rows[-1].content == "这是直接回答。"
 
 
+def test_角色设计使用更大的初始输出预算并继续递增(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    bind_text_model(session, WRITER)
+    character = make_character(project_db)
+    conversation = engine.start(
+        project_db,
+        agent_code=WRITER,
+        target_kind="character",
+        target_ref=character.id,
+    )
+    chat = SequencedReplies(
+        ChatReply(content="角色方案前半段", finish_reason="length"),
+        ChatReply(content="与后半段", finish_reason="stop"),
+    )
+
+    result = send(project_db, session, project, conversation, "设计角色", chat)
+
+    assert result.content == "角色方案前半段与后半段"
+    assert chat.max_tokens == [16384, 32768]
+
+
 def test_自动续写达到上限后明确失败且不解析残缺内容(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:

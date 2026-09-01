@@ -78,6 +78,7 @@ def test_get_agent_returns_definition() -> None:
     agent = get_agent("game_designer")
     assert agent.conversational is True
     assert agent.memory_scope == "project"
+    assert agent.max_output_tokens is None
     assert agent.system_prompt.startswith("你是")
 
 
@@ -96,6 +97,7 @@ def test_写设定的那个岗位就叫角色设计师() -> None:
     """岗位名会直接进提示词，行业里不存在的叫法会拉偏模型的自我定位。"""
     agent = get_agent("spec_writer")
     assert agent.role == "角色设计师"
+    assert agent.max_output_tokens == 16384
     assert agent.system_prompt.startswith("你是这个项目的角色设计师（Character Designer）")
 
 
@@ -111,6 +113,7 @@ def test_parse_ok(tmp_path: Path) -> None:
     definition = parse_agent_file(_write(tmp_path, "demo"))
     assert definition.agent_code == "demo"
     assert definition.allow_tools == []
+    assert definition.max_output_tokens is None
     assert len(definition.source_hash) == 64
 
 
@@ -130,6 +133,14 @@ def test_reject_code_filename_mismatch(tmp_path: Path) -> None:
 def test_reject_bad_capability(tmp_path: Path) -> None:
     meta = GOOD_META.format(code="demo").replace("capability: text", "capability: telepathy")
     with pytest.raises(AgentDefinitionError, match="capability"):
+        parse_agent_file(_write(tmp_path, "demo", meta=meta))
+
+
+def test_reject_bad_max_output_tokens(tmp_path: Path) -> None:
+    meta = GOOD_META.format(code="demo").replace(
+        "context_budget: 1000", "context_budget: 1000\nmax_output_tokens: 0"
+    )
+    with pytest.raises(AgentDefinitionError, match="max_output_tokens 必须是正整数"):
         parse_agent_file(_write(tmp_path, "demo", meta=meta))
 
 

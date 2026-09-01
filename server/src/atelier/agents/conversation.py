@@ -1004,7 +1004,9 @@ def _call(
 
     for continuation_no in range(MAX_AUTO_CONTINUATIONS + 1):
         purpose = "主回答" if continuation_no == 0 else f"自动续写 {continuation_no}"
-        configured_max_tokens = text_chat.output_budget(decision.candidate, None)
+        configured_max_tokens = text_chat.output_budget(
+            decision.candidate, agent.max_output_tokens
+        )
         max_tokens = min(
             configured_max_tokens * (2**continuation_no),
             max(configured_max_tokens, MAX_AUTO_OUTPUT_TOKENS),
