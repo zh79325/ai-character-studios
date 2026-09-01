@@ -8,7 +8,6 @@
 import { FolderOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert,
   App,
   Button,
   Card,
@@ -135,6 +134,7 @@ export default function CharacterTable() {
   })
   const targetGroup = directoryFilter === ALL_GROUPS ? '' : directoryFilter
   const chosenGroup = creationGroup ?? ''
+  const missingIds = new Set(lastScan?.missing.map((item) => item.id) ?? [])
 
   const closeNaming = () => {
     setNaming(false)
@@ -236,6 +236,11 @@ export default function CharacterTable() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {row.dir_name}
           </Typography.Text>
+          {missingIds.has(row.id) && (
+            <Typography.Text type="danger" style={{ fontSize: 12 }}>
+              磁盘上找不到角色目录
+            </Typography.Text>
+          )}
         </Space>
       ),
     },
@@ -266,11 +271,29 @@ export default function CharacterTable() {
       title: '操作',
       key: 'actions',
       width: 110,
-      render: (_, row) => (
-        <Button type="primary" size="small" onClick={() => navigate(`/characters/${row.id}`)}>
-          开始设计
-        </Button>
-      ),
+      render: (_, row) =>
+        missingIds.has(row.id) ? (
+          <Popconfirm
+            title="删除这条角色记录？"
+            description="只删除数据库记录；角色目录恢复后也需要重新扫描认领。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => removeMissing.mutateAsync(row.id)}
+          >
+            <Button
+              danger
+              size="small"
+              loading={removeMissing.isPending && removeMissing.variables === row.id}
+            >
+              删除记录
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Button type="primary" size="small" onClick={() => navigate(`/characters/${row.id}`)}>
+            开始设计
+          </Button>
+        ),
     },
   ]
 
@@ -321,40 +344,6 @@ export default function CharacterTable() {
             扫描目录
           </Button>
         </Space>
-        {lastScan && lastScan.missing.length > 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            message="有角色在数据库里，但磁盘上找不到"
-            description={
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                {lastScan.missing.map((item) => (
-                  <Space key={item.id} wrap>
-                    <Typography.Text>
-                      {item.name}（{item.dir_name}）
-                    </Typography.Text>
-                    <Popconfirm
-                      title="删除这条角色记录？"
-                      description="只删除数据库记录；角色目录恢复后也需要重新扫描认领。"
-                      okText="删除"
-                      okButtonProps={{ danger: true }}
-                      cancelText="取消"
-                      onConfirm={() => removeMissing.mutateAsync(item.id)}
-                    >
-                      <Button
-                        danger
-                        size="small"
-                        loading={removeMissing.isPending && removeMissing.variables === item.id}
-                      >
-                        删除记录
-                      </Button>
-                    </Popconfirm>
-                  </Space>
-                ))}
-              </Space>
-            }
-          />
-        )}
         <Table
           rowKey="id"
           size="small"
