@@ -87,6 +87,12 @@ def create_character(
     return character_out(projects.character_row(character))
 
 
+@router.delete("/{character_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_missing_character(character_id: str, project: ProjectDb, ref: CurrentProject) -> None:
+    """删除磁盘扫描已确认缺失的角色记录；仍有角色目录时拒绝。"""
+    characters.remove_missing(project, ref, character_id)
+
+
 @router.get("/{character_id}", response_model=CharacterOut)
 def get_character(character_id: str, project: ProjectDb) -> CharacterOut:
     return character_out(projects.character_row(characters.get(project, character_id)))

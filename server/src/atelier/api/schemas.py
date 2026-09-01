@@ -412,10 +412,16 @@ class ArtBibleIn(Schema):
     content: str
 
 
+class MissingCharacterOut(Schema):
+    id: str
+    name: str
+    dir_name: str
+
+
 class ScanResultOut(Schema):
     added: list[str]
-    missing: list[str]
-    """库里有而磁盘上没的素材：只报不删，目录可能只是还没拷过来。"""
+    missing: list[MissingCharacterOut]
+    """库里有而磁盘上没的角色，前端提供逐条手动删除入口。"""
     total: int
 
 

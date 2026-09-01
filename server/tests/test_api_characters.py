@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -178,6 +180,40 @@ def test_覆盖为真时删旧重建(client: TestClient, ready: ProjectRef, cand
 
     assert again.status_code == 201, again.text
     assert again.json()["id"] == first["id"]  # dir_name 没变，id 由它派生
+
+
+def test_扫描缺失角色后可手动删除记录并重建(client: TestClient, ready: ProjectRef) -> None:
+    first = create(client)
+    shutil.rmtree(ready.dir / str(first["dir_name"]))
+
+    blocked = client.post("/api/characters", json={"name": "赤瞳"})
+    assert blocked.status_code == 409
+    assert "扫描目录" in blocked.json()["detail"]
+
+    scanned = client.post("/api/projects/current/scan")
+
+    assert scanned.status_code == 200, scanned.text
+    assert scanned.json()["missing"] == [
+        {"id": first["id"], "name": "赤瞳", "dir_name": "characters/赤瞳"}
+    ]
+
+    removed = client.delete(f"/api/characters/{first['id']}")
+
+    assert removed.status_code == 204, removed.text
+    assert client.get("/api/projects/current/characters").json() == []
+    rebuilt = client.post("/api/characters", json={"name": "赤瞳"})
+    assert rebuilt.status_code == 201, rebuilt.text
+    assert rebuilt.json()["id"] == first["id"]
+
+
+def test_角色目录仍存在时不能只删除数据库记录(client: TestClient, ready: ProjectRef) -> None:
+    character = create(client)
+
+    response = client.delete(f"/api/characters/{character['id']}")
+
+    assert response.status_code == 409
+    assert "角色目录仍存在" in response.json()["detail"]
+    assert len(client.get("/api/projects/current/characters").json()) == 1
 
 
 def test_分组接口列出并新建空分组(client: TestClient, ready: ProjectRef, candidates: None) -> None:

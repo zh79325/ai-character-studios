@@ -30,6 +30,11 @@ export function readCharacter(id: string): Promise<Character> {
   return request<Character>(`/api/characters/${encodeURIComponent(id)}`)
 }
 
+/** 仅删除扫描确认已缺失的角色数据库记录；磁盘上仍有角色目录时后端会拒绝。 */
+export function deleteMissingCharacter(id: string): Promise<void> {
+  return request<void>(`/api/characters/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export function listCharacterEvents(id: string): Promise<TaskEvent[]> {
   return request<TaskEvent[]>(`/api/characters/${encodeURIComponent(id)}/events`)
 }

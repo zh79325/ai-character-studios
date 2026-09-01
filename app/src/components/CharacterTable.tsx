@@ -2,8 +2,8 @@
  * 当前项目的角色列表。表格支持按关键字和所属目录过滤；新建角色时先明确选择目录，再输入
  * 角色名称。覆盖是删旧目录（含素材）重建，后端仍兜底 409。
  *
- * 「扫描目录」是给「用户直接把角色目录拷进来」这条路准备的：只认领带 `.model.json` 的目录，
- * 只报告消失的目录而不删——目录可能只是还没拷过来。
+ * 「扫描目录」是给「用户直接把角色目录拷进来」这条路准备的：只认领带 `.model.json` 的目录；
+ * 扫描发现数据库里有但磁盘上没有的角色时，由用户逐条确认删除记录。
  */
 import { FolderOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -14,6 +14,7 @@ import {
   Card,
   Input,
   Modal,
+  Popconfirm,
   Space,
   Table,
   Tag,
@@ -25,7 +26,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { createCharacter } from '@/api/characters'
+import { createCharacter, deleteMissingCharacter } from '@/api/characters'
 import { createGroup, listCharacters, listGroups, scanProject } from '@/api/projects'
 import type { Character, ScanResult } from '@/types/api'
 
@@ -205,6 +206,24 @@ export default function CharacterTable() {
     onError: (err: Error) => message.error(err.message),
   })
 
+  const removeMissing = useMutation({
+    mutationFn: deleteMissingCharacter,
+    onSuccess: (_, characterId) => {
+      setLastScan((current) =>
+        current
+          ? {
+              ...current,
+              missing: current.missing.filter((item) => item.id !== characterId),
+              total: Math.max(0, current.total - 1),
+            }
+          : null,
+      )
+      refreshAll()
+      message.success('缺失角色记录已删除')
+    },
+    onError: (err: Error) => message.error(err.message),
+  })
+
   const columns: ColumnsType<Character> = [
     {
       title: '角色',
@@ -306,8 +325,34 @@ export default function CharacterTable() {
           <Alert
             type="warning"
             showIcon
-            message="有角色在库里但磁盘上找不到"
-            description={`${lastScan.missing.join('、')}。目录可能还没拷过来，平台不会替你删记录。`}
+            message="有角色在数据库里，但磁盘上找不到"
+            description={
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {lastScan.missing.map((item) => (
+                  <Space key={item.id} wrap>
+                    <Typography.Text>
+                      {item.name}（{item.dir_name}）
+                    </Typography.Text>
+                    <Popconfirm
+                      title="删除这条角色记录？"
+                      description="只删除数据库记录；角色目录恢复后也需要重新扫描认领。"
+                      okText="删除"
+                      okButtonProps={{ danger: true }}
+                      cancelText="取消"
+                      onConfirm={() => removeMissing.mutateAsync(item.id)}
+                    >
+                      <Button
+                        danger
+                        size="small"
+                        loading={removeMissing.isPending && removeMissing.variables === item.id}
+                      >
+                        删除记录
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                ))}
+              </Space>
+            }
           />
         )}
         <Table

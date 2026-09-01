@@ -324,10 +324,16 @@ export interface ArtBible {
   forbidden: string[]
 }
 
+export interface MissingCharacter {
+  id: string
+  name: string
+  dir_name: string
+}
+
 export interface ScanResult {
   added: string[]
-  /** 库里有而磁盘上没的素材：只报不删，目录可能只是还没拷过来。 */
-  missing: string[]
+  /** 库里有而磁盘上没的角色，扫描后由用户逐条确认删除。 */
+  missing: MissingCharacter[]
   total: number
 }
 

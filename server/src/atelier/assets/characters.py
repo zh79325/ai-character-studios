@@ -25,7 +25,16 @@ from sqlalchemy.orm import Session
 
 from atelier.assets import archive, layout, projects
 from atelier.assets.projects import ProjectRef
-from atelier.db.project_models import Character, TaskEvent
+from atelier.db.project_models import (
+    ArtifactDraft,
+    Character,
+    Conversation,
+    Generation,
+    Message,
+    Task,
+    TaskEvent,
+    TaskStep,
+)
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict, NotFound
 
@@ -170,10 +179,13 @@ def create(
     dir_name = "/".join(["characters", *([group] if group else []), seg])
     asset_dir = ref.dir / dir_name
 
+    stale = project.scalar(select(Character).where(Character.dir_name == dir_name))
     if asset_dir.exists():
         if not overwrite:
             raise Conflict(f"角色「{display}」在该分组已存在")
         _remove_existing(project, ref, dir_name)
+    elif stale is not None:
+        raise Conflict(f"角色「{display}」的数据库记录仍存在，请先扫描目录并手动删除缺失记录")
 
     layout.ensure_asset_dirs(asset_dir)
     layout.write_model_marker(asset_dir, display)
@@ -192,17 +204,61 @@ def create(
     return character
 
 
+def _delete_records(project: Session, character: Character) -> None:
+    """清掉角色及其过程数据，避免稳定角色 ID 重建后继承旧会话和产物。"""
+    conversation_ids = list(
+        project.scalars(
+            select(Conversation.id).where(
+                Conversation.target_kind == "character",
+                Conversation.target_ref == character.id,
+            )
+        )
+    )
+    if conversation_ids:
+        project.execute(
+            delete(ArtifactDraft).where(ArtifactDraft.conversation_id.in_(conversation_ids))
+        )
+        project.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+        project.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
+
+    task_ids = list(
+        project.scalars(
+            select(Task.id).where(Task.target_kind == "character", Task.target_ref == character.id)
+        )
+    )
+    if task_ids:
+        project.execute(delete(TaskStep).where(TaskStep.task_id.in_(task_ids)))
+        project.execute(delete(TaskEvent).where(TaskEvent.task_id.in_(task_ids)))
+        project.execute(delete(Task).where(Task.id.in_(task_ids)))
+
+    project.execute(
+        delete(Generation).where(
+            Generation.target_kind == "character", Generation.target_ref == character.id
+        )
+    )
+    project.execute(delete(TaskEvent).where(TaskEvent.task_id == character.id))
+    project.delete(character)
+    project.flush()
+
+
+def remove_missing(project: Session, ref: ProjectRef, character_id: str) -> None:
+    """手动删除扫描确认已缺失的角色记录；仍能识别到角色目录时拒绝。"""
+    character = get(project, character_id)
+    if layout.is_character_dir(ref.absolute(character.dir_name)):
+        raise Conflict(f"{character.name} 的角色目录仍存在，不能删除数据库记录")
+    _delete_records(project, character)
+    project.commit()
+    _log.info("missing_character_removed", id=character_id, dir=character.dir_name)
+
+
 def _remove_existing(project: Session, ref: ProjectRef, dir_name: str) -> None:
-    """覆盖时把旧角色抹干净：磁盘目录、库行、它名下的 task_events 一并删。删完不 commit，
-    跟重建在同一事务里落库，免得删了一半建失败留下个空宝."""
+    """覆盖时把旧角色目录、库行及关联过程数据一并清掉，不单独提交。"""
     asset_dir = ref.dir / dir_name
     if asset_dir.exists():
         shutil.rmtree(asset_dir)
     stale = project.scalar(select(Character).where(Character.dir_name == dir_name))
     if stale is not None:
-        project.execute(delete(TaskEvent).where(TaskEvent.task_id == stale.id))
-        project.delete(stale)
-        project.flush()
+        _delete_records(project, stale)
 
 
 # --------------------------------------------------------------------------- #

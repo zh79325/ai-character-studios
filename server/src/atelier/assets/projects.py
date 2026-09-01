@@ -761,11 +761,18 @@ def art_bible_gaps(text: str) -> list[str]:
 
 
 @dataclass(frozen=True, slots=True)
+class MissingCharacter:
+    id: str
+    name: str
+    dir_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class ScanResult:
     """一次目录扫描的结果，前端照这个报「同步了什么」。"""
 
     added: list[str]
-    missing: list[str]
+    missing: list[MissingCharacter]
     total: int
 
 
@@ -779,9 +786,8 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
     """把 `characters/` 下带 marker 的目录递归同步进项目库。
 
     磁盘是素材存在与否的真相（用户会直接拷目录进来），库是可查询副本。角色按文件夹
-    分层，层级任意深，靠 `.model.json` marker 把「角色」从「分组」里认出来。扫描只做两件
-    事：见到带 marker 的新目录就登记，库里有而磁盘没的标出来给用户看——不自动删，目录
-    可能只是还没从别处拷过来。
+    分层，层级任意深，靠 `.model.json` marker 把「角色」从「分组」里认出来。扫描会登记
+    带 marker 的新目录，并返回库里有而磁盘没有的记录，交给用户确认后手动删除。
     """
     root = ref.dir / "characters"
     dirs = (
@@ -790,7 +796,7 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
         else []
     )
     added: list[str] = []
-    missing: list[str] = []
+    missing: list[MissingCharacter] = []
 
     with project_session(ref.db_path) as session:
         known = {row.dir_name: row for row in session.scalars(select(Character)).all()}
@@ -810,7 +816,14 @@ def scan_characters(ref: ProjectRef) -> ScanResult:
             )
             added.append(name)
         on_disk = {layout.relative_to(ref.dir, p) for p in dirs}
-        missing = sorted(row.name for rel, row in known.items() if rel not in on_disk)
+        missing = sorted(
+            (
+                MissingCharacter(id=row.id, name=row.name, dir_name=row.dir_name)
+                for rel, row in known.items()
+                if rel not in on_disk
+            ),
+            key=lambda row: row.dir_name,
+        )
         total = len(known) + len(added)
 
     return ScanResult(added=added, missing=missing, total=total)

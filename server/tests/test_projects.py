@@ -597,8 +597,8 @@ def test_scan_is_idempotent_and_keeps_ids_stable(session: Session) -> None:
     assert [row["id"] for row in projects_mod.character_rows(ref)] == ids
 
 
-def test_scan_reports_but_never_deletes(session: Session) -> None:
-    """库里有磁盘没有：可能只是目录还没从别处拷过来，不能替用户删记录。"""
+def test_scan_reports_missing_characters_for_manual_cleanup(session: Session) -> None:
+    """库里有磁盘没有时返回稳定 id 与目录，供前端逐条确认删除。"""
     ref = projects_mod.create_project(session, name="项目", code="p1")
     asset = make_character(ref, "chitong_beast")
     projects_mod.scan_characters(ref)
@@ -606,7 +606,10 @@ def test_scan_reports_but_never_deletes(session: Session) -> None:
 
     result = projects_mod.scan_characters(ref)
 
-    assert result.missing == ["chitong_beast"]
+    assert [(one.name, one.dir_name) for one in result.missing] == [
+        ("chitong_beast", "characters/chitong_beast")
+    ]
+    assert result.missing[0].id == projects_mod.asset_id("p1", "characters/chitong_beast")
     assert len(projects_mod.character_rows(ref)) == 1
 
 

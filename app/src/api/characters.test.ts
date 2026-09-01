@@ -12,6 +12,7 @@ import {
   confirmSpec,
   confirmViews,
   createCharacter,
+  deleteMissingCharacter,
   draftAssetSpec,
   generateViews,
   listCharacterEvents,
@@ -82,6 +83,14 @@ describe('建角色与读取', () => {
   it('id 进路径要转义，免得带斜杠时把路径拼歪', async () => {
     await readCharacter('a/b')
     expect(onlyCall().url).toBe('http://127.0.0.1:62066/api/characters/a%2Fb')
+  })
+
+  it('删除缺失角色只调用数据库清理端点', async () => {
+    await deleteMissingCharacter('a/b')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/characters/a%2Fb',
+      method: 'DELETE',
+    })
   })
 
   it('事件时间线是只读的', async () => {
