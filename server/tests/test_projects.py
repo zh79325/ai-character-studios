@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from atelier.assets import layout
 from atelier.assets import projects as projects_mod
-from atelier.db.project_models import Character, ProjectMeta
+from atelier.db.project_models import Character
 from atelier.db.runtime_models import ProjectRegistry
 from atelier.db.session import project_session
 from atelier.errors import Conflict, NotFound
@@ -56,6 +56,29 @@ def test_new_project_is_self_contained(session: Session, projects_root: Path) ->
     assert (layout.data_dir(ref.dir) / ".gitignore").is_file()
     for name in layout.CATEGORY_DIRS:
         assert (ref.dir / name).is_dir()
+
+
+def test_new_project_lays_out_the_consensus_dirs(session: Session) -> None:
+    """记忆与项目级提示词落在目录里、进 Git，所以空着也得铺出来带上 .gitkeep。
+
+    接手的人 clone 下来要看得出这两处是干什么的、可以手写；也要确认它们没被 .gitignore 挡掉。
+    """
+    ref = projects_mod.create_project(session, name="赤瞳系列", code="chitong")
+
+    for path in (layout.memory_dir(ref.dir), ref.dir / layout.PROMPTS_DIR):
+        assert (path / ".gitkeep").is_file()
+    ignored = (ref.dir / ".gitignore").read_text(encoding="utf-8")
+    assert layout.MEMORY_DIR not in ignored
+    assert layout.PROMPTS_DIR not in ignored
+
+
+def test_new_project_json_carries_the_workflow_state(session: Session) -> None:
+    """立项推到哪一步是项目自己的事，跟着 project.json 走而不是留在本机那个可删的库里。"""
+    ref = projects_mod.create_project(session, name="赤瞳系列", code="chitong")
+
+    raw = json.loads(layout.project_json_path(ref.dir).read_text(encoding="utf-8"))
+    assert raw["state"] == projects_mod.DEFAULT_STATE
+    assert projects_mod.read_config(ref.dir).state == projects_mod.DEFAULT_STATE
 
 
 def test_importing_a_bare_project_dir_gets_its_data_dir(session: Session, tmp_path: Path) -> None:
@@ -384,9 +407,6 @@ def test_a_copied_project_with_a_new_code_keeps_its_assets(
 
     clone = projects_mod.import_project(session, clone_dir)
 
-    with project_session(clone.db_path) as db:
-        meta = db.get(ProjectMeta, 1)
-        assert meta is not None and meta.project_code == "clone"  # 库跟着 json 认亲
     assert [row["name"] for row in projects_mod.character_rows(clone)] == ["chitong_beast"]
     assert [row["name"] for row in projects_mod.character_rows(origin)] == ["chitong_beast"]
 

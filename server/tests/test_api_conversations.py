@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 from atelier.agents import conversation as engine
 from atelier.agents.stream_bus import BUS, ERROR
 from atelier.api import conversations as api
+from atelier.assets import layout
+from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Message
 from atelier.providers import text_chat
@@ -541,6 +543,14 @@ def test_手写记忆的增改停删(client: TestClient, project: ProjectRef) ->
     assert client.get("/api/memory").json() == []
 
 
+def test_手写的记忆落在项目目录里(client: TestClient, project: ProjectRef) -> None:
+    """接口写的是目录里那份文件而不是库，用户才能在 Git 里看见这条共识。"""
+    created = client.post("/api/memory", json={"kind": "taboo", "content": "不要齿轮"}).json()
+
+    assert created["id"] == memory_files.memory_hash("taboo", "不要齿轮")
+    assert "不要齿轮" in layout.preferences_path(project.dir).read_text(encoding="utf-8")
+
+
 def test_停用的记忆还在列表里(client: TestClient, project: ProjectRef) -> None:
     """停用是让它不再注入，不是删掉——列表里要看得见才能改回来。"""
     created = client.post("/api/memory", json={"kind": "preference", "content": "冷色调"}).json()
@@ -557,11 +567,13 @@ def test_改内容后去重的键跟着变(
 ) -> None:
     created = client.post("/api/memory", json={"kind": "fact", "content": "平台是 PC"}).json()
 
-    client.patch(f"/api/memory/{created['id']}", json={"content": "平台是 PC 与 Switch"})
+    patched = client.patch(
+        f"/api/memory/{created['id']}", json={"content": "平台是 PC 与 Switch"}
+    ).json()
 
-    project_db.expire_all()
-    assert engine.write_memory(project_db, "fact", "平台是 PC 与 Switch") is None
-    assert engine.write_memory(project_db, "fact", "平台是 PC") is not None
+    assert patched["id"] != created["id"]  # 内容哈希寻址，改完内容就换了个身份
+    assert engine.write_memory(project_db, project, "fact", "平台是 PC 与 Switch") is None
+    assert engine.write_memory(project_db, project, "fact", "平台是 PC") is not None
 
 
 def test_改不存在的记忆是404(client: TestClient, project: ProjectRef) -> None:

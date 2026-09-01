@@ -56,16 +56,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("name", name="uq_character_name"),
     )
     op.create_table(
-        "conversation_memory",
-        sa.Column("conversation_id", sa.String(length=64), nullable=False),
-        sa.Column("summary", sa.Text(), nullable=False),
-        sa.Column("open_questions", sa.JSON(), nullable=False),
-        sa.Column("decisions", sa.JSON(), nullable=False),
-        sa.Column("folded_turns", sa.Integer(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("conversation_id"),
-    )
-    op.create_table(
         "conversations",
         sa.Column("id", sa.String(length=64), nullable=False),
         sa.Column("target_kind", sa.String(length=32), nullable=False),
@@ -124,57 +114,6 @@ def upgrade() -> None:
     )
     with op.batch_alter_table("messages", schema=None) as batch_op:
         batch_op.create_index("ix_messages_conv", ["conversation_id"], unique=False)
-
-    op.create_table(
-        "project_agent_prompts",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("agent_code", sa.String(length=64), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("agent_code", name="uq_project_agent_prompt"),
-    )
-    op.create_table(
-        "project_memory",
-        sa.Column("id", sa.String(length=64), nullable=False),
-        sa.Column("kind", sa.String(length=16), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("content_hash", sa.String(length=64), nullable=False),
-        sa.Column("character_ref", sa.String(length=64), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("source_conversation_id", sa.String(length=64), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("content_hash", "character_ref", name="uq_project_memory"),
-    )
-    op.create_table(
-        "project_meta",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("project_code", sa.String(length=64), nullable=False),
-        sa.Column("state", sa.String(length=32), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_table(
-        "project_prompt_snippets",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("code", sa.String(length=64), nullable=False),
-        sa.Column("kind", sa.String(length=16), nullable=False),
-        sa.Column("slot", sa.String(length=32), nullable=True),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("sort_no", sa.Integer(), nullable=False),
-        sa.Column("remark", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("code", name="uq_project_prompt_snippet"),
-    )
-    with op.batch_alter_table("project_prompt_snippets", schema=None) as batch_op:
-        batch_op.create_index("ix_project_prompt_snippet_kind", ["kind"], unique=False)
 
     op.create_table(
         "task_events",
@@ -241,13 +180,6 @@ def downgrade() -> None:
         batch_op.drop_index("ix_task_events_task_seq")
 
     op.drop_table("task_events")
-    with op.batch_alter_table("project_prompt_snippets", schema=None) as batch_op:
-        batch_op.drop_index("ix_project_prompt_snippet_kind")
-
-    op.drop_table("project_prompt_snippets")
-    op.drop_table("project_meta")
-    op.drop_table("project_memory")
-    op.drop_table("project_agent_prompts")
     with op.batch_alter_table("messages", schema=None) as batch_op:
         batch_op.drop_index("ix_messages_conv")
 
@@ -260,7 +192,6 @@ def downgrade() -> None:
         batch_op.drop_index("ix_conversations_target")
 
     op.drop_table("conversations")
-    op.drop_table("conversation_memory")
     op.drop_table("characters")
     with op.batch_alter_table("artifact_drafts", schema=None) as batch_op:
         batch_op.drop_index("ix_drafts_conv")

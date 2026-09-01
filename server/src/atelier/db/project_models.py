@@ -2,7 +2,11 @@
 
 一个项目 = 一个目录 + 目录里自带的这个库。项目可以放在磁盘任意位置（不必在本仓库
 `assets/` 下），整个目录连库一起拷走、换机器挂上就还是那个项目：素材、状态、会话、
-记忆、任务日志全在里面，不依赖本机那份全局 runtime.db。
+任务日志全在里面，不依赖本机那份全局 runtime.db。
+
+本库只存**过程记录**：删掉重跑一遍就能有的东西。跟用户谈成的共识（偏好禁忌、会话记忆、
+项目级提示词）落在项目目录的 `memory/` 与 `prompts/` 里进 Git，见 `assets/memory.py`——
+`.atelier/` 整个在 gitignore 里，共识放进来等于换台机器就没了。
 
 因此本库**只存项目自己的东西**，不含任何机器级数据：provider 凭证、额度用量、路由
 日志留在全局 runtime.db。跨库引用只存 code 字符串或裸 id，不建外键、不 join——
@@ -36,28 +40,6 @@ class ProjectBase(DeclarativeBase):
     """项目库独立 Base，与配置库、全局日志库的 metadata 完全隔离。"""
 
     type_annotation_map = {dict[str, Any]: JSON, list[str]: JSON}
-
-
-# --------------------------------------------------------------------------- #
-# 项目自身
-# --------------------------------------------------------------------------- #
-
-
-class ProjectMeta(ProjectBase):
-    """本库属于哪个项目，以及项目的运行态。固定单行（id=1）。
-
-    配置（名称、风格、defaults 等）的真相是目录里的 `project.json`，不在这里存副本；
-    这里只放两件 json 放不下的东西：`project_code` 用来认亲（目录被整份复制成另一个
-    项目时能发现库对不上），`state` 是立项工作流的推进状态。
-    """
-
-    __tablename__ = "project_meta"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    project_code: Mapped[str] = mapped_column(String(64))
-    state: Mapped[str] = mapped_column(String(32), default="P0_project_shaping")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
 class Character(ProjectBase):
@@ -247,19 +229,6 @@ class Message(ProjectBase):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
-class ConversationMemory(ProjectBase):
-    """滚动摘要 + 已拍板结论 + 待确认问题。"""
-
-    __tablename__ = "conversation_memory"
-
-    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    summary: Mapped[str] = mapped_column(Text, default="")
-    open_questions: Mapped[list[str]] = mapped_column(default=list)
-    decisions: Mapped[list[str]] = mapped_column(default=list)
-    folded_turns: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
 class ArtifactDraft(ProjectBase):
     """未确认的产物草稿：只入库，不落盘。确认沉淀是唯一落盘入口。"""
 
@@ -274,66 +243,3 @@ class ArtifactDraft(ProjectBase):
     based_on_hash: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class ProjectMemory(ProjectBase):
-    """项目长期记忆，可在设置页增删改。
-
-    `character_ref` 把记忆分成两档：空串是项目级（注入所有 Agent），填了角色 id 就只注入
-    那个角色的会话。不分的话，在「赤瞳」设定里说的「尾巴要 2 条」会跟着进下一个角色的提示词，
-    用户得反复推翻一条他从没对这个角色说过的要求。
-
-    用空串而不是 NULL 表示项目级：SQLite 的唯一索引里 NULL 彼此不相等，拿 NULL 当默认值等于
-    把项目级记忆的去重关掉。
-    """
-
-    __tablename__ = "project_memory"
-    __table_args__ = (UniqueConstraint("content_hash", "character_ref", name="uq_project_memory"),)
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    kind: Mapped[str] = mapped_column(String(16))
-    content: Mapped[str] = mapped_column(Text)
-    content_hash: Mapped[str] = mapped_column(String(64))
-    character_ref: Mapped[str] = mapped_column(String(64), default="")
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    source_conversation_id: Mapped[str | None] = mapped_column(String(64), default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-
-
-class ProjectAgentPrompt(ProjectBase):
-    """项目级 Agent 附加指令。
-
-    工程级提示词在 atelier/prompts/agents/*.md，只读不可改；本表存用户为本项目给某
-    Agent 补充的指令，组装上下文时追加在工程提示词之后，不覆盖、不改写。
-    """
-
-    __tablename__ = "project_agent_prompts"
-    __table_args__ = (UniqueConstraint("agent_code", name="uq_project_agent_prompt"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    agent_code: Mapped[str] = mapped_column(String(64))
-    content: Mapped[str] = mapped_column(Text)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
-
-
-class ProjectPromptSnippet(ProjectBase):
-    """项目自定义提示词片段：负向词、风格层等，与工程预设合并后使用。"""
-
-    __tablename__ = "project_prompt_snippets"
-    __table_args__ = (
-        UniqueConstraint("code", name="uq_project_prompt_snippet"),
-        Index("ix_project_prompt_snippet_kind", "kind"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(64))
-    kind: Mapped[str] = mapped_column(String(16))
-    slot: Mapped[str | None] = mapped_column(String(32), default=None)
-    content: Mapped[str] = mapped_column(Text)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    sort_no: Mapped[int] = mapped_column(Integer, default=0)
-    remark: Mapped[str | None] = mapped_column(Text, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

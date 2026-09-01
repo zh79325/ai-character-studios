@@ -165,6 +165,25 @@ describe('项目记忆', () => {
     await deleteMemory('m1')
     expect(onlyCall().method).toBe('DELETE')
   })
+
+  it('改完内容 id 会变——条目按内容哈希寻址，得拿响应里的新 id', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'hash-new',
+            kind: 'preference',
+            content: '尾巴要 2 条',
+            character_ref: '',
+            enabled: true,
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+    const updated = await patchMemory('hash-old', { content: '尾巴要 2 条' })
+    expect(updated.id).toBe('hash-new')
+  })
 })
 
 /** 记下建了哪些流、挂了哪些监听，好把事件喂回去。 */

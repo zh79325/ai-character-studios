@@ -284,6 +284,8 @@ export interface ProjectConfig extends Record<string, unknown> {
   review_mode: ReviewMode
   conversation_audit: boolean
   stage: ProjectStage
+  /** 立项工作流推到哪一步。现在只跟着项目目录存着，前端不读。 */
+  state: string
 }
 
 /** 配置表单的提交体。code 是跟着目录走的身份，改不了，所以不在这里。 */
@@ -649,6 +651,7 @@ export interface Diff {
 }
 
 export interface ProjectMemoryItem {
+  /** 内容哈希而不是主键：条目存在项目目录的 Markdown 里，改了内容它就变了。 */
   id: string
   kind: string
   content: string
@@ -656,6 +659,4 @@ export interface ProjectMemoryItem {
   character_ref: string
   /** 停用是让它不再注入上下文，不是删掉。 */
   enabled: boolean
-  source_conversation_id: string | null
-  created_at: string
 }

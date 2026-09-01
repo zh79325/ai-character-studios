@@ -86,7 +86,6 @@ class Ask:
 
 
 class MemoryLike(Protocol):
-    conversation_id: str
     summary: str
     open_questions: list[str]
     decisions: list[str]

@@ -11,16 +11,19 @@
 1. **未确认不落盘**。产物只进 `artifact_drafts`；确认沉淀是唯一的写工作区入口。
 2. **原文只折不删**。超预算时把最老的消息压缩进摘要并标 `folded=true`，`messages` 里
    的原文永远留着，前端展开还能看到当时到底说了什么。
+
+消息流在库里、记忆在目录里：前者是过程记录，删了重跑就有；后者是跟用户谈成的共识，得跟着
+对象进 Git 给下一个接手的人看，读写都走 `assets.memory`。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import structlog
 from sqlalchemy import func, select
@@ -30,15 +33,13 @@ from atelier.agents import audit, context, dispatch, orchestrator, parsing, toke
 from atelier.agents.definitions import AgentDefinition, get_agent
 from atelier.agents.stream_bus import BUS, COMMITTED, DELTA, ERROR, TURN
 from atelier.assets import archive, characters, layout, projects
+from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import (
     ArtifactDraft,
     Character,
     Conversation,
-    ConversationMemory,
     Message,
-    ProjectAgentPrompt,
-    ProjectMemory,
 )
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict, Interrupted, NotFound
@@ -110,7 +111,7 @@ class CommitResult:
     conversation_id: str
     archived: tuple[archive.ArchiveResult, ...] = ()
     memories_added: tuple[str, ...] = ()
-    """新写进 project_memory 的内容，去重后剩下的那些。"""
+    """新写进对象目录里偏好文件的内容，去重后剩下的那些。"""
 
 
 @dataclass(slots=True)
@@ -125,8 +126,8 @@ class ContextInputs:
     art_bible_text: str | None = None
     config_path: str | None = None
     config_text: str | None = None
-    project_memories: list[ProjectMemory] = field(default_factory=list)
-    memory: ConversationMemory | None = None
+    project_memories: list[memory_files.MemoryEntry] = field(default_factory=list)
+    memory: memory_files.AgentMemory | None = None
     messages: list[context.MessageLike] = field(default_factory=list)
     """进上下文的那几条。失败轮在这里是占位而不是库里的原行，所以只按协议读，不当 ORM 用。"""
     rows: dict[int, Message] = field(default_factory=dict)
@@ -168,7 +169,6 @@ def start(
         status="active",
     )
     project.add(conversation)
-    project.add(ConversationMemory(conversation_id=conversation.id))
     project.commit()
     _log.info("conversation_started", id=conversation.id, agent=agent_code, target=target_ref)
     return conversation
@@ -196,11 +196,12 @@ def ensure(
 
     一个对焦对象（一个项目、一个角色、以后一张地图）就一场会话，`agent_code` 这一维指的是这场的
     **主 Agent**；一场里要跑多个 Agent 不开新会话，而是由主 Agent 指派，见
-    `agents/orchestrator.py`。
+    `agents/orchestrator.py`。所以这里不比 `agent_code`：同一个对象上已经有一场就接着聊，库里
+    那个主 Agent 说了算——换个 Agent 就另开一场的话，两场会各自满上一半上下文。
     """
-    for row in list_conversations(project, target_kind=target_kind, target_ref=target_ref):
-        if row.agent_code == agent_code:
-            return row
+    rows = list_conversations(project, target_kind=target_kind, target_ref=target_ref)
+    if rows:
+        return rows[0]
     return start(
         project,
         agent_code=agent_code,
@@ -235,14 +236,47 @@ def messages_of(project: Session, conversation_id: str) -> list[Message]:
     )
 
 
-def memory_of(project: Session, conversation_id: str) -> ConversationMemory:
-    """会话记忆行，缺了就补一条——老会话可能是在这张表之前建的。"""
-    memory = project.get(ConversationMemory, conversation_id)
-    if memory is None:
-        memory = ConversationMemory(conversation_id=conversation_id)
-        project.add(memory)
-        project.flush()
-    return memory
+def target_dir(project: Session, ref: ProjectRef, conversation: Conversation) -> Path:
+    """这场会话的共识落在哪个目录：项目会话在项目根，角色会话在那个角色自己的目录里。
+
+    跟审计记录同一套定位：记忆是对着这个对象谈出来的，角色改名搬目录时它得跟着走。
+    """
+    if conversation.target_kind == "character":
+        return _scope_dir(project, ref, conversation.target_ref or "")
+    return ref.dir
+
+
+def _scope_dir(project: Session, ref: ProjectRef, character_ref: str) -> Path:
+    """这一档记忆存在哪里。空作用域是项目级。"""
+    if not character_ref:
+        return ref.dir
+    return ref.absolute(_character(project, character_ref).dir_name)
+
+
+def agent_memory_of(
+    project: Session, ref: ProjectRef, conversation: Conversation, agent_code: str = ""
+) -> memory_files.AgentMemory:
+    """某个 Agent 在这场会话里记下的东西。文件还没有就是空的一份，不预建。
+
+    按 Agent 分文件而不是一场一份：一场会话里多个 Agent 各记各的，混在一份里下一个 Agent
+    会把别人的待确认问题当成自己的活儿。不传 `agent_code` 就是当下在说话的那个。
+    """
+    code = agent_code or orchestrator.actor_for(conversation)
+    return memory_files.read_agent_memory(target_dir(project, ref, conversation), code)
+
+
+def write_agent_memory(
+    project: Session,
+    ref: ProjectRef,
+    conversation: Conversation,
+    memory: memory_files.AgentMemory,
+    agent_code: str = "",
+) -> None:
+    """把这份记忆整份写回对象目录。"""
+    code = agent_code or orchestrator.actor_for(conversation)
+    memory_files.write_agent_memory(
+        target_dir(project, ref, conversation), code, memory, role=get_agent(code).role
+    )
 
 
 def choices_of(project: Session, conversation_id: str) -> tuple[parsing.ChoiceGroup, ...]:
@@ -302,7 +336,7 @@ def is_settled(project: Session, conversation_id: str) -> bool:
 
 
 PROJECT_SCOPE = ""
-"""项目级记忆的 `character_ref`。空串而不是 None，理由在 `ProjectMemory` 里。"""
+"""项目级记忆的作用域。空串而不是 None：它要跟角色 id 放在同一个变量里比。"""
 
 
 def memory_scope(conversation: Conversation) -> str:
@@ -316,23 +350,24 @@ def memory_scope(conversation: Conversation) -> str:
     return PROJECT_SCOPE
 
 
-def enabled_memories(project: Session, character_ref: str = PROJECT_SCOPE) -> list[ProjectMemory]:
-    """该注入的记忆：项目级的总带上，再加当前角色自己那些。
+def enabled_memories(
+    project: Session, ref: ProjectRef, character_ref: str = PROJECT_SCOPE
+) -> list[memory_files.MemoryEntry]:
+    """该注入的记忆：项目级的总带上，再加当前角色自己那些，项目级在前。
 
     别的角色那几条不带：「赤瞳的尾巴要 2 条」对下一个角色不仅无用，还会被模型当成本项目的
     通例写进新设定，用户得花一轮把它推翻。
     """
-    scopes = {PROJECT_SCOPE, character_ref}
-    return list(
-        project.scalars(
-            select(ProjectMemory)
-            .where(
-                ProjectMemory.enabled.is_(True),
-                ProjectMemory.character_ref.in_(sorted(scopes)),
-            )
-            .order_by(ProjectMemory.created_at)
-        )
+    entries = [one for one in memory_files.read_preferences(ref.dir) if one.enabled]
+    if not character_ref:
+        return entries
+    seen = {one.id for one in entries}
+    entries.extend(
+        one
+        for one in memory_files.read_preferences(_scope_dir(project, ref, character_ref))
+        if one.enabled and one.id not in seen
     )
+    return entries
 
 
 # --------------------------------------------------------------------------- #
@@ -510,15 +545,15 @@ def resolve_draft_path(
 # --------------------------------------------------------------------------- #
 
 
-def addendum(project: Session, agent_code: str) -> str | None:
-    """项目级附加指令。单次调用型 Agent 也要带上——不带就成了评审按的标准跟创作按的标准不一样。"""
-    row = project.scalars(
-        select(ProjectAgentPrompt).where(
-            ProjectAgentPrompt.agent_code == agent_code,
-            ProjectAgentPrompt.enabled.is_(True),
-        )
-    ).one_or_none()
-    return row.content if row is not None else None
+def addendum(ref: ProjectRef, agent_code: str) -> str | None:
+    """项目级附加指令，读 `prompts/agents/{agent_code}.md`。
+
+    单次调用型 Agent 也要带上——不带就成了评审按的标准跟创作按的标准不一样。
+    """
+    prompt = memory_files.read_agent_prompt(ref.dir, agent_code)
+    if prompt is None or not prompt.enabled:
+        return None
+    return prompt.content
 
 
 def _art_bible_for(ref: ProjectRef, conversation: Conversation) -> tuple[str | None, str | None]:
@@ -591,15 +626,15 @@ def _inputs(project: Session, ref: ProjectRef, conversation: Conversation) -> Co
     is_project = conversation.target_kind == "project"
     return ContextInputs(
         agent=agent,
-        addendum=addendum(project, conversation.agent_code),
+        addendum=addendum(ref, agent.agent_code),
         artifact_path=artifact_path,
         artifact_text=artifact_text,
         art_bible_path=art_bible_path,
         art_bible_text=art_bible_text,
         config_path=layout.PROJECT_JSON if is_project else None,
         config_text=config_snapshot(ref) if is_project else None,
-        project_memories=enabled_memories(project, memory_scope(conversation)),
-        memory=memory_of(project, conversation.id),
+        project_memories=enabled_memories(project, ref, memory_scope(conversation)),
+        memory=agent_memory_of(project, ref, conversation),
         messages=_history_for_context(history),
         rows={one.turn_no: one for one in history},
     )
@@ -738,7 +773,8 @@ def send(
     assistant.token_count = reply.completion_tokens or tokens.estimate_text(content)
     assistant.status = DONE
     parsed = parsing.parse_turn(content)
-    _apply_progress(inputs.memory, parsed.progress)
+    if _apply_progress(inputs.memory, parsed.progress):
+        write_agent_memory(project, ref, conversation, inputs.memory)
     draft_ids = _store_drafts(project, ref, conversation, parsed.drafts)
     conversation.updated_at = assistant.created_at
     project.commit()
@@ -920,7 +956,7 @@ def _fold_until_fits(
     turn_audit: audit.TurnAudit | None,
 ) -> tuple[int, ...]:
     """超预算就把最老的原文压缩进摘要，直到装得下或折不动为止。"""
-    memory = memory_of(project, conversation.id)
+    memory = agent_memory_of(project, ref, conversation)
     recent_turns = get_settings().recent_turns
     folded: list[int] = []
 
@@ -966,6 +1002,7 @@ def _fold_until_fits(
 
         memory.summary = reply.content.strip()
         memory.folded_turns += len(victims)
+        write_agent_memory(project, ref, conversation, memory)
         for message in victims:
             message.folded = True
             row = inputs.rows.get(message.turn_no)
@@ -996,18 +1033,26 @@ def _merge_unique(existing: Sequence[str], incoming: Sequence[str]) -> list[str]
     return merged
 
 
-def _apply_progress(memory: ConversationMemory | None, progress: parsing.Progress | None) -> None:
-    """把这轮的进度并进会话记忆。
+def _apply_progress(
+    memory: memory_files.AgentMemory | None, progress: parsing.Progress | None
+) -> bool:
+    """把这轮的进度并进会话记忆，真改动了东西返回真（调用方据此决定要不要重写文件）。
 
     结论累加、开放问题整体替换：结论一旦拍板就不该因为某轮忘了复述而消失，而开放问题的
     最新一份才是准的——上一轮问完的问题这轮不该还挂着。
     """
     if memory is None or progress is None:
-        return
+        return False
+    changed = False
     if progress.decisions:
-        memory.decisions = _merge_unique(memory.decisions, progress.decisions)
+        merged = _merge_unique(memory.decisions, progress.decisions)
+        changed = merged != memory.decisions
+        memory.decisions = merged
     if progress.open_questions:
-        memory.open_questions = list(progress.open_questions)
+        incoming = list(progress.open_questions)
+        changed = changed or incoming != memory.open_questions
+        memory.open_questions = incoming
+    return changed
 
 
 # --------------------------------------------------------------------------- #
@@ -1072,8 +1117,8 @@ def _normalize(text: str) -> str:
 
 
 def memory_hash(kind: str, content: str) -> str:
-    """记忆去重的键。按「类别 + 归一化内容」算，空白差异不算两条。"""
-    return hashlib.sha256(f"{kind}:{_normalize(content)}".encode()).hexdigest()
+    """记忆去重的键。跟落盘那边共一套算法，否则本模块去了重、写进文件又算出另一个 id。"""
+    return memory_files.memory_hash(kind, content)
 
 
 def harvest_memories(project: Session, conversation_id: str) -> tuple[parsing.MemoryItem, ...]:
@@ -1097,13 +1142,13 @@ def harvest_memories(project: Session, conversation_id: str) -> tuple[parsing.Me
 
 def write_memory(
     project: Session,
+    ref: ProjectRef,
     kind: str,
     content: str,
     *,
-    source: str | None = None,
     character_ref: str = PROJECT_SCOPE,
-) -> ProjectMemory | None:
-    """写一条项目记忆，已经有一样的就返回 None。
+) -> memory_files.MemoryEntry | None:
+    """写一条项目记忆进对象目录，已经有一样的就返回 None。
 
     去重按「类别 + 归一化内容」，因为同一条偏好在不同轮里措辞会差一个标点，靠原文比对
     会攒出一堆近似重复，注入时全都占预算。
@@ -1111,43 +1156,29 @@ def write_memory(
     角色级那一档还要让着项目级：项目级已经有同一句时不再写副本——两条一模一样的记忆同时
     注入，用户在设置页关掉其中一条会发现它依旧生效。
     """
-    key = memory_hash(kind, content)
-    scopes = {PROJECT_SCOPE, character_ref}
-    exists = project.scalars(
-        select(ProjectMemory).where(
-            ProjectMemory.content_hash == key,
-            ProjectMemory.character_ref.in_(sorted(scopes)),
-        )
-    ).first()
-    if exists is not None:
-        return None
-    row = ProjectMemory(
-        id=uuid.uuid4().hex,
-        kind=kind,
-        content=content,
-        content_hash=key,
-        character_ref=character_ref,
-        source_conversation_id=source,
+    taken: set[str] = set()
+    scope = memory_files.SCOPE_PROJECT
+    if character_ref:
+        taken = {one.id for one in memory_files.read_preferences(ref.dir)}
+        scope = memory_files.SCOPE_CHARACTER
+    return memory_files.add_preference(
+        _scope_dir(project, ref, character_ref), kind, content, scope=scope, taken=taken
     )
-    project.add(row)
-    project.flush()
-    return row
 
 
 def _write_memories(
     project: Session,
+    ref: ProjectRef,
     conversation: Conversation,
     items: Sequence[parsing.MemoryItem],
 ) -> tuple[str, ...]:
-    """去重后追写 project_memory，返回真正新增的内容。作用域跟会话的对焦对象一致。"""
+    """去重后追写对象目录里的偏好文件，返回真正新增的内容。作用域跟会话的对焦对象一致。"""
     scope = memory_scope(conversation)
     added: list[str] = []
     for item in items:
-        row = write_memory(
-            project, item.kind, item.content, source=conversation.id, character_ref=scope
-        )
-        if row is not None:
-            added.append(row.content)
+        entry = write_memory(project, ref, item.kind, item.content, character_ref=scope)
+        if entry is not None:
+            added.append(entry.content)
     return tuple(added)
 
 
@@ -1196,7 +1227,7 @@ def commit(
             },
         )
 
-    added = _write_memories(project, conversation, harvest_memories(project, conversation.id))
+    added = _write_memories(project, ref, conversation, harvest_memories(project, conversation.id))
     _link_spec(project, conversation, archived)
     project.commit()
 

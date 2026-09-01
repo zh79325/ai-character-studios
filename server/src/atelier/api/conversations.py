@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
 
 from fastapi import APIRouter, Header, Query, Request, status
 from sqlalchemy import func, select
@@ -45,8 +46,9 @@ from atelier.api.schemas import (
     TurnOut,
 )
 from atelier.assets import archive, layout
+from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
-from atelier.db.project_models import ArtifactDraft, Conversation, Message, ProjectMemory
+from atelier.db.project_models import ArtifactDraft, Character, Conversation, Message
 from atelier.errors import Conflict, NotFound
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -135,16 +137,35 @@ def _draft_out(ref: ProjectRef, row: ArtifactDraft) -> DraftOut:
     )
 
 
-def _memory_out(row: ProjectMemory) -> ProjectMemoryOut:
+def _memory_out(entry: memory_files.MemoryEntry, character_ref: str) -> ProjectMemoryOut:
     return ProjectMemoryOut(
-        id=row.id,
-        kind=row.kind,
-        content=row.content,
-        character_ref=row.character_ref,
-        enabled=row.enabled,
-        source_conversation_id=row.source_conversation_id,
-        created_at=row.created_at.isoformat(),
+        id=entry.id,
+        kind=entry.kind,
+        content=entry.content,
+        character_ref=character_ref,
+        enabled=entry.enabled,
     )
+
+
+def _memory_scopes(
+    project: Session, ref: ProjectRef, character_ref: str | None
+) -> list[tuple[str, Path]]:
+    """要看的那几份偏好文件，项目级在前。返回（作用域, 所在目录）。
+
+    不填 `character_ref` 就把每个角色目录都转一遍：记忆现在按对象分文件存，没有一张表可以
+    一次查完。
+    """
+    scopes: list[tuple[str, Path]] = [("", ref.dir)]
+    if character_ref:
+        row = project.get(Character, character_ref)
+        if row is None:
+            raise NotFound(f"角色 {character_ref} 不在这个项目里")
+        scopes.append((row.id, ref.absolute(row.dir_name)))
+        return scopes
+    if character_ref is None:
+        rows = project.scalars(select(Character).order_by(Character.created_at)).all()
+        scopes.extend((one.id, ref.absolute(one.dir_name)) for one in rows)
+    return scopes
 
 
 def _naming_out(options: Sequence[parsing.NamingOption]) -> list[NamingOptionOut]:
@@ -164,7 +185,7 @@ def _choices_out(groups: Sequence[parsing.ChoiceGroup]) -> list[ChoiceGroupOut]:
 
 
 def _detail(project: Session, ref: ProjectRef, row: Conversation) -> ConversationDetailOut:
-    memory = engine.memory_of(project, row.id)
+    memory = engine.agent_memory_of(project, ref, row)
     artifact_path, _ = engine.artifact_of(project, ref, row)
     briefing = engine.briefing_of(project, ref, row)
     return ConversationDetailOut(
@@ -408,6 +429,7 @@ def read_diff(
 @memory_router.get("", response_model=list[ProjectMemoryOut])
 def list_memories(
     project: ProjectDb,
+    ref: CurrentProject,
     character_ref: str | None = Query(
         default=None, description="填角色 id 只看它那一档加项目级；不填看全部"
     ),
@@ -417,45 +439,50 @@ def list_memories(
     不填 `character_ref` 给全部：设置页要能一眼看完这个项目攒下的所有记忆，包括各个角色名下
     那些——拿不到全量就无法解释模型为何还带着某条旧偏好。
     """
-    stmt = select(ProjectMemory).order_by(ProjectMemory.created_at)
-    if character_ref is not None:
-        stmt = stmt.where(ProjectMemory.character_ref.in_(("", character_ref)))
-    rows = project.scalars(stmt).all()
-    return [_memory_out(row) for row in rows]
+    out: list[ProjectMemoryOut] = []
+    for scope, base_dir in _memory_scopes(project, ref, character_ref):
+        out.extend(_memory_out(entry, scope) for entry in memory_files.read_preferences(base_dir))
+    return out
 
 
 @memory_router.post("", response_model=ProjectMemoryOut, status_code=status.HTTP_201_CREATED)
-def add_memory(payload: ProjectMemoryIn, project: ProjectDb) -> ProjectMemoryOut:
-    """手写一条记忆。与 Agent 沉淀出来的走同一张表、同一套去重。"""
+def add_memory(
+    payload: ProjectMemoryIn, project: ProjectDb, ref: CurrentProject
+) -> ProjectMemoryOut:
+    """手写一条记忆。与 Agent 沉淀出来的进同一份文件、走同一套去重。"""
     added = engine.write_memory(
-        project, payload.kind, payload.content, character_ref=payload.character_ref
+        project, ref, payload.kind, payload.content, character_ref=payload.character_ref
     )
     if added is None:
         raise Conflict("这条记忆已经有了")
-    project.commit()
-    return _memory_out(added)
+    return _memory_out(added, payload.character_ref)
 
 
 @memory_router.patch("/{memory_id}", response_model=ProjectMemoryOut)
 def update_memory(
-    memory_id: str, payload: ProjectMemoryPatch, project: ProjectDb
+    memory_id: str, payload: ProjectMemoryPatch, project: ProjectDb, ref: CurrentProject
 ) -> ProjectMemoryOut:
-    row = project.get(ProjectMemory, memory_id)
-    if row is None:
-        raise NotFound(f"记忆 {memory_id} 不存在")
-    if payload.content is not None:
-        row.content = payload.content
-        row.content_hash = engine.memory_hash(row.kind, payload.content)
-    if payload.enabled is not None:
-        row.enabled = payload.enabled
-    project.commit()
-    return _memory_out(row)
+    """改一条。改完 `id` 会变：条目按内容哈希寻址，前端拿响应里的新 id 重拉列表。"""
+    for scope, base_dir in _memory_scopes(project, ref, None):
+        updated = memory_files.update_preference(
+            base_dir,
+            memory_id,
+            scope=memory_files.SCOPE_CHARACTER if scope else memory_files.SCOPE_PROJECT,
+            content=payload.content,
+            enabled=payload.enabled,
+        )
+        if updated is not None:
+            return _memory_out(updated, scope)
+    raise NotFound(f"记忆 {memory_id} 不存在")
 
 
 @memory_router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_memory(memory_id: str, project: ProjectDb) -> None:
-    row = project.get(ProjectMemory, memory_id)
-    if row is None:
-        raise NotFound(f"记忆 {memory_id} 不存在")
-    project.delete(row)
-    project.commit()
+def delete_memory(memory_id: str, project: ProjectDb, ref: CurrentProject) -> None:
+    for scope, base_dir in _memory_scopes(project, ref, None):
+        if memory_files.delete_preference(
+            base_dir,
+            memory_id,
+            scope=memory_files.SCOPE_CHARACTER if scope else memory_files.SCOPE_PROJECT,
+        ):
+            return
+    raise NotFound(f"记忆 {memory_id} 不存在")

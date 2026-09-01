@@ -351,6 +351,7 @@ class ProjectConfigOut(Schema):
     review_mode: Literal["full", "lean", "solo"] = "lean"
     conversation_audit: bool = False
     stage: Literal["drafting", "ready"] = "ready"
+    state: str = "P0_project_shaping"
 
 
 class ProjectConfigPatch(Schema):
@@ -805,13 +806,12 @@ class DiffOut(Schema):
 
 class ProjectMemoryOut(Schema):
     id: str
+    """内容哈希，不是主键：条目存在 Markdown 里，改了内容 id 就变了。"""
     kind: str
     content: str
     character_ref: str = ""
     """空串是项目级（注入所有会话），否则只注入这个角色的会话。"""
     enabled: bool = True
-    source_conversation_id: str | None = None
-    created_at: str
 
 
 class ProjectMemoryIn(Schema):

@@ -1,8 +1,8 @@
 """工程级提示词资产加载：prompt 层模板与 negative 预设。
 
 与 Agent 提示词同理，这两类也是代码资产，只住在 atelier/prompts/*.json，不入库、
-不由 UI 修改。项目自己要加的片段存日志库 project_prompt_snippets，取用时与工程预设
-合并——工程预设永远在前，项目片段追加在后，项目不能删工程预设。
+不由 UI 修改。项目自己要加的片段在项目目录的 `prompts/snippets/*.md` 里，取用时与工程
+预设合并——工程预设永远在前，项目片段追加在后，项目不能删工程预设。
 """
 
 from __future__ import annotations

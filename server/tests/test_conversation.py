@@ -19,13 +19,13 @@ from sqlalchemy.orm import Session
 
 from atelier.agents import conversation as engine
 from atelier.assets import archive, layout
+from atelier.assets import memory as memory_files
 from atelier.assets.layout import LayoutError
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import (
     ArtifactDraft,
     Character,
     Conversation,
-    ProjectMemory,
     TaskEvent,
 )
 from atelier.db.runtime_models import RouteLog
@@ -88,11 +88,13 @@ def send(
 # --------------------------------------------------------------------------- #
 
 
-def test_开会话时顺手建好会话记忆行(project_db: Session, project: ProjectRef) -> None:
+def test_新开的会话还没有任何记忆(project_db: Session, project: ProjectRef) -> None:
+    """记忆是聊出来才有的，开场不预建空文件——一堆空 md 只会让人以为聊过。"""
     conversation = start_project_talk(project_db)
 
     assert conversation.status == "active"
-    assert engine.memory_of(project_db, conversation.id).folded_turns == 0
+    assert engine.agent_memory_of(project_db, project, conversation).is_empty()
+    assert not layout.agent_memory_path(project.dir, DESIGNER).exists()
 
 
 def test_非会话型agent不能开会话(project_db: Session, project: ProjectRef) -> None:
@@ -155,8 +157,7 @@ def test_上下文按固定顺序拼且定稿走system(
 ) -> None:
     """定稿与记忆是「事实」，混进对话序列模型会把它当上一轮发言去回应。"""
     project.absolute("art-bible.md").write_text("# 现有规范\n偏冷色。\n", encoding="utf-8")
-    engine.write_memory(project_db, "taboo", "不要蒸汽朋克齿轮")
-    project_db.commit()
+    engine.write_memory(project_db, project, "taboo", "不要蒸汽朋克齿轮")
     conversation = start_project_talk(project_db)
     chat = ScriptedChat("知道了。")
 
@@ -183,7 +184,7 @@ def test_进度结论累加而开放问题整体替换(
     send(project_db, session, project, conversation, "第一轮", chat)
     send(project_db, session, project, conversation, "第二轮", chat)
 
-    memory = engine.memory_of(project_db, conversation.id)
+    memory = engine.agent_memory_of(project_db, project, conversation)
     assert memory.decisions == ["题材定了", "第三人称"]
     assert memory.open_questions == ["目标平台"]
 
@@ -453,7 +454,7 @@ def test_超预算时把最老的原文折进摘要而不删(
 
     result = send(project_db, session, project, conversation, "第五轮", chat)
 
-    memory = engine.memory_of(project_db, conversation.id)
+    memory = engine.agent_memory_of(project_db, project, conversation)
     assert result.folded_turns  # 真的折了
     assert memory.summary == "前情：聊过四轮，题材定了。"
     assert memory.folded_turns == len(result.folded_turns)
@@ -467,6 +468,28 @@ def test_超预算时把最老的原文折进摘要而不删(
     assert "前情：聊过四轮" in system
     sent = [m["content"] for m in chat.calls[-1][1:]]
     assert not any("第1轮说的话" in c for c in sent)
+
+
+def test_折出来的摘要落进当前agent那份文件(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    candidate: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """摘要是折完之后唯一还带着前情的东西，换个进程接着聊也得读得到，所以它落在磁盘上。"""
+    conversation = start_project_talk(project_db)
+    chat = ScriptedChat()
+    for i in range(1, 5):
+        send(project_db, session, project, conversation, f"第{i}轮说的话" * 20, chat)
+    monkeypatch.setattr(engine.get_agent(DESIGNER), "context_budget", 200)
+    chat.replies = ["前情：聊过四轮，题材定了。", "接着说。"]
+
+    send(project_db, session, project, conversation, "第五轮", chat)
+
+    text = layout.agent_memory_path(project.dir, DESIGNER).read_text(encoding="utf-8")
+    assert "前情：聊过四轮，题材定了。" in text
+    assert not layout.agent_memory_path(project.dir, WRITER).exists()  # 没说话的那个不牵连
 
 
 def test_最近两轮再超预算也不折(
@@ -737,12 +760,12 @@ def test_沉淀时才把偏好写进长期记忆(
     conversation = start_project_talk(project_db)
     send(project_db, session, project, conversation, "拟一版", ScriptedChat(DRAFT_REPLY))
 
-    assert engine.enabled_memories(project_db) == []
+    assert engine.enabled_memories(project_db, project) == []
 
     result = engine.commit(project_db, project, conversation)
 
     assert sorted(result.memories_added) == ["不要蒸汽朋克齿轮", "喜欢冷色调"]
-    kinds = {(m.kind, m.content) for m in engine.enabled_memories(project_db)}
+    kinds = {(m.kind, m.content) for m in engine.enabled_memories(project_db, project)}
     assert ("taboo", "不要蒸汽朋克齿轮") in kinds
 
 
@@ -756,7 +779,7 @@ def test_同一条记忆重复出现只存一条(
 
     engine.commit(project_db, project, conversation)
 
-    contents = [m.content for m in engine.enabled_memories(project_db)]
+    contents = [m.content for m in engine.enabled_memories(project_db, project)]
     assert contents.count("喜欢冷色调") == 1
 
 
@@ -886,20 +909,55 @@ def test_沉淀过的会话还能接着聊并再沉淀一版(
 # --------------------------------------------------------------------------- #
 
 
-def test_手写记忆与agent沉淀的走同一套去重(project_db: Session, project: ProjectRef) -> None:
-    assert engine.write_memory(project_db, "preference", "喜欢冷色调") is not None
-    assert engine.write_memory(project_db, "preference", " 喜欢冷色调  ") is None
-    # 换个类别就是另一条
-    assert engine.write_memory(project_db, "fact", "喜欢冷色调") is not None
+def test_沉淀出来的偏好落在项目目录里(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    """共识得跟着项目目录进 Git：换台机器、换个人接手，这几条要求还在。"""
+    conversation = start_project_talk(project_db)
+    send(project_db, session, project, conversation, "拟一版", ScriptedChat(DRAFT_REPLY))
 
-    project_db.commit()
-    assert len(list(project_db.scalars(select(ProjectMemory)))) == 2
+    engine.commit(project_db, project, conversation)
+
+    text = layout.preferences_path(project.dir).read_text(encoding="utf-8")
+    assert "- [x] 喜欢冷色调" in text
+    assert "- [x] 不要蒸汽朋克齿轮" in text
+
+
+def test_两个agent在同一场会话里各记一份(project_db: Session, project: ProjectRef) -> None:
+    """一场会话只存一份的话，下一个说话的 Agent 会把别人的待确认问题当成自己的活儿。"""
+    conversation = start_project_talk(project_db)
+
+    engine.write_agent_memory(
+        project_db,
+        project,
+        conversation,
+        memory_files.AgentMemory(decisions=["题材是赛博朋克"]),
+        DESIGNER,
+    )
+    engine.write_agent_memory(
+        project_db, project, conversation, memory_files.AgentMemory(decisions=["双尾"]), WRITER
+    )
+
+    designer = engine.agent_memory_of(project_db, project, conversation, DESIGNER)
+    writer = engine.agent_memory_of(project_db, project, conversation, WRITER)
+    assert designer.decisions == ["题材是赛博朋克"]
+    assert writer.decisions == ["双尾"]
+
+
+def test_手写记忆与agent沉淀的走同一套去重(project_db: Session, project: ProjectRef) -> None:
+    assert engine.write_memory(project_db, project, "preference", "喜欢冷色调") is not None
+    assert engine.write_memory(project_db, project, "preference", " 喜欢冷色调  ") is None
+    # 换个类别就是另一条
+    assert engine.write_memory(project_db, project, "fact", "喜欢冷色调") is not None
+
+    assert len(memory_files.read_preferences(project.dir)) == 2
 
 
 def test_停用的记忆不再注入(project_db: Session, project: ProjectRef) -> None:
-    row = engine.write_memory(project_db, "preference", "喜欢冷色调")
-    assert row is not None
-    row.enabled = False
-    project_db.commit()
+    entry = engine.write_memory(project_db, project, "preference", "喜欢冷色调")
+    assert entry is not None
+    memory_files.update_preference(
+        project.dir, entry.id, scope=memory_files.SCOPE_PROJECT, enabled=False
+    )
 
-    assert engine.enabled_memories(project_db) == []
+    assert engine.enabled_memories(project_db, project) == []

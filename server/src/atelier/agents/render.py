@@ -148,10 +148,10 @@ def _spec_payload(
     assembled = context.assemble(
         agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(project, SMITH),
+        addendum=conv.addendum(ref, SMITH),
         artifact_path=relative,
         artifact_text=spec_path.read_text(encoding="utf-8"),
-        project_memories=conv.enabled_memories(project, character.id),
+        project_memories=conv.enabled_memories(project, ref, character.id),
     )
     return assembled.payload()
 

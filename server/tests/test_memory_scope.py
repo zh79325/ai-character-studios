@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from atelier.agents import conversation as engine
 from atelier.agents import parsing
 from atelier.assets import characters
+from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Conversation
 from tests.conftest import ScriptedChat, bind_text_model
@@ -54,6 +55,12 @@ def candidates(session: Session) -> None:
 def make(project_db: Session, project: ProjectRef, name: str) -> Character:
     ready(project)
     return characters.create(project_db, project, name)
+
+
+def prefs(project: ProjectRef, character: Character | None = None) -> list[str]:
+    """某个对象目录里那份偏好文件写着什么。"""
+    base = project.absolute(character.dir_name) if character else project.dir
+    return [one.content for one in memory_files.read_preferences(base)]
 
 
 def talk(project_db: Session, character: Character) -> Conversation:
@@ -121,8 +128,8 @@ def test_角色会话聊出的记忆归这个角色(
 
     settle(project_db, project, session, conversation, CHARACTER_REPLY)
 
-    scoped = engine.enabled_memories(project_db, character.id)
-    assert {one.character_ref for one in scoped} == {character.id}
+    assert prefs(project, character) == ["尾巴要 2 条且彼此分离", "不要机械义肢"]
+    assert prefs(project) == []  # 一条都没漏进项目那份
 
 
 def test_项目会话聊出的记忆是项目级(
@@ -132,8 +139,7 @@ def test_项目会话聊出的记忆是项目级(
 
     settle(project_db, project, session, conversation, PROJECT_REPLY)
 
-    rows = engine.enabled_memories(project_db)
-    assert [one.character_ref for one in rows] == [engine.PROJECT_SCOPE]
+    assert prefs(project) == ["喜欢冷色调"]
 
 
 def test_一个角色的偏好不跟着进另一个角色(
@@ -144,7 +150,7 @@ def test_一个角色的偏好不跟着进另一个角色(
     settle(project_db, project, session, talk(project_db, red), CHARACTER_REPLY)
     blue = characters.create(project_db, project, "青瞳")
 
-    seen = [one.content for one in engine.enabled_memories(project_db, blue.id)]
+    seen = [one.content for one in engine.enabled_memories(project_db, project, blue.id)]
 
     assert seen == []
 
@@ -178,7 +184,7 @@ def test_项目级记忆两个角色都看得见(
     settle(project_db, project, session, conversation, PROJECT_REPLY)
     red = make(project_db, project, "赤瞳")
 
-    seen = [one.content for one in engine.enabled_memories(project_db, red.id)]
+    seen = [one.content for one in engine.enabled_memories(project_db, project, red.id)]
 
     assert seen == ["喜欢冷色调"]
 
@@ -193,8 +199,8 @@ def test_模型指错标记也按会话归属(
 
     settle(project_db, project, session, conversation, mislabeled)
 
-    assert engine.enabled_memories(project_db) == []
-    assert len(engine.enabled_memories(project_db, character.id)) == 2
+    assert engine.enabled_memories(project_db, project) == []
+    assert len(engine.enabled_memories(project_db, project, character.id)) == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -205,17 +211,23 @@ def test_模型指错标记也按会话归属(
 def test_同一句话对不同角色各算一条(
     project_db: Session, project: ProjectRef, session: Session, candidates: None
 ) -> None:
-    """两个角色可以各自要求「尾巴 2 条」，这不是重复，是两条各自成立的约束。"""
+    """两个角色可以各自要求「尾巴 2 条」，这不是重复，是两条各自成立的约束。
+
+    id 是内容哈希，所以这两条的 id 一样；各自成立体现在它们落在各自的目录里。
+    """
     red = make(project_db, project, "赤瞳")
     blue = characters.create(project_db, project, "青瞳")
 
-    first = engine.write_memory(project_db, "preference", "尾巴要 2 条", character_ref=red.id)
-    second = engine.write_memory(project_db, "preference", "尾巴要 2 条", character_ref=blue.id)
-    project_db.commit()
+    first = engine.write_memory(
+        project_db, project, "preference", "尾巴要 2 条", character_ref=red.id
+    )
+    second = engine.write_memory(
+        project_db, project, "preference", "尾巴要 2 条", character_ref=blue.id
+    )
 
     assert first is not None
     assert second is not None
-    assert first.id != second.id
+    assert prefs(project, red) == prefs(project, blue) == ["尾巴要 2 条"]
 
 
 def test_项目级已经有了就不再写角色副本(
@@ -223,12 +235,14 @@ def test_项目级已经有了就不再写角色副本(
 ) -> None:
     """两条一模一样的记忆同时注入，用户在设置页关掉其中一条会发现它依旧生效。"""
     red = make(project_db, project, "赤瞳")
-    engine.write_memory(project_db, "preference", "喜欢冷色调")
-    project_db.commit()
+    engine.write_memory(project_db, project, "preference", "喜欢冷色调")
 
-    again = engine.write_memory(project_db, "preference", "喜欢冷色调", character_ref=red.id)
+    again = engine.write_memory(
+        project_db, project, "preference", "喜欢冷色调", character_ref=red.id
+    )
 
     assert again is None
+    assert prefs(project, red) == []
 
 
 def test_角色级不挡住项目级(
@@ -236,22 +250,27 @@ def test_角色级不挡住项目级(
 ) -> None:
     """反过来要放行：一条对全项目成立的偏好不该因为某个角色先说过就写不进去。"""
     red = make(project_db, project, "赤瞳")
-    engine.write_memory(project_db, "preference", "喜欢冷色调", character_ref=red.id)
-    project_db.commit()
+    engine.write_memory(project_db, project, "preference", "喜欢冷色调", character_ref=red.id)
 
-    promoted = engine.write_memory(project_db, "preference", "喜欢冷色调")
+    promoted = engine.write_memory(project_db, project, "preference", "喜欢冷色调")
 
     assert promoted is not None
-    assert promoted.character_ref == engine.PROJECT_SCOPE
+    assert prefs(project) == ["喜欢冷色调"]
 
 
 def test_停用的记忆不再注入(
     project_db: Session, project: ProjectRef, session: Session, candidates: None
 ) -> None:
     red = make(project_db, project, "赤瞳")
-    row = engine.write_memory(project_db, "preference", "尾巴要 2 条", character_ref=red.id)
+    row = engine.write_memory(
+        project_db, project, "preference", "尾巴要 2 条", character_ref=red.id
+    )
     assert row is not None
-    row.enabled = False
-    project_db.commit()
+    memory_files.update_preference(
+        project.absolute(red.dir_name),
+        row.id,
+        scope=memory_files.SCOPE_CHARACTER,
+        enabled=False,
+    )
 
-    assert engine.enabled_memories(project_db, red.id) == []
+    assert engine.enabled_memories(project_db, project, red.id) == []

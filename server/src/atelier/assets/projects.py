@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from atelier.assets import layout
 from atelier.db.migrate import upgrade_project
-from atelier.db.project_models import Character, ProjectMeta
+from atelier.db.project_models import Character
 from atelier.db.runtime_models import ProjectRegistry
 from atelier.db.session import dispose_project_engine, project_session
 from atelier.errors import Conflict, NotFound
@@ -49,6 +49,9 @@ Stage = Literal["drafting", "ready"]
 
 这个字段不在注册表里而在 `project.json` 里：项目搬到别的机器上得能看出它是否立过项。
 老项目的 json 里没这个键，读出来就是 `ready`。"""
+
+DEFAULT_STATE = "P0_project_shaping"
+"""新项目的工作流起点。"""
 
 DRAFT_CODE_PREFIX = "draft-"
 """立项期的临时代号前缀。会话得存在项目库里，所以对话开始前就得先有个项目身份，
@@ -112,6 +115,9 @@ class ProjectConfig(BaseModel):
     review_mode: ReviewMode = "lean"
     conversation_audit: bool = False
     stage: Stage = "ready"
+    state: str = DEFAULT_STATE
+    """立项工作流推到哪一步。跟 `stage` 不是一回事：`stage` 是「名字定下来了没」，它是整套
+    阶段门禁里的位置。现在只存不读，但它得跟项目目录进 Git——接手的人要知道上一个人停在哪儿。"""
 
 
 def read_config(project_dir: Path) -> ProjectConfig:
@@ -189,21 +195,6 @@ def ensure_schema(ref: ProjectRef) -> None:
         layout.ensure_data_dir(ref.dir)
         upgrade_project(key)
         _migrated.add(key)
-
-
-def _sync_meta(ref: ProjectRef) -> None:
-    """项目库里记住自己属于哪个项目，顺便发现「目录被整份复制」。
-
-    复制出来的项目目录如果改了 `project.json` 的 code 却带着旧库，`project_meta` 就会
-    对不上。这时以 json 为准改库（json 是真相），但不清空数据——用户要的是「以那个项目
-    为起点开新项目」，把素材留着才符合直觉。
-    """
-    with project_session(ref.db_path) as session:
-        meta = session.get(ProjectMeta, 1)
-        if meta is None:
-            session.add(ProjectMeta(id=1, project_code=ref.code))
-        elif meta.project_code != ref.code:
-            meta.project_code = ref.code
 
 
 # --------------------------------------------------------------------------- #
@@ -314,7 +305,6 @@ def sync_default_root(runtime: Session) -> list[str]:
         _register(runtime, ref, managed=True)
         if known is None:
             ensure_schema(ref)
-            _sync_meta(ref)
             added.append(config.code)
     return added
 
@@ -390,7 +380,6 @@ def open_project(runtime: Session, code: str) -> ProjectRef:
     global _opened
     ref = resolve(runtime, code)
     ensure_schema(ref)
-    _sync_meta(ref)
     row = runtime.get(ProjectRegistry, code)
     if row is not None:
         row.last_opened_at = _now()
@@ -405,7 +394,7 @@ def open_project(runtime: Session, code: str) -> ProjectRef:
 
 
 def _write_skeleton(project_dir: Path, config: ProjectConfig) -> None:
-    """铺目录骨架：维度目录 + art bible + project.json。
+    """铺目录骨架：维度目录 + 共识目录 + art bible + project.json。
 
     `.atelier/` 不在这里铺——它由 `ensure_schema` 负责，导入别人的目录时同样要补，两个入口
     共用一份实现。
@@ -421,6 +410,12 @@ def _write_skeleton(project_dir: Path, config: ProjectConfig) -> None:
             if not readme.exists():
                 readme.write_text(_placeholder_readme(name), encoding="utf-8")
         layout.touch_gitkeep(sub)
+
+    # 共识目录先铺出来：空目录带 .gitkeep 才进得了 Git，否则接手的人 clone 下来看不出
+    # 这两处是干什么的，也不知道可以手写
+    for path in (layout.memory_dir(project_dir), project_dir / layout.PROMPTS_DIR):
+        path.mkdir(exist_ok=True)
+        layout.touch_gitkeep(path)
 
     art_bible = project_dir / config.art_bible
     if not art_bible.exists():
@@ -534,7 +529,6 @@ def bootstrap_project(runtime: Session, dir_path: Path, *, overwrite: bool = Fal
 
     ref = ProjectRef(code=code, name=name, dir=target)
     ensure_schema(ref)
-    _sync_meta(ref)
     _register(runtime, ref, managed=_under_default_root(target))
     return open_project(runtime, code)
 
@@ -542,9 +536,9 @@ def bootstrap_project(runtime: Session, dir_path: Path, *, overwrite: bool = Fal
 def finalize_project(runtime: Session, ref: ProjectRef, *, name: str, code: str) -> ProjectRef:
     """用户确认了名字与代号，现在才把项目真正立起来。
 
-    改代号 = 换注册表主键，但项目目录与库都不动：库里路径全是相对项目目录的，
-    `_sync_meta` 会把 `project_meta` 校到新 code。art bible 只在缺失时才从模板补——对焦里
-    已经沉淀过的那份不能被模板盖掉。
+    改代号 = 换注册表主键，但项目目录与库都不动：库里路径全是相对项目目录的，代号的真相
+    在 `project.json` 里。art bible 只在缺失时才从模板补——对焦里已经沉淀过的那份不能被
+    模板盖掉。
     """
     safe_name = layout.safe_dir_name(name)
     safe_code = _validate_code(code)
@@ -564,7 +558,6 @@ def finalize_project(runtime: Session, ref: ProjectRef, *, name: str, code: str)
     _write_skeleton(ref.dir, config)
     layout.ensure_git_files(ref.dir)
     ensure_schema(fresh)
-    _sync_meta(fresh)
     _register(runtime, fresh, managed=_under_default_root(ref.dir))
     return open_project(runtime, safe_code)
 
@@ -609,7 +602,6 @@ def create_project(
 
     ref = ProjectRef(code=safe_code, name=safe_name, dir=target)
     ensure_schema(ref)
-    _sync_meta(ref)
     _register(runtime, ref, managed=_under_default_root(target))
     return ref
 
@@ -637,7 +629,6 @@ def import_project(runtime: Session, dir_path: Path) -> ProjectRef:
 
     ref = ProjectRef(code=config.code, name=config.name, dir=target)
     ensure_schema(ref)
-    _sync_meta(ref)
     _register(runtime, ref, managed=_under_default_root(target))
     return ref
 

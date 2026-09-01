@@ -13,11 +13,21 @@
 ├── .atelier/             # 项目自己的运行数据（不进 Git）
 │   ├── .gitignore        # 内容就是 *，防止被用户的仓库收进去
 │   └── project.db
+├── memory/               # 聊出来的共识（进 Git）
+│   ├── preferences.md    # 用户偏好与禁忌
+│   └── agents/{agent_code}.md
+├── prompts/              # 项目级提示词补充，人写（进 Git）
+│   ├── agents/{agent_code}.md
+│   └── snippets/{code}.md
 ├── templates/            # 可选，项目级模版覆盖全局
 ├── tmp/                  # 项目根定稿的历史版本
 └── characters/ equipment/ maps/ scenes/
     └── {素材名}/{images,models,animations,tmp}/
+        └── memory/       # 这个素材上聊出来的共识
 ```
+
+共识（`memory/` 与 `prompts/`）跟对象走、进 Git：它们是跟用户达成的约定，换台机器、换个人
+接手都要看得到；而 `.atelier/` 与 `tmp/` 里的东西随时可重建，不进版本管理。
 """
 
 from __future__ import annotations
@@ -36,6 +46,11 @@ DATA_DIR = ".atelier"
 PROJECT_DB = "project.db"
 TEMPLATES_DIR = "templates"
 TMP_DIR = "tmp"
+MEMORY_DIR = "memory"
+PROMPTS_DIR = "prompts"
+AGENTS_SUBDIR = "agents"
+SNIPPETS_SUBDIR = "snippets"
+PREFERENCES_MD = "preferences.md"
 
 ASSET_SUBDIRS = ("images", "models", "animations", TMP_DIR)
 GITKEEP = ".gitkeep"
@@ -129,6 +144,36 @@ def project_db_path(project_dir: Path) -> Path:
 
 def art_bible_path(project_dir: Path, file_name: str = ART_BIBLE) -> Path:
     return resolve_inside(project_dir, file_name)
+
+
+def memory_dir(base_dir: Path) -> Path:
+    """这个对象的共识目录。`base_dir` 是项目目录或某个素材目录。"""
+    return base_dir / MEMORY_DIR
+
+
+def preferences_path(base_dir: Path) -> Path:
+    return memory_dir(base_dir) / PREFERENCES_MD
+
+
+def agent_memory_path(base_dir: Path, agent_code: str) -> Path:
+    """某个 Agent 在这个对象上的会话记忆。
+
+    一个对象一场会话、一场里多个 Agent，而每个 Agent 记住的东西不一样：各存一份，谁说话
+    谁读自己那份。合成一份的后果是评审的结论跟创作的摘要互相覆盖。
+    """
+    return memory_dir(base_dir) / AGENTS_SUBDIR / f"{agent_code}.md"
+
+
+def agent_prompt_path(project_dir: Path, agent_code: str) -> Path:
+    return project_dir / PROMPTS_DIR / AGENTS_SUBDIR / f"{agent_code}.md"
+
+
+def snippet_dir(project_dir: Path) -> Path:
+    return project_dir / PROMPTS_DIR / SNIPPETS_SUBDIR
+
+
+def snippet_path(project_dir: Path, code: str) -> Path:
+    return snippet_dir(project_dir) / f"{code}.md"
 
 
 def is_project_dir(path: Path) -> bool:

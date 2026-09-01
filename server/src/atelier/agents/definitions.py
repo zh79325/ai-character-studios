@@ -1,8 +1,8 @@
 """Agent 定义文件解析：YAML frontmatter + Markdown 正文，带校验。
 
 工程级提示词是代码资产，只住在 atelier/prompts/agents/*.md，不入库、不得硬编码进
-Python，也不得由 UI 修改；本模块只负责读、校验与缓存。项目级的附加指令在
-日志库 project_agent_prompts，组装上下文时追加在工程提示词之后。
+Python，也不得由 UI 修改；本模块只负责读、校验与缓存。项目级的附加指令在项目目录的
+`prompts/agents/{agent_code}.md` 里，组装上下文时追加在工程提示词之后。
 """
 
 from __future__ import annotations

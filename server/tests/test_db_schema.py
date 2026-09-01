@@ -1,8 +1,8 @@
 """三库边界与 provider 三层结构。
 
 config.db 只放公共配置；runtime.db 只放机器级数据（凭证、额度、路由日志、项目索引）；
-项目自己的东西（素材、任务、会话、记忆）在项目目录下的 project.db。三套 metadata 不许有交集，
-提示词三张表已经彻底从 config.db 移除。
+项目自己的过程记录（素材、任务、会话）在项目目录下的 project.db，而共识（记忆、项目级提示词）
+落成目录里的 Markdown 进 Git。三套 metadata 不许有交集，提示词三张表已经彻底从 config.db 移除。
 """
 
 from __future__ import annotations
@@ -29,11 +29,21 @@ def test_prompt_tables_are_not_in_any_database() -> None:
     assert not gone & set(RuntimeBase.metadata.tables)
 
 
-def test_project_prompt_extension_tables_live_in_project_db() -> None:
-    """项目级增量属于项目自己，跟着目录走，不能留在本机的 runtime.db 里。"""
-    tables = {"project_agent_prompts", "project_prompt_snippets"}
-    assert tables <= set(ProjectBase.metadata.tables)
-    assert not tables & set(RuntimeBase.metadata.tables)
+def test_consensus_tables_are_not_in_any_database() -> None:
+    """共识落在项目目录的 Markdown 里，三个库都不该再有这几张表。
+
+    它们要跟着项目目录进 Git 给别人看，存在库里就等于只有本机认得。
+    """
+    gone = {
+        "project_agent_prompts",
+        "project_prompt_snippets",
+        "project_memory",
+        "conversation_memory",
+        "project_meta",
+    }
+    assert not gone & set(ProjectBase.metadata.tables)
+    assert not gone & set(RuntimeBase.metadata.tables)
+    assert not gone & set(ConfigBase.metadata.tables)
 
 
 def test_runtime_holds_only_machine_level_tables() -> None:

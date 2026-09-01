@@ -231,10 +231,10 @@ def _payload(
     assembled = context.assemble(
         agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(project, REVIEWER),
+        addendum=conv.addendum(ref, REVIEWER),
         artifact_path=relative if spec is not None else None,
         artifact_text=spec,
-        project_memories=conv.enabled_memories(project, character.id),
+        project_memories=conv.enabled_memories(project, ref, character.id),
     )
     messages = assembled.payload()
     last = messages[-1]
