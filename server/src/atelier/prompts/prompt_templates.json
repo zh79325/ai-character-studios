@@ -68,8 +68,8 @@
     "category": "character",
     "slot": "environment",
     "sort_no": 80,
-    "content": "Pure white background, no gradient, no floor, no shadow",
-    "remark": "环境层，S4 四视图使用，强制剥离环境"
+    "content": "Solid {view_background_color} background, perfectly uniform, no gradient, no ground plane, no cast shadow, no environment",
+    "remark": "环境层，S4 四视图使用渲染卡片选定的统一不透明纯色"
   },
   {
     "code": "layer_light",

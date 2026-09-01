@@ -17,6 +17,7 @@ ONE_CARD = """ASSET-CT-001 — 赤瞳 渲染图
 视觉描述：一只双尾兽站在废弃电厂前，红瞳发光。
 art bible 锚点：§1 冷调工业写实
 硬性约束：双尾数量=2，瞳色=赤红
+四视图背景色：#F2E8D5（暖米色）
 prompt：standing pose, red eyes,
   TWO distinct tails, clearly separated,
   cinematic light, 8k
@@ -85,6 +86,7 @@ def test_缺项要报出来而不是给个空值() -> None:
     text = """ASSET-CT-003 — 赤瞳 渲染图
 类别：character
 文件名：character_赤瞳.png
+四视图背景色：#F2E8D5
 prompt：standing pose
 """
 
@@ -99,6 +101,7 @@ def test_占位符当没填() -> None:
 类别：character
 尺寸：{宽}x{高}
 文件名：character_赤瞳.png
+四视图背景色：#F2E8D5
 prompt：standing pose
 negative_prompt：{全局预设}
 """

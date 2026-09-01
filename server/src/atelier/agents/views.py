@@ -1,4 +1,4 @@
-"""四视图这一步的编排：`image_i2i` 并发出四张纯白底视图 → 机器量一遍 → 人选输入定稿。
+"""四视图编排：`image_i2i` 并发生成统一纯色背景视图 → 机器检查 → 人选输入定稿。
 
 跟渲染图那一步最大的差别是**这一步没有想象空间**。渲染图是从设定文字长出一张图，四视图是
 把已经定稿的那一张翻到另外三个面去看，所以：
@@ -35,7 +35,7 @@ import structlog
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from atelier.agents import dispatch
+from atelier.agents import dispatch, parsing
 from atelier.assets import archive, characters, generations, imaging, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Generation
@@ -107,20 +107,24 @@ VARIANTS: tuple[Variant, ...] = (
 
 BY_CODE = {one.code: one for one in VARIANTS}
 
-WHITE_CLAUSE = (
-    "Pure white background, no gradient, no ground shadow, no environment, no props, "
-    "even flat lighting, character centered in frame"
+BACKGROUND_CLAUSE = (
+    "Solid {color} background, perfectly uniform, no gradient, no ground plane, no cast shadow, "
+    "no environment, even flat lighting, character centered in frame"
 )
-"""白底约束。原话照抄 `image_i2i` 提示词里的口径，两边说的必须是同一件事。"""
+"""四视图动态纯色背景约束，四个视角共用渲染卡片里选定的颜色。"""
 
 NEGATIVE_MUST = (
-    "background",
-    "grid",
-    "shadow on ground",
-    "text",
-    "watermark",
     "environment",
     "scenery",
+    "gradient background",
+    "textured background",
+    "ground plane",
+    "cast shadow",
+    "transparent background",
+    "alpha channel",
+    "checkerboard",
+    "text",
+    "watermark",
 )
 """negative 里必须有的词。卡片自己写了就不重复塞，缺的补上——这几项是四视图能不能进建模
 的前提，不能指望卡片每次都写全。"""
@@ -233,6 +237,10 @@ def base_card(project: Session, character: Character) -> dict[str, Any]:
     card = dict(row.asset_spec or {})
     if not str(card.get("prompt", "")).strip():
         raise Conflict("渲染图那一版卡片没留下 prompt，四视图没有规格可依，重新出一张渲染图")
+    background = parsing.normalize_view_background_color(str(card.get("view_background_color", "")))
+    if not background:
+        raise Conflict("渲染图定稿卡片缺少有效的四视图背景色，请重新生成并定稿渲染规格卡片")
+    card["view_background_color"] = background
     return card
 
 
@@ -258,15 +266,22 @@ def appendage_clause(character: Character) -> str:
 
 
 def build_prompt(card: Mapping[str, Any], variant: Variant, character: Character) -> str:
-    """卡片 prompt + 视角句 + 白底句（背面再加附属结构句）。"""
-    layers = [str(card.get("prompt", "")).strip(), variant.clause, WHITE_CLAUSE]
+    """卡片 prompt + 视角句 + 动态纯色背景句（背面再加附属结构句）。"""
+    background = parsing.normalize_view_background_color(str(card.get("view_background_color", "")))
+    if not background:
+        raise Conflict("渲染图卡片缺少有效的四视图背景色")
+    layers = [
+        str(card.get("prompt", "")).strip(),
+        variant.clause,
+        BACKGROUND_CLAUSE.format(color=background),
+    ]
     if variant.appendages:
         layers.append(appendage_clause(character))
     return ", ".join(one for one in layers if one)
 
 
 def build_negative(card: Mapping[str, Any]) -> str:
-    """卡片的 negative 加上白底必备词，已经写了的不重复塞。"""
+    """卡片 negative 加上纯色背景必备禁止项，已经写了的不重复塞。"""
     written = str(card.get("negative_prompt", "")).strip()
     lowered = written.lower()
     missing = [one for one in NEGATIVE_MUST if one not in lowered]
@@ -343,6 +358,7 @@ def generate_views(
     """
     template, render = reference_images(ref, character)
     card = base_card(project, character)
+    background_color = str(card["view_background_color"])
     width, height = image_size(ref, card)
     negative = build_negative(card)
     references = (template, render)
@@ -401,6 +417,7 @@ def generate_views(
             variant,
             reply,
             card=card,
+            background_color=background_color,
             expect=(width, height),
             references=references,
         )
@@ -445,11 +462,12 @@ def _land(
     reply: image_gen.ImageReply,
     *,
     card: Mapping[str, Any],
+    background_color: str,
     expect: tuple[int, int],
     references: Sequence[Path],
 ) -> tuple[ViewImage, imaging.Report]:
     """一张图落 `tmp/`、量一遍、登台账、写事件。都在主线程做，次序才稳定。"""
-    report = imaging.measure(reply.data, expect=expect)
+    report = imaging.measure(reply.data, expect=expect, background_color=background_color)
     relative = archive.stage_bytes(
         ref,
         asset_dir=character.dir_name,
@@ -462,9 +480,10 @@ def _land(
         "references": [_ref_label(ref, one) for one in references],
         "variant": variant.code,
         "background": {
-            "edge_white": report.edge_white,
+            "target_color": report.target_color,
+            "edge_match": report.edge_match,
             "transparent": report.transparent,
-            "ink": report.ink,
+            "subject": report.subject,
         },
     }
     row = generations.record(

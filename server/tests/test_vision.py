@@ -197,7 +197,8 @@ def test_四张图与机器读数都进请求(
     assert all(one.startswith("data:image/png;base64,") for one in images_in(chat))
     request = asked(chat)
     assert "尾巴数量 = 2" in request
-    assert "边缘白度" in request
+    assert "边缘匹配率" in request
+    assert "目标背景 #FFFFFF" in request
     for variant in views.VARIANTS:
         assert variant.label in request
 
@@ -218,7 +219,7 @@ def test_机器判定的问题写给模型看(
     vision.review(project_db, session, project, character, chat=chat)
 
     assert "机器判定问题" in asked(chat)
-    assert "纯白" in asked(chat)
+    assert "目标纯色 #FFFFFF" in asked(chat)
 
 
 def test_设定原文也挂进上下文(

@@ -14,8 +14,8 @@
   {
     "code": "neg_views",
     "scene": "views",
-    "content": "background, grid, shadow on ground, text, watermark, environment, scenery, gradient background, gray background, floor, reflection, multiple characters, cropped body",
-    "remark": "S4 四视图专用，强制纯白底、剥离环境"
+    "content": "environment, scenery, gradient background, textured background, ground plane, cast shadow, transparent background, alpha channel, checkerboard, text, watermark, reflection, multiple characters, cropped body",
+    "remark": "S4 四视图专用，保留指定纯色背景并剥离环境、渐变、投影与透明底"
   },
   {
     "code": "neg_views_back",

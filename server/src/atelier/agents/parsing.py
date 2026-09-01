@@ -91,7 +91,7 @@ _ASSET_HEAD_RE = re.compile(
 )
 
 _ASSET_KEY_RE = re.compile(
-    r"^[ \t>]*(?P<key>art\s*bible\s*锚点|类别|尺寸|格式|文件名|视觉描述|硬性约束"
+    r"^[ \t>]*(?P<key>art\s*bible\s*锚点|类别|尺寸|格式|文件名|视觉描述|硬性约束|四视图背景色"
     r"|negative[_\s-]*prompt|prompt)\s*[:：]\s*(?P<value>.*)$",
     re.I,
 )
@@ -103,6 +103,7 @@ _ASSET_KEYS = {
     "文件名": "file_name",
     "视觉描述": "description",
     "硬性约束": "constraints",
+    "四视图背景色": "view_background_color",
     "negativeprompt": "negative_prompt",
     "prompt": "prompt",
 }
@@ -112,11 +113,13 @@ _ASSET_LABELS = {
     "category": "类别",
     "size": "尺寸",
     "file_name": "文件名",
+    "view_background_color": "四视图背景色",
     "prompt": "prompt",
     "negative_prompt": "negative_prompt",
 }
 
 _SIZE_RE = re.compile(r"(?P<width>\d{2,5})\s*[x×*]\s*(?P<height>\d{2,5})", re.I)
+_VIEW_BACKGROUND_RE = re.compile(r"^#(?P<hex>[0-9a-f]{6})(?:\s*[（(][^）)]{1,30}[）)])?$", re.I)
 _ITEM_SPLIT_RE = re.compile(r"[,，、;；]")
 
 
@@ -533,6 +536,7 @@ class AssetSpec:
     description: str = ""
     anchors: str = ""
     constraints: tuple[str, ...] = ()
+    view_background_color: str = ""
     prompt: str = ""
     negative_prompt: str = ""
     text: str = ""
@@ -550,6 +554,8 @@ class AssetSpec:
             missing.append(_ASSET_LABELS["size"])
         if not self.file_name or "/" in self.file_name or "." not in self.file_name:
             missing.append(_ASSET_LABELS["file_name"])
+        if self.category == "character" and not self.view_background_color:
+            missing.append(_ASSET_LABELS["view_background_color"])
         if not self.prompt:
             missing.append(_ASSET_LABELS["prompt"])
         if not self.negative_prompt:
@@ -568,6 +574,7 @@ class AssetSpec:
             "description": self.description,
             "anchors": self.anchors,
             "constraints": list(self.constraints),
+            "view_background_color": self.view_background_color,
             "prompt": self.prompt,
             "negative_prompt": self.negative_prompt,
             "card": self.text,
@@ -593,6 +600,13 @@ def _split_items(raw: str) -> tuple[str, ...]:
     return tuple(one for one in items if one and not is_placeholder(one))
 
 
+def normalize_view_background_color(raw: str) -> str:
+    """将卡片里的纯色背景标准化为 `#RRGGBB`；透明或自由文本一律视为缺失。"""
+    value = raw.strip().strip("`").strip()
+    match = _VIEW_BACKGROUND_RE.fullmatch(value)
+    return f"#{match.group('hex').upper()}" if match else ""
+
+
 def _build_spec(fields: Mapping[str, str], text: str) -> AssetSpec | None:
     def value(key: str) -> str:
         raw = fields.get(key, "").strip().strip("`").strip()
@@ -610,6 +624,7 @@ def _build_spec(fields: Mapping[str, str], text: str) -> AssetSpec | None:
         description=value("description"),
         anchors=value("anchors"),
         constraints=_split_items(value("constraints")),
+        view_background_color=normalize_view_background_color(value("view_background_color")),
         prompt=value("prompt"),
         negative_prompt=value("negative_prompt"),
         text=text,

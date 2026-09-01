@@ -4,9 +4,9 @@
 
 1. **审的是磁盘上那几张**。每个视角取台账里最近的一条，图现场重新量一遍再送审：台账里存的
    是生成当时的读数，而用户可能已经重生过某一张，拿旧读数评审等于评审一张不存在的图。
-2. **机器读数一并交给模型**。「背景够不够白」是像素统计题，模型看图判断这一项并不可靠，所以
-   边缘白度与非白像素占比由 `imaging` 量出来写进请求里；模型负责数量、分离度、一致性与视角
-   这四项它真正擅长的判断。
+2. **机器读数一并交给模型**。目标纯色背景是否匹配是像素统计题，模型看图判断并不可靠，所以
+   边缘匹配率、透明比例与主体占比由 `imaging` 量出来写进请求里；模型负责数量、分离度、一致性
+   与视角这些语义判断。
 3. **粒度跟项目的 `review_mode` 走**。`full` 每张单独审（贵，但理由能对上具体那一张）、
    `lean` 四张一次审（默认，一次调用就能看出四个面之间对不对得上）、`solo` 不审（用户自己
    看，平台不拦）。
@@ -169,7 +169,11 @@ def shots(project: Session, ref: ProjectRef, character: Character) -> tuple[Shot
                 label=variant.label,
                 generation_id=row.id,
                 file_path=row.file_path,
-                report=imaging.measure_file(path, expect=expect),
+                report=imaging.measure_file(
+                    path,
+                    expect=expect,
+                    background_color=str(card["view_background_color"]),
+                ),
             )
         )
     if not picked:
@@ -195,14 +199,14 @@ def _shot_lines(picked: Sequence[Shot]) -> str:
 def _machine_lines(picked: Sequence[Shot]) -> str:
     """机器读数写成人话。有疑点的连问题一起写，没疑点也要写读数。
 
-    读数一律写出来而不是只报问题：模型看到「边缘白度 99.7%」才知道这一项不用它再判，只报问题
-    的话它会把「没提到」理解成「没量过」，然后自己凭观感给一个不可靠的结论。
+    读数一律写出来而不是只报问题：模型看到「边缘目标色匹配率 99.7%」才知道这一项不用它再判。
     """
     lines: list[str] = []
     for one in picked:
         head = (
-            f"- {one.label}：尺寸 {one.report.size}，"
-            f"边缘白度 {one.report.edge_white:.1%}，非白像素 {one.report.ink:.1%}"
+            f"- {one.label}：尺寸 {one.report.size}，目标背景 {one.report.target_color}，"
+            f"边缘匹配率 {one.report.edge_match:.1%}，透明像素 {one.report.transparent:.1%}，"
+            f"主体像素 {one.report.subject:.1%}"
         )
         if one.problems:
             head += "\n" + "\n".join(f"  - 机器判定问题：{problem}" for problem in one.problems)

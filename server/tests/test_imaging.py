@@ -1,9 +1,4 @@
-"""出图当场的那道机器检查：底够不够白、尺寸对不对、四张齐不齐。
-
-这一层没有网络也没有库，所以用真图钉真数字：合成一张纯白底的、一张浅灰渐变的、一张抠图
-的，看它认不认得出来。要钉住的是**判定口径**——240 的浅灰底必须算不合格（人眼看不出，建模
-会当成几何吃进去），而主体上的深色像素不能让整张图被判成脏。
-"""
+"""出图机器检查：目标纯色、透明像素、主体占比、尺寸与四张一致性。"""
 
 from __future__ import annotations
 
@@ -58,7 +53,7 @@ def test_浅灰底不算白() -> None:
 
     assert not report.ok
     assert report.edge_white == 0.0
-    assert "背景不是纯白" in report.problems[0]
+    assert "目标纯色 #FFFFFF" in report.problems[0]
     assert "0.0%" in report.problems[0]
 
 
@@ -67,7 +62,31 @@ def test_浅蓝底也不算白() -> None:
     report = imaging.measure(render(subject(background=(250, 250, 200))))
 
     assert not report.ok
-    assert "背景不是纯白" in report.problems[0]
+    assert "目标纯色 #FFFFFF" in report.problems[0]
+
+
+def test_指定非白纯色背景也能过关() -> None:
+    report = imaging.measure(render(subject(background=(51, 204, 153))), background_color="#33cc99")
+
+    assert report.ok
+    assert report.target_color == "#33CC99"
+    assert report.edge_match == 1.0
+    assert report.subject == pytest.approx(0.25, abs=0.01)
+
+
+def test_目标色错误和渐变都会告警() -> None:
+    wrong = imaging.measure(render(subject(background=(51, 204, 153))), background_color="#3355AA")
+    gradient = subject(background=(51, 204, 153))
+    gradient.paste((70, 190, 140), (0, 0, 200, 10))
+    uneven = imaging.measure(render(gradient), background_color="#33CC99")
+
+    assert any("目标纯色 #3355AA" in one for one in wrong.problems)
+    assert any("目标纯色 #33CC99" in one for one in uneven.problems)
+
+
+def test_非法目标色直接拒绝() -> None:
+    with pytest.raises(ValueError, match="#RRGGBB"):
+        imaging.measure(render(subject()), background_color="transparent")
 
 
 def test_地面投影拦得住() -> None:
@@ -97,7 +116,7 @@ def test_抠图单独报一条() -> None:
     report = imaging.measure(render(image))
 
     assert report.transparent == pytest.approx(0.75, abs=0.01)
-    assert any("透明" in one for one in report.problems)
+    assert any("不透明纯色 #FFFFFF" in one for one in report.problems)
 
 
 def test_调色板图的透明也认得() -> None:

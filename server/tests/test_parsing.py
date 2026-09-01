@@ -369,6 +369,57 @@ def test_一轮只摆前四组() -> None:
     assert [g.item for g in groups] == ["第1 项", "第2 项", "第3 项", "第4 项"]
 
 
+def test_角色卡片解析并标准化四视图背景色() -> None:
+    text = """ASSET-DEMO-001 — 白甲角色渲染图
+类别：character
+尺寸：1024x1024
+格式：png
+文件名：character_白甲_渲染图.png
+四视图背景色：#12abEf（高反差蓝绿）
+prompt：character in a cinematic scene
+negative_prompt：watermark
+"""
+
+    (spec,) = parsing.parse_asset_specs(text)
+
+    assert spec.view_background_color == "#12ABEF"
+    assert spec.gaps() == ()
+    assert spec.as_dict()["view_background_color"] == "#12ABEF"
+
+
+def test_角色卡片缺少或使用透明背景时视为缺项() -> None:
+    base = """ASSET-DEMO-001 — 角色渲染图
+类别：character
+尺寸：1024x1024
+文件名：character_demo.png
+{background}
+prompt：character in a scene
+negative_prompt：watermark
+"""
+
+    (missing,) = parsing.parse_asset_specs(base.format(background=""))
+    (transparent,) = parsing.parse_asset_specs(base.format(background="四视图背景色：transparent"))
+    (invalid,) = parsing.parse_asset_specs(base.format(background="四视图背景色：绿色"))
+
+    assert "四视图背景色" in missing.gaps()
+    assert "四视图背景色" in transparent.gaps()
+    assert "四视图背景色" in invalid.gaps()
+
+
+def test_非角色卡片不强制四视图背景色() -> None:
+    text = """ASSET-DEMO-002 — 场景图
+类别：scene
+尺寸：1024x1024
+文件名：scene_demo.png
+prompt：wide landscape
+negative_prompt：watermark
+"""
+
+    (spec,) = parsing.parse_asset_specs(text)
+
+    assert "四视图背景色" not in spec.gaps()
+
+
 def test_整轮解析原文原样保留() -> None:
     text = """先说结论。
 

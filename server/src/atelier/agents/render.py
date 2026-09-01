@@ -55,7 +55,9 @@ SPEC_REQUEST = """## 项目视觉规范（art-bible.md）
 
 - 项目缩写用 `{code}`，编号从 001 起。
 - 尺寸写 `{size}x{size}`，格式 png。
-- 环境策略按渲染图那一档：可以带环境背景、氛围光与镜头感。
+- 环境策略按渲染图那一档：可以带环境背景、氛围光与镜头感，不要求透明背景。
+- 必须选择四视图统一使用的不透明纯色背景，填写 `四视图背景色：#RRGGBB（颜色名）`。
+- 底色应避开角色主色、发光色和半透明部件颜色，优先最大化色相与明度反差。
 - prompt 层序不得缺层，附属结构层写明数量与分离状态。
 """
 
@@ -82,6 +84,26 @@ DIRECTION_REQUEST = """这个方向不对，需要换一版：
 
 MAX_SPEC_RETRIES = 2
 """卡片有缺项时最多让 `prompt_smith` 自己补几次。"""
+
+_TRANSPARENT_TERMS = (
+    "transparent background",
+    "transparent backdrop",
+    "alpha channel",
+    "透明背景",
+    "透明底",
+    "透明通道",
+    "棋盘格背景",
+)
+
+
+def _spec_gaps(spec: AssetSpec) -> tuple[str, ...]:
+    """角色渲染卡片除通用字段外，不得把旧项目的透明要求带进生图。"""
+    gaps = list(spec.gaps())
+    prompt = spec.prompt.lower()
+    if any(term in prompt for term in _TRANSPARENT_TERMS):
+        gaps.append("prompt 不得要求透明背景或 alpha channel")
+    return tuple(gaps)
+
 
 REPORT = """IMAGE-RESULT: {status}
 文件：{path}
@@ -204,7 +226,7 @@ def make_spec(
             task_id=character.id,
         )
         spec = _first_spec(reply.content)
-        gaps = spec.gaps()
+        gaps = _spec_gaps(spec)
         record_event(
             project,
             character.id,
@@ -259,6 +281,9 @@ def render(
     """
     characters.require_state(character, characters.SPEC_CONFIRMED, action="生成渲染图")
     card = spec or make_spec(project, runtime, ref, character, chat=chat, note=note, field=field)
+    gaps = _spec_gaps(card)
+    if gaps:
+        raise Conflict(f"渲染图卡片还不能使用：{'、'.join(gaps)}")
     width, height = image_size(ref, card)
 
     reply = dispatch.draw(

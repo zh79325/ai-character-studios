@@ -35,6 +35,7 @@ CARD = """ASSET-DEMO-001 — 赤瞳 渲染图
 视觉描述：一只双尾兽站在废弃电厂前。
 art bible 锚点：§1 冷光金属
 硬性约束：双尾数量=2
+四视图背景色：#FFFFFF（白色）
 prompt：standing pose, red eyes, TWO distinct tails, cinematic light, 8k
 negative_prompt：background clutter, watermark
 """
@@ -163,6 +164,8 @@ def test_卡片带上项目风格与视觉规范(
     assert "2048x2048" in asked
     assert spec.code == "ASSET-DEMO-001"
     assert spec.constraints == ("双尾数量=2",)
+    assert spec.view_background_color == "#FFFFFF"
+    assert "不要求透明背景" in asked
 
 
 def test_卡片缺项先让写手自己补(
@@ -232,6 +235,26 @@ def test_改某一项只发那一项回去(
     assert "光照" in asked
     assert "太暗了" in asked
     assert "只改卡片里跟这一项相关的内容" in asked
+
+
+def test_透明背景要求会触发补卡且不会进入生图(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    chat: ScriptedChat,
+    draw: ScriptedDraw,
+    candidates: None,
+    confirmed: characters.Character,
+) -> None:
+    transparent = CARD.replace("cinematic light, 8k", "cinematic light, transparent background")
+    chat.replies.extend([transparent, CARD])
+
+    result = run(project_db, session, project, confirmed, chat, draw)
+
+    assert len(chat.calls) == 2
+    assert "不得要求透明背景" in chat.calls[-1][-1]["content"]
+    assert "transparent background" not in draw.calls[-1]["prompt"]
+    assert result.spec.view_background_color == "#FFFFFF"
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +341,7 @@ def test_生成后推到S2并留下台账(
     assert row is not None
     assert row.is_final is False
     assert row.asset_spec["prompt"] == result.spec.prompt
+    assert row.asset_spec["view_background_color"] == "#FFFFFF"
     assert row.asset_spec["params"]["model"]
 
 

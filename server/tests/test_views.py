@@ -38,19 +38,24 @@ CARD = """ASSET-DEMO-001 — 赤瞳 渲染图
 视觉描述：一只双尾兽站在废弃电厂前。
 art bible 锚点：§1 冷光金属
 硬性约束：双尾数量=2
+四视图背景色：#FFFFFF（白色）
 prompt：standing pose, red eyes, TWO distinct tails, cinematic light, 8k
 negative_prompt：background clutter, watermark
 """
 
 
-def white_png(width: int = 512, height: int = 512) -> bytes:
-    """纯白底 + 居中主体，机器量得过的那种图。"""
-    image = Image.new("RGB", (width, height), (255, 255, 255))
+def solid_png(color: tuple[int, int, int], width: int = 512, height: int = 512) -> bytes:
+    """指定纯色底 + 居中主体。"""
+    image = Image.new("RGB", (width, height), color)
     block = Image.new("RGB", (width // 3, height // 3), (20, 20, 20))
     image.paste(block, (width // 3, height // 3))
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def white_png(width: int = 512, height: int = 512) -> bytes:
+    return solid_png((255, 255, 255), width, height)
 
 
 def gray_png(width: int = 512, height: int = 512) -> bytes:
@@ -253,14 +258,35 @@ def test_渲染图没定稿卡片就没有规格可依(project_db: Session, stag
         views.base_card(project_db, staged)
 
 
-def test_prompt追加视角句与白底句(project_db: Session, staged: characters.Character) -> None:
+def test_prompt追加视角句与动态纯色背景(project_db: Session, staged: characters.Character) -> None:
     card = views.base_card(project_db, staged)
 
     prompt = views.build_prompt(card, views.BY_CODE["right"], staged)
 
     assert prompt.startswith(card["prompt"])
     assert views.BY_CODE["right"].clause in prompt
-    assert views.WHITE_CLAUSE in prompt
+    assert views.BACKGROUND_CLAUSE.format(color="#FFFFFF") in prompt
+
+
+def test_旧卡片缺少背景色时要求重新生成(project_db: Session, staged: characters.Character) -> None:
+    row = generations.final(project_db, target_ref=staged.id, stage=generations.RENDER)
+    assert row is not None
+    row.asset_spec.pop("view_background_color")
+
+    with pytest.raises(Conflict, match="重新生成并定稿渲染规格卡片"):
+        views.base_card(project_db, staged)
+
+
+def test_四视图使用卡片选择的同一背景色(project_db: Session, staged: characters.Character) -> None:
+    row = generations.final(project_db, target_ref=staged.id, stage=generations.RENDER)
+    assert row is not None
+    row.asset_spec["view_background_color"] = "#33CC99"
+    card = views.base_card(project_db, staged)
+
+    prompts = [views.build_prompt(card, variant, staged) for variant in views.VARIANTS]
+
+    assert all("Solid #33CC99 background" in prompt for prompt in prompts)
+    assert all("Pure white background" not in prompt for prompt in prompts)
 
 
 def test_背面图注入附属结构的数量与分离状态(
@@ -284,8 +310,10 @@ def test_negative补齐必备词且不重复(project_db: Session, staged: charac
     negative = views.build_negative(card)
 
     assert all(one in negative for one in views.NEGATIVE_MUST)
-    assert negative.count("background") == 1
-    assert negative.count("watermark") == 1
+    terms = [part.strip() for part in negative.split(",")]
+    assert "background" not in terms
+    assert "gray background" not in terms
+    assert terms.count("watermark") == 1
 
 
 def test_尺寸跟渲染图卡片一致(
@@ -404,12 +432,33 @@ def test_背景不纯只记警告不丢图(
 
     assert not result.ok
     suspect = [one for one in result.images if one.variant == "back"][0]
-    assert any("纯白" in one for one in suspect.problems)
+    assert any("目标纯色 #FFFFFF" in one for one in suspect.problems)
     assert project.absolute(suspect.file_path).is_file()
     events = task_events.history(project_db, staged.id)
     flagged = [one for one in events if one.event == "view_suspect"]
     assert flagged[-1].level == "warning"
     assert len(generations.candidates(project_db, target_ref=staged.id, stage=views.STAGE)) == 4
+
+
+def test_非白纯色背景贯穿生成和校验(
+    project: ProjectRef,
+    project_db: Session,
+    session: Session,
+    draw: ScriptedDraw,
+    candidates: None,
+    staged: characters.Character,
+) -> None:
+    row = generations.final(project_db, target_ref=staged.id, stage=generations.RENDER)
+    assert row is not None
+    row.asset_spec["view_background_color"] = "#33CC99"
+    draw.data = solid_png((51, 204, 153))
+
+    result = run(project_db, session, project, staged, draw)
+
+    assert result.ok
+    assert all("Solid #33CC99 background" in call["prompt"] for call in draw.calls)
+    assert all(image.params["background"]["target_color"] == "#33CC99" for image in result.images)
+    assert all(image.params["background"]["edge_match"] == 1.0 for image in result.images)
 
 
 def test_一个视角失败不拖累其他三个(
