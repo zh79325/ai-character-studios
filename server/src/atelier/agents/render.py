@@ -23,7 +23,7 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from atelier.agents import context, dispatch, parsing
+from atelier.agents import audit, context, dispatch, parsing
 from atelier.agents import conversation as conv
 from atelier.agents.definitions import get_agent
 from atelier.agents.parsing import AssetSpec
@@ -92,6 +92,13 @@ RETRY_REQUEST = """这张卡片还不能用，问题如下：
 {gaps}
 
 请只改这几处，其余保持原样，改完仍按原格式整张输出。
+"""
+
+FORMAT_RETRY_REQUEST = """上一版没有按模板输出可解析的素材规格卡片，原文如下：
+
+{previous}
+
+不要解释、讨论或征求确认。请严格按系统约定的完整卡片模板重新输出，字段名与顺序不得改动。
 """
 
 FIELD_REQUEST = """上一版渲染图在「{field}」这一项上不合要求：
@@ -209,13 +216,6 @@ def _spec_payload(
     return assembled.payload()
 
 
-def _first_spec(text: str) -> AssetSpec:
-    cards = parsing.parse_asset_specs(text)
-    if not cards:
-        raise Conflict("prompt_smith 这一版没输出可解析的卡片，重试一次或检查它的输出格式")
-    return cards[0]
-
-
 def make_spec(
     project: Session,
     runtime: Session,
@@ -225,6 +225,7 @@ def make_spec(
     chat: dispatch.ChatFn | None = None,
     note: str = "",
     field: str = "",
+    turn_audit: audit.TurnAudit | None = None,
 ) -> AssetSpec:
     """让 `prompt_smith` 出一张渲染图卡片，缺项就让它自己补，至多 `MAX_SPEC_RETRIES` 次。
 
@@ -244,17 +245,59 @@ def make_spec(
             code=ref.code,
         )
 
+    agent = get_agent(SMITH)
+    caller = chat or text_chat.complete
     attempt = 1
     while True:
+        payload = _spec_payload(project, ref, character, request)
+
+        def audited_chat(
+            candidate: Any, messages: Any, attempt_no: int = attempt, **kwargs: Any
+        ) -> text_chat.ChatReply:
+            max_tokens = text_chat.output_budget(candidate, agent.max_output_tokens)
+            if turn_audit is not None:
+                turn_audit.write_request(
+                    f"生成效果图卡片（第 {attempt_no} 次）",
+                    candidate,
+                    messages,
+                    max_tokens=max_tokens,
+                )
+            try:
+                reply = caller(candidate, messages, **{**kwargs, "max_tokens": max_tokens})
+            except Exception as exc:
+                if turn_audit is not None:
+                    turn_audit.write_error(exc)
+                raise
+            if turn_audit is not None:
+                turn_audit.write_response(reply)
+            return reply
+
         reply = dispatch.run(
             runtime,
             SMITH,
-            _spec_payload(project, ref, character, request),
-            chat or text_chat.complete,
+            payload,
+            audited_chat,
             project_code=ref.code,
             task_id=character.id,
         )
-        spec = _first_spec(reply.content)
+        cards = parsing.parse_asset_specs(reply.content)
+        if not cards:
+            record_event(
+                project,
+                character.id,
+                "asset_spec_unparseable",
+                reply.content.strip(),
+                {"attempt": attempt},
+                level="warning",
+            )
+            project.commit()
+            if attempt > MAX_SPEC_RETRIES:
+                raise Conflict(f"prompt_smith 连续 {attempt} 次没输出可解析的卡片，请检查审计记录")
+            request = FORMAT_RETRY_REQUEST.format(previous=reply.content.strip()[:6000])
+            attempt += 1
+            continue
+
+        spec = cards[0]
         gaps = _spec_gaps(spec)
         record_event(
             project,
@@ -302,6 +345,7 @@ def render(
     generate: dispatch.ImageFn | None = None,
     note: str = "",
     field: str = "",
+    turn_audit: audit.TurnAudit | None = None,
 ) -> RenderResult:
     """出一张渲染图：拿卡片、生图、落 `tmp/`、登台账，状态推到 S2。
 
@@ -309,7 +353,16 @@ def render(
     事，两件事分开记，事后才看得出「生成过几版、最后采用了哪一版」。
     """
     characters.require_state(character, characters.SPEC_CONFIRMED, action="生成渲染图")
-    card = spec or make_spec(project, runtime, ref, character, chat=chat, note=note, field=field)
+    card = spec or make_spec(
+        project,
+        runtime,
+        ref,
+        character,
+        chat=chat,
+        note=note,
+        field=field,
+        turn_audit=turn_audit,
+    )
     gaps = _spec_gaps(card)
     if gaps:
         raise Conflict(f"渲染图卡片还不能使用：{'、'.join(gaps)}")

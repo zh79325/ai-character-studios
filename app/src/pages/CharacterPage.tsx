@@ -87,7 +87,8 @@ export default function CharacterPage() {
     onError: (error: Error) => message.error(error.message),
   })
 
-  const busy = (detail.data?.messages ?? []).some((one) => one.status === 'thinking')
+  const busy =
+    fireRender.isPending || (detail.data?.messages ?? []).some((one) => one.status === 'thinking')
   const hasRenderCandidate = (renders.data?.length ?? 0) > 0
   // 一个角色只自动首生一次：重画由用户在收口抽屉点，别让 effect 的依赖抖动又开一张
   const firedFor = useRef<string | null>(null)
@@ -109,6 +110,19 @@ export default function CharacterPage() {
     queryClient,
     fireRender,
   ])
+
+  // /render 是同步长请求；首次 invalidate 可能早于后端落 thinking 消息。请求期间持续刷新这场会话，
+  // 一旦 thinking 到库，useConversation 就会自动接上 SSE，不让自动生图看起来像没有启动。
+  useEffect(() => {
+    if (!fireRender.isPending || conversationId === null) return
+    const refresh = () =>
+      void queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', conversationId],
+      })
+    refresh()
+    const timer = window.setInterval(refresh, 500)
+    return () => window.clearInterval(timer)
+  }, [fireRender.isPending, conversationId, projectCode, queryClient])
 
   // 画师往会话里塞的效果图存的是相对 API 路径，渲染进程读不到磁盘，得换成带 baseUrl 的绝对地址
   const resolveImageUrl = useCallback(
@@ -233,7 +247,7 @@ function CharacterDraftGate({
         queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'character'] }),
         queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'memories'] }),
       ])
-      message.success('角色设定已写入项目目录')
+      message.success('角色设定已写入，正在自动生成效果图')
     },
     onError: (error: Error) => message.error(error.message),
   })

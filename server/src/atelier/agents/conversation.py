@@ -936,6 +936,7 @@ def generate_render_turn(
     )
     project.commit()
     BUS.publish(conversation.id, DELTA, RENDER_STREAM_NOTE)
+    turn_audit = _turn_audit(project, ref, conversation, assistant.turn_no, painter.SMITH)
 
     try:
         result = painter.render(
@@ -947,6 +948,7 @@ def generate_render_turn(
             field=field,
             chat=chat,
             generate=generate,
+            turn_audit=turn_audit,
         )
     except Exception as exc:
         # 炸了也要说一声：订流那头只认这条广播，不发它前端就一直等着图出现

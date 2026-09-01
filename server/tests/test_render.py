@@ -202,7 +202,7 @@ def test_补不齐就停下让人看(
         render.make_spec(project_db, session, project, confirmed, chat=chat)
 
 
-def test_一张卡片都没有就报清楚(
+def test_一张卡片都没有时自动要求按格式重试(
     project_db: Session,
     project: ProjectRef,
     session: Session,
@@ -210,10 +210,32 @@ def test_一张卡片都没有就报清楚(
     candidates: None,
     confirmed: characters.Character,
 ) -> None:
-    chat.replies.append("我觉得这个角色的设定还有点问题，先聊聊？")
+    chat.replies.extend(["我觉得这个角色的设定还有点问题，先聊聊？", CARD])
 
-    with pytest.raises(Conflict, match="没输出可解析的卡片"):
+    spec = render.make_spec(project_db, session, project, confirmed, chat=chat)
+
+    assert spec.code == "ASSET-DEMO-001"
+    assert len(chat.calls) == 2
+    assert "不要解释、讨论或征求确认" in chat.calls[-1][-1]["content"]
+    events = [one.event for one in task_events.history(project_db, confirmed.id)]
+    assert "asset_spec_unparseable" in events
+    assert "asset_spec_drafted" in events
+
+
+def test_连续没有卡片才报错(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    chat: ScriptedChat,
+    candidates: None,
+    confirmed: characters.Character,
+) -> None:
+    chat.replies.extend(["先聊聊？"] * (render.MAX_SPEC_RETRIES + 1))
+
+    with pytest.raises(Conflict, match="连续 3 次没输出可解析的卡片"):
         render.make_spec(project_db, session, project, confirmed, chat=chat)
+
+    assert len(chat.calls) == render.MAX_SPEC_RETRIES + 1
 
 
 def test_改某一项只发那一项回去(

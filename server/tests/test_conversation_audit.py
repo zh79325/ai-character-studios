@@ -12,13 +12,15 @@ import pytest
 from sqlalchemy.orm import Session
 
 from atelier.agents import conversation as engine
-from atelier.assets import layout
+from atelier.agents import render as painter
+from atelier.assets import characters, layout
 from atelier.assets import projects as projects_mod
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Conversation
 from atelier.providers.base import Candidate
 from atelier.providers.text_chat import ChatReply
-from tests.conftest import ScriptedChat, bind_text_model
+from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.test_render import CARD, ScriptedDraw
 
 DESIGNER = "game_designer"
 WRITER = "spec_writer"
@@ -132,6 +134,44 @@ def test_角色会话写进那个角色自己的目录(
     assert len(audit_files(project.absolute(character.dir_name))) == 1
     # 项目根不该跟着留一份，否则角色的记录就散在两处
     assert not audit_dir(project.dir).exists()
+
+
+def test_自动生图轮把prompt_smith请求响应写进角色审计(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    enable_audit(project)
+    bind_text_model(session, painter.SMITH, code="smith")
+    bind_image_model(session, painter.PAINTER, code="ark-image")
+    character = make_character(project_db, project)
+    relative = characters.spec_target(character)
+    spec_path = project.absolute(relative)
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text("# 赤瞳\n双尾、红瞳。\n", encoding="utf-8")
+    character.spec_path = relative
+    project_db.commit()
+    characters.confirm_spec(project_db, project, character)
+    conversation = engine.start(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    engine.generate_render_turn(
+        project_db,
+        session,
+        project,
+        conversation,
+        chat=ScriptedChat("先讨论一下？", CARD),
+        generate=ScriptedDraw(),
+    )
+
+    files = audit_files(project.absolute(character.dir_name))
+    assert len(files) == 1
+    text = files[0].read_text(encoding="utf-8")
+    assert f"- 会话：{conversation.id}" in text
+    assert f"- Agent：{painter.SMITH}" in text
+    assert text.count("生成效果图卡片") == 2
+    assert "先讨论一下？" in text
+    assert "不要解释、讨论或征求确认" in text
+    assert "ASSET-DEMO-001" in text
 
 
 def test_每一轮各自一份文件(
