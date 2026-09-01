@@ -60,7 +60,6 @@ RENDER_CONFIRMED = STATES[3][0]
 VIEWS_GENERATED = STATES[4][0]
 VIEWS_CONFIRMED = STATES[5][0]
 
-SPEC_SUFFIX = "角色设定.md"
 RENDER_SUFFIX = "渲染图"
 RENDER_DIR = "images"
 VIEWS_DIR = RENDER_DIR
@@ -144,14 +143,19 @@ def by_name(project: Session, name: str) -> Character | None:
     return project.scalar(select(Character).where(Character.name == name))
 
 
-def spec_target(character: Character) -> str:
-    """设定文档该往哪儿落。
+def document_targets(character: Character) -> dict[str, str]:
+    """角色目录内三份固定文档的项目相对路径。"""
+    base = f"{character.dir_name}/{layout.DOCS_DIR}"
+    return {
+        "spec": f"{base}/{layout.CHARACTER_SPEC_MD}",
+        "render_prompt": f"{base}/{layout.RENDER_PROMPT_MD}",
+        "views_prompt": f"{base}/{layout.VIEWS_PROMPT_MD}",
+    }
 
-    已经沉过一次就认 `spec_path`：用户可能把文件改名或携到子目录了，拿默认名覆回去等
-    于在旁边另开一份，两份设定同时存在时没人说得清后续的图按的是哪份。
-    """
-    # dir_name 已经是相对项目目录的路径（`characters/赤瞳`），别再补一层维度目录
-    return character.spec_path or f"{character.dir_name}/{character.name}{SPEC_SUFFIX}"
+
+def spec_target(character: Character) -> str:
+    """角色定稿文档固定落在角色自己的 `docs/` 目录。"""
+    return document_targets(character)["spec"]
 
 
 def create(
@@ -539,4 +543,10 @@ def sync_meta(ref: ProjectRef, character: Character) -> None:
         "gate_render_confirmed_at": _moment(character.gate_render_confirmed_at),
         "hard_constraints": hard_constraints(character),
     }
-    archive.merge_meta(meta_path(ref, character), {"character": snapshot})
+    archive.merge_meta(
+        meta_path(ref, character),
+        {
+            "character": snapshot,
+            "documents": document_targets(character),
+        },
+    )

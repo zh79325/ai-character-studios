@@ -27,7 +27,7 @@ from atelier.agents import context, dispatch, parsing
 from atelier.agents import conversation as conv
 from atelier.agents.definitions import get_agent
 from atelier.agents.parsing import AssetSpec
-from atelier.assets import archive, characters, generations, projects
+from atelier.assets import archive, characters, documents, generations, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Generation
 from atelier.db.task_events import record as record_event
@@ -430,6 +430,19 @@ def adopt(
         target_path=target,
         extra={"stage": STAGE, "generation_id": row.id, "note": note},
     )
+    try:
+        documents.write_prompt_document(
+            ref,
+            asset_dir=character.dir_name,
+            file_name=layout.RENDER_PROMPT_MD,
+            title="效果图提示词",
+            generation_id=row.id,
+            final_path=result.target_path,
+            asset_spec=row.asset_spec or {},
+        )
+    except Exception:
+        archive.rollback_adoption(ref, result)
+        raise
     generations.mark_final(
         project, row, file_path=result.target_path, file_hash=result.content_hash
     )

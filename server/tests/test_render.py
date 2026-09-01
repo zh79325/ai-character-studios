@@ -18,7 +18,7 @@ from PIL import Image
 from sqlalchemy.orm import Session
 
 from atelier.agents import render
-from atelier.assets import archive, characters, generations, projects
+from atelier.assets import archive, characters, documents, generations, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db import task_events
 from atelier.errors import Conflict
@@ -313,6 +313,7 @@ def test_图落在tmp里而不是定稿位(
     assert result.file_path.startswith("characters/赤瞳/tmp/赤瞳_渲染图_v1_")
     assert project.absolute(result.file_path).read_bytes() == draw.data
     assert not project.absolute("characters/赤瞳/images/character_赤瞳_渲染图.png").exists()
+    assert not project.absolute(characters.document_targets(confirmed)["render_prompt"]).exists()
 
 
 def test_卡片prompt原样且negative补齐无披风约束(
@@ -452,6 +453,43 @@ def test_采用之后定稿位上才有图(
     assert confirmed.state == characters.RENDER_CONFIRMED
     assert confirmed.render_path == adopted.target_path
     assert confirmed.gate_render_confirmed_at is not None
+    prompt_path = project.absolute(characters.document_targets(confirmed)["render_prompt"])
+    prompt_doc = prompt_path.read_text(encoding="utf-8")
+    assert prompt_path.name == layout.RENDER_PROMPT_MD
+    assert result.generation_id in prompt_doc
+    assert adopted.target_path in prompt_doc
+    assert "standing pose, red eyes" in prompt_doc
+    assert "loose flowing cloth" in prompt_doc
+    meta = json.loads(characters.meta_path(project, confirmed).read_text(encoding="utf-8"))
+    assert meta["documents"]["render_prompt"] == project.relative(prompt_path)
+
+
+def test_提示词文档写入失败时不推进定稿(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    chat: ScriptedChat,
+    draw: ScriptedDraw,
+    candidates: None,
+    confirmed: characters.Character,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chat.replies.append(CARD)
+    result = run(project_db, session, project, confirmed, chat, draw)
+    row = generations.get(project_db, result.generation_id)
+    assert row is not None
+
+    def fail(*args: Any, **kwargs: Any) -> str:
+        raise OSError("docs 不可写")
+
+    monkeypatch.setattr(documents, "write_prompt_document", fail)
+    with pytest.raises(OSError, match="docs 不可写"):
+        render.adopt(project_db, project, confirmed, row)
+
+    assert row.is_final is False
+    assert confirmed.state == characters.RENDER_GENERATED
+    assert confirmed.render_path is None
+    assert not project.absolute(characters.render_target(confirmed)).exists()
 
 
 def test_换定稿时旧的退位到tmp(

@@ -48,7 +48,7 @@ def make(project_db: Session, ref: ProjectRef, name: str = "赤瞳") -> characte
 
 def spec_on_disk(ref: ProjectRef, character: characters.Character) -> Path:
     """沉一份设定文档到磁盘并挂到库行上，模拟用户按过「确认沉淀」。"""
-    relative = f"{character.dir_name}/{character.name}角色设定.md"
+    relative = characters.spec_target(character)
     path = ref.absolute(relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"# {character.name}\n双尾、红瞳。\n", encoding="utf-8")
@@ -123,12 +123,13 @@ def test_写了一节就放行(project: ProjectRef) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_建角色铺好四个子目录并记一条事件(project: ProjectRef, project_db: Session) -> None:
+def test_建角色铺好固定子目录并记一条事件(project: ProjectRef, project_db: Session) -> None:
     character = make(project_db, project, "赤瞳双尾兽")
 
     asset_dir = project.absolute(character.dir_name)
     assert sorted(one.name for one in asset_dir.iterdir() if one.is_dir()) == [
         "animations",
+        "docs",
         "images",
         "models",
         "tmp",
@@ -238,6 +239,7 @@ def test_确认后状态时间与台账一起落下来(project: ProjectRef, proj
     assert meta["character"]["state"] == characters.SPEC_CONFIRMED
     assert meta["character"]["spec_path"] == character.spec_path
     assert meta["character"]["gate_spec_confirmed_at"]
+    assert meta["documents"] == characters.document_targets(character)
     event = task_events.history(project_db, character.id)[-1]
     assert event.event == "gate_spec_confirmed"
     assert event.message == "按用户的意思放行"

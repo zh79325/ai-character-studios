@@ -46,13 +46,18 @@ DATA_DIR = ".atelier"
 PROJECT_DB = "project.db"
 TEMPLATES_DIR = "templates"
 TMP_DIR = "tmp"
+DOCS_DIR = "docs"
 MEMORY_DIR = "memory"
 PROMPTS_DIR = "prompts"
 AGENTS_SUBDIR = "agents"
 SNIPPETS_SUBDIR = "snippets"
 PREFERENCES_MD = "preferences.md"
 
-ASSET_SUBDIRS = ("images", "models", "animations", TMP_DIR)
+CHARACTER_SPEC_MD = "角色定稿.md"
+RENDER_PROMPT_MD = "效果图提示词.md"
+VIEWS_PROMPT_MD = "四视图提示词.md"
+
+ASSET_SUBDIRS = (DOCS_DIR, "images", "models", "animations", TMP_DIR)
 GITKEEP = ".gitkeep"
 MODEL_JSON = ".model.json"
 """角色目录的判定 marker。目录里有它才算一个角色目录：分组只是普通文件夹，靠有没有这个
@@ -263,8 +268,18 @@ def ensure_git_files(project_dir: Path) -> tuple[Path, Path]:
     return gitignore, gitattributes
 
 
+def asset_docs_dir(asset_dir: Path) -> Path:
+    """素材的定稿文档目录。"""
+    return asset_dir / DOCS_DIR
+
+
+def asset_document_path(asset_dir: Path, file_name: str) -> Path:
+    """素材目录内一份固定命名的定稿文档。"""
+    return asset_docs_dir(asset_dir) / safe_dir_name(file_name)
+
+
 def ensure_asset_dirs(asset_dir: Path) -> Path:
-    """一个素材目录下的四个固定子目录，空目录放 .gitkeep 以便进 Git。"""
+    """一个素材目录下的固定子目录，空目录放 .gitkeep 以便进 Git。"""
     asset_dir.mkdir(parents=True, exist_ok=True)
     for name in ASSET_SUBDIRS:
         sub = asset_dir / name

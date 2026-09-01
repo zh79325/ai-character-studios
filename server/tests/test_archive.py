@@ -42,7 +42,7 @@ def commit(
 
 
 def test_首次沉淀直接落盘且没有旧版(project: ProjectRef) -> None:
-    relative = "characters/chitong/赤瞳角色设定.md"
+    relative = "characters/chitong/docs/角色定稿.md"
 
     result = commit(project, relative, "# 赤瞳\n冷光金属。\n")
 
@@ -68,7 +68,7 @@ def test_旧定稿退位到同级tmp而不是被覆盖(project: ProjectRef) -> N
 
 
 def test_素材的旧版进素材自己的tmp(project: ProjectRef) -> None:
-    relative = "characters/chitong/赤瞳角色设定.md"
+    relative = "characters/chitong/docs/角色定稿.md"
     write_final(project, relative, "# v1\n")
 
     result = commit(project, relative, "# v2\n")
@@ -120,7 +120,7 @@ def test_以为是新文件结果已经有了也拒绝(project: ProjectRef) -> N
 
 
 def test_文件不存在时空基线就是对的(project: ProjectRef) -> None:
-    assert archive.check_hash(project, "characters/chitong/赤瞳角色设定.md", "") == ""
+    assert archive.check_hash(project, "characters/chitong/docs/角色定稿.md", "") == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -211,7 +211,7 @@ def test_沉下去会被拒的草稿提前就能看出来(project: ProjectRef) -
 
 
 def test_素材目录下写meta台账(project: ProjectRef) -> None:
-    relative = "characters/chitong/赤瞳角色设定.md"
+    relative = "characters/chitong/docs/角色定稿.md"
 
     commit(project, relative, "# v1\n")
     second = commit(project, relative, "# v2\n")
@@ -239,7 +239,7 @@ def test_台账坏了不拦住沉淀(project: ProjectRef) -> None:
     asset.mkdir(parents=True, exist_ok=True)
     (asset / archive.META_JSON).write_text("坏掉的内容", encoding="utf-8")
 
-    commit(project, "characters/chitong/赤瞳角色设定.md", "# v1\n")
+    commit(project, "characters/chitong/docs/角色定稿.md", "# v1\n")
 
     meta = json.loads((asset / archive.META_JSON).read_text(encoding="utf-8"))
     assert len(meta["artifacts"]) == 1
@@ -247,7 +247,7 @@ def test_台账坏了不拦住沉淀(project: ProjectRef) -> None:
 
 def test_角色目录不存在时顺手建出来(project: ProjectRef) -> None:
     """新角色的第一份设定文档来时目录还没建，沉淀不该因此失败。"""
-    result = commit(project, "characters/新角色/新角色角色设定.md", "# v1\n")
+    result = commit(project, "characters/新角色/docs/角色定稿.md", "# v1\n")
 
     assert project.absolute(result.target_path).is_file()
 

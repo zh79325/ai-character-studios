@@ -100,6 +100,13 @@ def _write_atomic(path: Path, content: str) -> None:
     _write_bytes(path, content.encode("utf-8"))
 
 
+def write_text(ref: ProjectRef, *, target_path: str, content: str) -> str:
+    """把系统生成的文本原子写到项目内固定位置，返回项目相对路径。"""
+    target = layout.resolve_inside(ref.dir, target_path)
+    _write_atomic(target, content)
+    return ref.relative(target)
+
+
 def _retire(ref: ProjectRef, target: Path, now: datetime) -> str | None:
     """把现有定稿移进同级 `tmp/`，返回它的新相对路径。"""
     if not target.is_file():
@@ -179,6 +186,13 @@ def _meta_dir(ref: ProjectRef, target: Path) -> Path | None:
     relative = target.resolve().relative_to(project_dir).parts
     if len(relative) < 3 or relative[0] not in layout.CATEGORY_DIRS:
         return None
+
+    category_dir = project_dir / relative[0]
+    candidate = target.resolve().parent
+    while candidate != category_dir and category_dir in candidate.parents:
+        if layout.is_character_dir(candidate):
+            return candidate
+        candidate = candidate.parent
     return project_dir / relative[0] / relative[1]
 
 
@@ -354,6 +368,18 @@ def commit_bytes(
         bytes=len(data),
     )
     return result
+
+
+def rollback_adoption(ref: ProjectRef, result: ArchiveResult) -> None:
+    """定稿附属文档写失败时撤回刚采用的二进制文件。"""
+    target = layout.resolve_inside(ref.dir, result.target_path)
+    if target.is_file():
+        target.unlink()
+    if result.previous_path is not None:
+        previous = layout.resolve_inside(ref.dir, result.previous_path)
+        if previous.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(previous, target)
 
 
 def adopt_file(

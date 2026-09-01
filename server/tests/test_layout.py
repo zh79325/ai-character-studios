@@ -102,12 +102,15 @@ def test_ensure_data_dir_does_not_touch_an_existing_gitignore(tmp_path: Path) ->
     assert "!keep-me" in gitignore.read_text(encoding="utf-8")
 
 
-def test_asset_dirs_are_the_four_fixed_subdirs(tmp_path: Path) -> None:
+def test_asset_dirs_include_docs_and_fixed_subdirs(tmp_path: Path) -> None:
     asset = layout.ensure_asset_dirs(tmp_path / "characters" / "chitong_beast")
 
     assert sorted(p.name for p in asset.iterdir()) == sorted(layout.ASSET_SUBDIRS)
     for name in layout.ASSET_SUBDIRS:
         assert (asset / name / layout.GITKEEP).is_file()
+    assert layout.asset_document_path(asset, layout.CHARACTER_SPEC_MD) == (
+        asset / "docs" / "角色定稿.md"
+    )
 
 
 def test_ensure_asset_dirs_is_idempotent(tmp_path: Path) -> None:

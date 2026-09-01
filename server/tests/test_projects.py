@@ -28,8 +28,10 @@ pytestmark = pytest.mark.usefixtures("projects_root")
 def make_character(ref: projects_mod.ProjectRef, name: str) -> Path:
     """像用户那样直接往 characters/ 里拷一个角色目录进去（带 marker 才算角色）。"""
     target = ref.dir / "characters" / name
-    target.mkdir(parents=True)
-    (target / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+    layout.ensure_asset_dirs(target)
+    layout.asset_document_path(target, layout.CHARACTER_SPEC_MD).write_text(
+        f"# {name}\n", encoding="utf-8"
+    )
     layout.write_model_marker(target, name, projects_mod.new_asset_id())
     return target
 
@@ -188,7 +190,9 @@ def test_bootstrap_overwrite_swaps_the_identity_and_rebuilds_the_db(
     with project_session(fresh.db_path) as db:
         assert db.scalars(select(Character)).all() == []
     assert not (old.dir / "art-bible.md").exists()  # 旧项目的视觉真相让位
-    assert (old.dir / "characters" / "旧角色" / "旧角色.md").is_file()  # 用户的文件不动
+    assert (
+        old.dir / "characters" / "旧角色" / "docs" / layout.CHARACTER_SPEC_MD
+    ).is_file()  # 用户的文件不动
     assert session.get(ProjectRegistry, "old") is None  # 同一个目录不能挂着两条索引
 
 
@@ -558,8 +562,8 @@ def test_scan_claims_directories_copied_in_by_hand(session: Session) -> None:
     assert result.total == 1
     row = projects_mod.character_rows(ref)[0]
     assert row["dir_name"] == "characters/chitong_beast"
-    assert row["spec_path"] == "characters/chitong_beast/chitong_beast.md"
-    for name in layout.ASSET_SUBDIRS:  # 顺手把四个固定子目录补齐
+    assert row["spec_path"] == "characters/chitong_beast/docs/角色定稿.md"
+    for name in layout.ASSET_SUBDIRS:  # 顺手把固定子目录补齐
         assert (asset / name).is_dir()
 
 

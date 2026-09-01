@@ -148,7 +148,7 @@ def test_美术规范摆在当前定稿前面() -> None:
         [],
         art_bible_path="art-bible.md",
         art_bible_text="# 视觉规范\n冷光金属。",
-        artifact_path="characters/孙悟空/孙悟空角色设定.md",
+        artifact_path="characters/孙悟空/docs/角色定稿.md",
         artifact_text="# 孙悟空",
     )
     system = assembled.messages[0].content

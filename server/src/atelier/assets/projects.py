@@ -852,10 +852,9 @@ def create_group(ref: ProjectRef, path: str) -> str:
 
 
 def _find_spec(asset_dir: Path, project_dir: Path) -> str | None:
-    """素材目录第一层的 md 就是设定稿（定稿放第一层是既定约定）。"""
-    for path in sorted(asset_dir.glob("*.md")):
-        return layout.relative_to(project_dir, path)
-    return None
+    """只认角色 `docs/` 下的固定定稿文档。"""
+    path = layout.asset_document_path(asset_dir, layout.CHARACTER_SPEC_MD)
+    return layout.relative_to(project_dir, path) if path.is_file() else None
 
 
 def character_row(row: Character) -> dict[str, Any]:

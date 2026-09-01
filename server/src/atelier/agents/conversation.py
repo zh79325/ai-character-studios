@@ -562,7 +562,7 @@ def allowed_draft_targets(
         config = projects.read_config(ref.dir)
         return (config.art_bible, layout.PROJECT_JSON)
     character = _character(project, conversation.target_ref)
-    return (f"{character.dir_name}/",)
+    return (characters.spec_target(character),)
 
 
 def _check_allowed(
@@ -579,18 +579,21 @@ def resolve_draft_path(
 ) -> str:
     """把 Agent 声明的落盘位置校成一个项目内的相对路径。
 
-    Agent 只会写文件名（提示词里就是 `{角色名}角色设定.md`），角色会话下要把它归到该角色
-    的目录里去，否则一堆设定文档全落在项目根上。越界的路径直接由 `resolve_inside` 拦住：
-    模型写出 `../../.ssh/config` 不该有任何机会落地。路径合法之后还要过一道职责白名单——
-    在项目目录里不等于是这场会话该改的东西。
+    角色 Agent 可以只写文件名，也可以写 `docs/角色定稿.md`；两种写法都会归一到该角色唯一
+    的定稿位。其他角色路径和角色目录下的任意附加文件都不在这场会话的写入权限内。越界路径
+    仍由 `resolve_inside` 拦住。
     """
     candidate = raw.strip().replace("\\", "/").lstrip("/")
     if not candidate:
         raise Conflict("草稿没有声明落盘位置")
 
-    if conversation.target_kind == "character" and "/" not in candidate:
+    if conversation.target_kind == "character":
         character = _character(project, conversation.target_ref)
-        candidate = f"{character.dir_name}/{candidate}"
+        fixed = characters.spec_target(character)
+        if "/" not in candidate:
+            candidate = fixed
+        elif candidate == f"{layout.DOCS_DIR}/{layout.CHARACTER_SPEC_MD}":
+            candidate = f"{character.dir_name}/{candidate}"
 
     target = layout.resolve_inside(ref.dir, candidate)
     if target == ref.dir.resolve():
@@ -1004,9 +1007,7 @@ def _call(
 
     for continuation_no in range(MAX_AUTO_CONTINUATIONS + 1):
         purpose = "主回答" if continuation_no == 0 else f"自动续写 {continuation_no}"
-        configured_max_tokens = text_chat.output_budget(
-            decision.candidate, agent.max_output_tokens
-        )
+        configured_max_tokens = text_chat.output_budget(decision.candidate, agent.max_output_tokens)
         max_tokens = min(
             configured_max_tokens * (2**continuation_no),
             max(configured_max_tokens, MAX_AUTO_OUTPUT_TOKENS),
@@ -1058,9 +1059,7 @@ def _call(
         payload.append(
             {
                 "role": "user",
-                "content": AUTO_CONTINUE_PROMPT
-                if continued_content
-                else AUTO_RETRY_EMPTY_PROMPT,
+                "content": AUTO_CONTINUE_PROMPT if continued_content else AUTO_RETRY_EMPTY_PROMPT,
             }
         )
         decision = _select(runtime, project, ref, conversation, agent)
@@ -1396,7 +1395,7 @@ def _link_spec(
     if character is None:
         return
     for result in archived:
-        if result.target_path.endswith(".md"):
+        if result.target_path == characters.spec_target(character):
             character.spec_path = result.target_path
             return
 

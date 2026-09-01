@@ -170,7 +170,7 @@ def test_ensure把旧随机角色会话迁到确定性id(project_db: Session) ->
             ArtifactDraft(
                 id="legacy-draft",
                 conversation_id=old_id,
-                target_path="characters/赤瞳/赤瞳角色设定.md",
+                target_path="characters/赤瞳/docs/角色定稿.md",
                 content="# 旧草稿",
                 based_on_hash="",
                 status="pending",
@@ -816,12 +816,12 @@ def test_角色会话的草稿归到角色目录(
     conversation = engine.start(
         project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
     )
-    reply = "[草稿开始: 赤瞳角色设定.md]\n# 赤瞳\n[草稿结束]\n"
+    reply = "[草稿开始: 角色定稿.md]\n# 赤瞳\n[草稿结束]\n"
 
     send(project_db, session, project, conversation, "写设定", ScriptedChat(reply))
 
     draft = engine.drafts_of(project_db, conversation.id)[0]
-    assert draft.target_path == "characters/赤瞳/赤瞳角色设定.md"
+    assert draft.target_path == "characters/赤瞳/docs/角色定稿.md"
 
 
 def test_草稿路径越不出项目目录(project_db: Session, project: ProjectRef) -> None:
@@ -907,7 +907,7 @@ def test_立项会话只写得了项目根上那两份(project_db: Session, proj
     assert engine.resolve_draft_path(project_db, project, conversation, layout.PROJECT_JSON)
     with pytest.raises(Conflict, match="不在它的职责范围内"):
         engine.resolve_draft_path(
-            project_db, project, conversation, "characters/赤瞳/赤瞳角色设定.md"
+            project_db, project, conversation, "characters/赤瞳/docs/角色定稿.md"
         )
 
 
@@ -918,7 +918,14 @@ def test_角色会话改不了别的角色(project_db: Session, project: Project
         project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
     )
 
-    assert engine.resolve_draft_path(project_db, project, conversation, "赤瞳角色设定.md")
+    assert engine.resolve_draft_path(project_db, project, conversation, "角色定稿.md") == (
+        "characters/赤瞳/docs/角色定稿.md"
+    )
+    assert engine.resolve_draft_path(project_db, project, conversation, "docs/角色定稿.md") == (
+        "characters/赤瞳/docs/角色定稿.md"
+    )
+    with pytest.raises(Conflict, match="不在它的职责范围内"):
+        engine.resolve_draft_path(project_db, project, conversation, "characters/赤瞳/docs/备注.md")
     with pytest.raises(Conflict, match="不在它的职责范围内"):
         engine.resolve_draft_path(project_db, project, conversation, "characters/蓝羽/设定.md")
     with pytest.raises(Conflict, match="不在它的职责范围内"):
@@ -936,7 +943,7 @@ def test_草稿里的空洞在确认之前就摆出来(project: ProjectRef) -> N
     assert any("忽略" in one for one in ignored)
 
     # 角色设定文档没有这类结构约定，别硬凑提醒
-    assert engine.draft_warnings(project, "characters/赤瞳/赤瞳角色设定.md", "# 赤瞳\n") == []
+    assert engine.draft_warnings(project, "characters/赤瞳/docs/角色定稿.md", "# 赤瞳\n") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -1068,12 +1075,12 @@ def test_角色沉淀设定后回填spec_path但不动状态(
     conversation = engine.start(
         project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
     )
-    reply = "[草稿开始: 赤瞳角色设定.md]\n# 赤瞳\n[草稿结束]\n"
+    reply = "[草稿开始: 角色定稿.md]\n# 赤瞳\n[草稿结束]\n"
     send(project_db, session, project, conversation, "写设定", ScriptedChat(reply))
 
     engine.commit(project_db, project, conversation)
 
-    assert character.spec_path == "characters/赤瞳/赤瞳角色设定.md"
+    assert character.spec_path == "characters/赤瞳/docs/角色定稿.md"
     assert character.state == "S0_spec_drafting"
     assert character.gate_spec_confirmed_at is None
 

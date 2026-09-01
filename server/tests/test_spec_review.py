@@ -55,7 +55,7 @@ CONCERNS_REPLY = """SPEC-CHECK: CONCERNS
 
 DRAFT_REPLY = """改好了，补上了环境设定。
 
-[草稿开始: 赤瞳角色设定.md]
+[草稿开始: docs/角色定稿.md]
 # 赤瞳
 双尾、红瞳、三指利爪，栖息在废弃电厂。
 [草稿结束]
@@ -76,7 +76,7 @@ def make(project_db: Session, project: ProjectRef, name: str = "赤瞳") -> Char
 
 def write_spec(project: ProjectRef, character: Character, text: str) -> None:
     """磁盘上已有一份定稿，并挂到库行上。"""
-    relative = f"{character.dir_name}/{character.name}角色设定.md"
+    relative = characters.spec_target(character)
     path = project.absolute(relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

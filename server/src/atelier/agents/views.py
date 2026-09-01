@@ -12,7 +12,15 @@ import structlog
 from sqlalchemy.orm import Session
 
 from atelier.agents import dispatch, parsing
-from atelier.assets import archive, characters, generations, imaging, layout, projects
+from atelier.assets import (
+    archive,
+    characters,
+    documents,
+    generations,
+    imaging,
+    layout,
+    projects,
+)
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Generation
 from atelier.db.task_events import record as record_event
@@ -53,8 +61,7 @@ VARIANTS: tuple[Variant, ...] = (
         label="右侧 30°",
         stem="右侧",
         clause=(
-            "three-quarter view from the character's right side, about 30 degrees turned, "
-            "full body"
+            "three-quarter view from the character's right side, about 30 degrees turned, full body"
         ),
         position="top-right",
     ),
@@ -70,8 +77,7 @@ VARIANTS: tuple[Variant, ...] = (
         label="左侧 30°",
         stem="左侧",
         clause=(
-            "three-quarter view from the character's left side, about 30 degrees turned, "
-            "full body"
+            "three-quarter view from the character's left side, about 30 degrees turned, full body"
         ),
         position="bottom-right",
     ),
@@ -264,13 +270,25 @@ def generate_views(
     references = (template, render)
     labels = (_ref_label(ref, template), character.render_path or "")
 
+    prompt = build_prompt(card, character)
+    negative_prompt = build_negative(card)
+    effective_card = {
+        **card,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "size": f"{VIEW_SIZE}x{VIEW_SIZE}",
+        "variant": SHEET_CODE,
+        "view_layout": VIEW_LAYOUT,
+        "view_positions": VIEW_POSITIONS,
+    }
+
     try:
         reply = dispatch.draw(
             runtime,
             PAINTER,
-            build_prompt(card, character),
+            prompt,
             generate or image_gen.generate,
-            negative_prompt=build_negative(card),
+            negative_prompt=negative_prompt,
             width=VIEW_SIZE,
             height=VIEW_SIZE,
             seed=seed,
@@ -302,9 +320,10 @@ def generate_views(
         ref,
         character,
         reply,
-        card=card,
+        card=effective_card,
         background_color=background_color,
         references=references,
+        seed=seed,
     )
     if report.ok and not characters.at_least(character, characters.VIEWS_GENERATED):
         character.state = characters.VIEWS_GENERATED
@@ -324,7 +343,7 @@ def generate_views(
         failures=(),
         references=labels,
     )
-    _write_meta(ref, character, result, card=card)
+    _write_meta(ref, character, result, card=effective_card)
     _log.info("views_generated", id=character.id, state=character.state, ok=result.ok)
     return result
 
@@ -342,6 +361,7 @@ def _land(
     card: Mapping[str, Any],
     background_color: str,
     references: Sequence[Path],
+    seed: int | None,
 ) -> tuple[ViewImage, imaging.Report]:
     report = imaging.measure_grid(reply.data, background_color=background_color)
     relative = archive.stage_bytes(
@@ -353,6 +373,7 @@ def _land(
     )
     params = {
         **reply.params,
+        "seed": seed if seed is not None else reply.params.get("seed"),
         "references": [_ref_label(ref, one) for one in references],
         "variant": SHEET_CODE,
         "view_layout": VIEW_LAYOUT,
@@ -503,6 +524,19 @@ def adopt(
             "note": note,
         },
     )
+    try:
+        documents.write_prompt_document(
+            ref,
+            asset_dir=character.dir_name,
+            file_name=layout.VIEWS_PROMPT_MD,
+            title="四视图提示词",
+            generation_id=row.id,
+            final_path=result.target_path,
+            asset_spec=row.asset_spec or {},
+        )
+    except Exception:
+        archive.rollback_adoption(ref, result)
+        raise
     generations.mark_final(
         project, row, file_path=result.target_path, file_hash=result.content_hash
     )

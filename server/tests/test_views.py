@@ -12,7 +12,7 @@ from PIL import Image
 from sqlalchemy.orm import Session
 
 from atelier.agents import parsing, views
-from atelier.assets import archive, characters, generations, layout, projects
+from atelier.assets import archive, characters, documents, generations, layout, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db import task_events
 from atelier.db.project_models import Generation
@@ -275,6 +275,7 @@ def test_图落tmp并按sheet登台账和meta(
     meta = json.loads(characters.meta_path(project, staged).read_text(encoding="utf-8"))
     assert len(meta["views"]["images"]) == 1
     assert meta["views"]["images"][0]["variant"] == views.SHEET_CODE
+    assert not project.absolute(characters.document_targets(staged)["views_prompt"]).exists()
 
 
 def test_机器不通过就不推S4但保留候选(
@@ -364,7 +365,7 @@ def test_定稿一张四宫格并推S5(
     candidates: None,
     staged: characters.Character,
 ) -> None:
-    run(project_db, session, project, staged, draw)
+    run(project_db, session, project, staged, draw, seed=42)
     results = adopt_latest(project_db, project, staged, note="可以建模")
     assert staged.state == characters.VIEWS_CONFIRMED
     paths = characters.view_paths(staged)
@@ -378,6 +379,42 @@ def test_定稿一张四宫格并推S5(
         if row.is_final
     ]
     assert len(finals) == 1
+    prompt_path = project.absolute(characters.document_targets(staged)["views_prompt"])
+    prompt_doc = prompt_path.read_text(encoding="utf-8")
+    assert prompt_path.name == layout.VIEWS_PROMPT_MD
+    assert finals[0].id in prompt_doc
+    assert paths[views.SHEET_CODE] in prompt_doc
+    assert "top-left is front view" in prompt_doc
+    assert '"view_layout": "grid-2x2"' in prompt_doc
+    assert '"top-left": "front"' in prompt_doc
+    assert "#FFFFFF" in prompt_doc
+    assert "Seed：42" in prompt_doc
+
+
+def test_四视图提示词文档失败时不推进定稿(
+    project: ProjectRef,
+    project_db: Session,
+    session: Session,
+    draw: ScriptedDraw,
+    candidates: None,
+    staged: characters.Character,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run(project_db, session, project, staged, draw)
+    row = views.latest_sheet(project_db, staged)
+    assert row is not None
+
+    def fail(*args: Any, **kwargs: Any) -> str:
+        raise OSError("docs 不可写")
+
+    monkeypatch.setattr(documents, "write_prompt_document", fail)
+    with pytest.raises(OSError, match="docs 不可写"):
+        views.adopt(project_db, project, staged, {views.SHEET_CODE: row})
+
+    assert row.is_final is False
+    assert staged.state == characters.VIEWS_GENERATED
+    assert characters.view_paths(staged) == {}
+    assert not project.absolute(characters.views_target(staged, "四视图")).exists()
 
 
 def test_旧分图不能混入新定稿(
