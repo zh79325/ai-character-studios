@@ -182,6 +182,7 @@ def test_请求先落盘再调模型_回答之后才追加(
     assert f"- Agent：{DESIGNER}" in final
     assert "## 调用 1：主回答" in final
     assert "- Provider：bailian/qwen-plus" in final
+    assert "- Max tokens：8192" in final
     assert "### Response" in final
     assert "想好了。" in final
     assert "- Total tokens：30" in final
@@ -310,10 +311,12 @@ def test_审计不写凭证与图片正文(
             {"role": "system", "api_key": "sk-secret", "content": "守规矩"},
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image}}]},
         ],
+        max_tokens=2048,
     )
 
     text = audit.path.read_text(encoding="utf-8")
     assert "sk-secret" not in text
+    assert "- Max tokens：2048" in text
     assert "***" in text
     assert "aGVsbG8=" not in text
     # 多模态消息仍然单独一节，图片只留 MIME、字节数与摘要
@@ -343,10 +346,12 @@ def test_多模态片段只记统计不把文件撑爆(
                 ],
             }
         ],
+        max_tokens=1024,
     )
 
     text = audit.path.read_text(encoding="utf-8")
     # 文本片段照旧看得见，图片与音频只剩一行
+    assert "- Max tokens：1024" in text
     assert "按这张参考图改服饰" in text
     assert "- 片段 2：image_url" in text
     assert "mime=image/png" in text

@@ -1,7 +1,6 @@
 /**
- * 当前项目的角色列表。表格支持按关键字和所属目录过滤，新建角色/分组默认落在当前筛选目录下；
- * 筛选全部目录时默认落在根目录。
- * 覆盖是删旧目录（含素材）重建，后端仍兜底 409。
+ * 当前项目的角色列表。表格支持按关键字和所属目录过滤；新建角色时先明确选择目录，再输入
+ * 角色名称。覆盖是删旧目录（含素材）重建，后端仍兜底 409。
  *
  * 「扫描目录」是给「用户直接把角色目录拷进来」这条路准备的：只认领带 `.model.json` 的目录，
  * 只报告消失的目录而不删——目录可能只是还没拷过来。
@@ -92,6 +91,7 @@ export default function CharacterTable() {
   const [directoryFilter, setDirectoryFilter] = useState(ALL_GROUPS)
   const [keyword, setKeyword] = useState('')
   const [naming, setNaming] = useState(false)
+  const [creationGroup, setCreationGroup] = useState<string>()
   const [name, setName] = useState('')
   const [grouping, setGrouping] = useState(false)
   const [managedGroup, setManagedGroup] = useState('')
@@ -133,11 +133,23 @@ export default function CharacterTable() {
     return matchesDirectory && matchesKeyword
   })
   const targetGroup = directoryFilter === ALL_GROUPS ? '' : directoryFilter
+  const chosenGroup = creationGroup ?? ''
+
+  const closeNaming = () => {
+    setNaming(false)
+    setCreationGroup(undefined)
+    setName('')
+  }
+
+  const openNaming = () => {
+    setCreationGroup(undefined)
+    setName('')
+    setNaming(true)
+  }
 
   const runCreate = (overwrite: boolean) =>
-    createCharacter(name.trim(), targetGroup, overwrite).then((row) => {
-      setNaming(false)
-      setName('')
+    createCharacter(name.trim(), chosenGroup, overwrite).then((row) => {
+      closeNaming()
       refreshAll()
       // 建完直接进工作台：刚建的角色下一步一定是去聊设定
       navigate(`/characters/${row.id}`)
@@ -150,8 +162,8 @@ export default function CharacterTable() {
 
   const submitCharacter = () => {
     const trimmed = name.trim()
-    if (!trimmed) return
-    const clash = (rows.data ?? []).some((row) => row.dir_name === targetDir(targetGroup, trimmed))
+    if (creationGroup === undefined || !trimmed) return
+    const clash = (rows.data ?? []).some((row) => row.dir_name === targetDir(chosenGroup, trimmed))
     if (clash) {
       Modal.confirm({
         title: `「${trimmed}」在该分组已存在`,
@@ -243,8 +255,6 @@ export default function CharacterTable() {
     },
   ]
 
-  const groupLabel = targetGroup || '根'
-
   return (
     <Card size="small" title="角色列表">
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -266,7 +276,7 @@ export default function CharacterTable() {
             style={{ width: 220 }}
             onChange={setDirectoryFilter}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setNaming(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openNaming}>
             新建角色
           </Button>
           <Button
@@ -313,24 +323,41 @@ export default function CharacterTable() {
 
       <Modal
         open={naming}
-        title={`在分组「${groupLabel}」下新建角色`}
+        title="新建角色"
         okText="建吧"
         cancelText="算了"
-        okButtonProps={{ disabled: name.trim() === '' }}
+        okButtonProps={{ disabled: creationGroup === undefined || name.trim() === '' }}
         confirmLoading={create.isPending}
-        onCancel={() => setNaming(false)}
+        onCancel={closeNaming}
         onOk={submitCharacter}
       >
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text>1. 选择角色所在目录</Typography.Text>
+            <TreeSelect
+              value={creationGroup}
+              treeData={directoryTreeData.slice(1)}
+              treeDefaultExpandAll
+              showSearch
+              treeNodeFilterProp="title"
+              placeholder="请选择目录"
+              style={{ width: '100%' }}
+              onChange={setCreationGroup}
+            />
+          </Space>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Typography.Text>2. 输入角色名称</Typography.Text>
+            <Input
+              disabled={creationGroup === undefined}
+              value={name}
+              placeholder="例：赤瞳"
+              onChange={(event) => setName(event.target.value)}
+              onPressEnter={submitCharacter}
+            />
+          </Space>
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             名字也是目录名，建完不好改——改名会让已经落盘的素材跟库里的记录对不上。
           </Typography.Text>
-          <Input
-            value={name}
-            placeholder="例：赤瞳"
-            onChange={(event) => setName(event.target.value)}
-            onPressEnter={submitCharacter}
-          />
         </Space>
       </Modal>
 

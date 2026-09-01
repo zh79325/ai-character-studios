@@ -133,6 +133,8 @@ class TurnAudit:
         purpose: str,
         candidate: Candidate,
         messages: Sequence[Mapping[str, Any]],
+        *,
+        max_tokens: int,
     ) -> None:
         """在调用 LLM 前写入实际消息；第一次写同时创建文件头。"""
         self._calls += 1
@@ -142,7 +144,8 @@ class TurnAudit:
         section = (
             f"\n## 调用 {self._calls}：{purpose}\n\n"
             f"- Provider：{candidate.label}\n"
-            f"- Model：{candidate.model_id}\n\n"
+            f"- Model：{candidate.model_id}\n"
+            f"- Max tokens：{max_tokens}\n\n"
             f"### Request\n{body}"
         )
         if self._calls == 1:

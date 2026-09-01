@@ -910,7 +910,12 @@ def _call(
     partial: list[str] = []
     effective_delta = on_delta
     if turn_audit is not None:
-        turn_audit.write_request("主回答", decision.candidate, payload)
+        turn_audit.write_request(
+            "主回答",
+            decision.candidate,
+            payload,
+            max_tokens=text_chat.output_budget(decision.candidate, None),
+        )
         if on_delta is not None:
 
             def audited_delta(piece: str) -> None:
@@ -981,7 +986,12 @@ def _fold_until_fits(
             {"role": "user", "content": request},
         ]
         if turn_audit is not None:
-            turn_audit.write_request("上下文折叠", decision.candidate, payload)
+            turn_audit.write_request(
+                "上下文折叠",
+                decision.candidate,
+                payload,
+                max_tokens=text_chat.output_budget(decision.candidate, None),
+            )
         try:
             # 走 dispatch 而不是直接 chat：折叠跟主回答一样会遇限流与空回答，自己发就没了重试、
             # 换候选与记账。候选变了不回写会话绑定：这只是一次内部压缩，不该改变主对话粘在谁身上。
