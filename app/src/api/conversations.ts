@@ -106,8 +106,8 @@ export function interruptConversation(id: string): Promise<InterruptResult> {
 // 项目长期记忆
 // --------------------------------------------------------------------------- //
 
-export function listMemories(): Promise<ProjectMemoryItem[]> {
-  return request<ProjectMemoryItem[]>('/api/memory')
+export function listMemories(characterRef?: string): Promise<ProjectMemoryItem[]> {
+  return request<ProjectMemoryItem[]>(withQuery('/api/memory', { character_ref: characterRef }))
 }
 
 export function addMemory(kind: MemoryKind, content: string): Promise<ProjectMemoryItem> {

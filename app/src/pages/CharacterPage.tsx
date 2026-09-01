@@ -1,54 +1,52 @@
 /**
  * 一个角色的工作台。
  *
- * 页面按「先聊出来、再审、再拍板」这一条线排：设定会话在上，评审与门禁在下，右侧是这个角色
- * 身上发生过的事。三块都盯着同一个 `character` 查询，所以门禁一按下去，状态、约束清单、时间
- * 线会一起变——分开各拿一份的话，用户会看到「已确认」旁边还挂着旧的待办按钮。
- *
- * 「改某一项重生」「换方向重生」不在这里直接发消息：卡片只把拟好的话递上来，用户在会话里过目
- * 后自己发。平台替用户开口，说错了却算在用户头上。
- *
- * 渲染图那张卡片要等门禁 1 过了才出现：设定是它的底本，没定稿就没有可翻译的东西，提前摆上
- * 按钮只会让用户按一下拿到 409。
+ * 页面只留两块：左边是角色设计会话，右边是已经明确的角色信息。需要用户拍板的分歧由会话里的
+ * 待选项抽屉承接；右栏只展示角色状态、已经沉淀的角色记忆和定稿图片，不再重复摆评审、门禁与
+ * 事件时间线。
  */
-import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Empty, Row, Space, Timeline, Typography } from 'antd'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { App, Button, Card, Collapse, Empty, Image, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
-import { listCharacterEvents, readCharacter } from '@/api/characters'
+import { listRenders, listViews, readCharacter, renderImageUrl } from '@/api/characters'
+import { commitConversation, listMemories, readConversation } from '@/api/conversations'
 import { ApiError } from '@/api/client'
-import ChatPanel, { type Handoff } from '@/components/chat'
+import ChatPanel from '@/components/chat'
+import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame from '@/components/ProjectFrame'
-import RenderGateCard from '@/components/RenderGateCard'
-import SpecGateCard from '@/components/SpecGateCard'
-import ViewsGateCard from '@/components/ViewsGateCard'
-import type { TaskEvent } from '@/types/api'
+import type { Character, Draft, Generation, ProjectMemoryItem } from '@/types/api'
 
 const WRITER = 'spec_writer'
 
-/** 事件级别 → 时间线颜色。`warning` 是「审出问题」，不是出错。 */
-const LEVEL_COLORS: Record<string, string> = {
-  info: 'blue',
-  warning: 'orange',
-  error: 'red',
+const MEMORY_LABELS: Record<string, string> = {
+  preference: '偏好',
+  taboo: '禁忌',
+  fact: '事实',
+}
+
+const VIEW_LABELS: Record<string, string> = {
+  front: '正面',
+  right: '右侧 30°',
+  back: '背面',
+  left: '左侧 30°',
 }
 
 export default function CharacterPage() {
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [conversationId, setConversationId] = useState<string | null>(null)
-  const [handoff, setHandoff] = useState<Handoff | null>(null)
 
   const character = useQuery({
     queryKey: ['character', id],
     queryFn: () => readCharacter(id),
     enabled: id !== '',
   })
-  const events = useQuery({
-    queryKey: ['character-events', id],
-    queryFn: () => listCharacterEvents(id),
-    enabled: id !== '',
+  const detail = useQuery({
+    queryKey: ['conversation', conversationId],
+    queryFn: () => readConversation(conversationId!),
+    enabled: conversationId !== null,
   })
 
   if (character.error instanceof ApiError && character.error.status === 404) {
@@ -64,6 +62,8 @@ export default function CharacterPage() {
   }
 
   const row = character.data
+  const drafts = (detail.data?.drafts ?? []).filter((one) => !one.stale)
+  const finaleKey = drafts.length > 0 ? `spec:${drafts.map((one) => one.id).join(',')}` : ''
 
   return (
     <ProjectFrame
@@ -73,81 +73,237 @@ export default function CharacterPage() {
         { label: row?.name ?? '角色' },
       ]}
     >
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <ChatPanel
-          agentCode={WRITER}
-          targetKind="character"
-          targetRef={id}
-          title={row ? `${row.name} 设定对焦` : undefined}
-          onActiveChange={setConversationId}
-          handoff={handoff}
-          heading="设定对焦"
-          who="角色设计师"
-          starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
-        />
-
-        <Row gutter={16}>
-          <Col span={14}>
-            <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              {row && (
-                <SpecGateCard
-                  character={row}
-                  conversationId={conversationId}
-                  onHandoff={setHandoff}
-                />
-              )}
-              {row && row.gate_spec_confirmed_at !== null && <RenderGateCard character={row} />}
-              {row && row.gate_render_confirmed_at !== null && <ViewsGateCard character={row} />}
-            </Space>
-          </Col>
-          <Col span={10}>
-            <EventTimeline events={events.data ?? []} loading={events.isLoading} />
-          </Col>
-        </Row>
-      </Space>
+      <ChatPanel
+        agentCode={WRITER}
+        targetKind="character"
+        targetRef={id}
+        title={row ? `${row.name} 设定对焦` : undefined}
+        onActiveChange={setConversationId}
+        heading="设定对焦"
+        who="角色设计师"
+        draftsAside
+        sidebar={
+          row ? (
+            <CharacterSidebar character={row} decisions={detail.data?.memory.decisions ?? []} />
+          ) : null
+        }
+        finaleTitle="确认角色设定"
+        finaleKey={finaleKey}
+        finale={
+          drafts.length === 0
+            ? null
+            : () => <CharacterDraftGate conversationId={conversationId} drafts={drafts} />
+        }
+        starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
+      />
     </ProjectFrame>
   )
 }
 
-/**
- * 这个角色身上发生过的事。
- *
- * 新的在上：用户来看这里通常是想知道「刚才那次评审说了什么」。裁决全文很长，收起来放，展开
- * 才看——但一个字都不删。
- */
-function EventTimeline({ events, loading }: { events: TaskEvent[]; loading: boolean }) {
+function CharacterDraftGate({
+  conversationId,
+  drafts,
+}: {
+  conversationId: string | null
+  drafts: Draft[]
+}) {
+  const { message } = App.useApp()
+  const queryClient = useQueryClient()
+  const commit = useMutation({
+    mutationFn: () =>
+      commitConversation(
+        conversationId!,
+        drafts.map((one) => one.id),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ['character'] }),
+        queryClient.invalidateQueries({ queryKey: ['memories'] }),
+      ])
+      message.success('角色设定已写入项目目录')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
   return (
-    <Card size="small" title="这个角色发生过什么" loading={loading}>
-      {events.length === 0 ? (
-        <Empty image={null} description="评审与门禁的记录会留在这里。" />
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Typography.Text strong style={{ fontSize: 13 }}>
+        确认角色设定
+      </Typography.Text>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        确认后写入角色目录；需要修改就关掉抽屉，继续在左侧对话。
+      </Typography.Text>
+      <Collapse
+        size="small"
+        defaultActiveKey={drafts[0]?.id}
+        items={drafts.map((one) => ({
+          key: one.id,
+          label: <Typography.Text style={{ fontSize: 12 }}>{one.target_path}</Typography.Text>,
+          children: <MarkdownText text={one.content} />,
+        }))}
+      />
+      <Button
+        type="primary"
+        block
+        disabled={conversationId === null}
+        loading={commit.isPending}
+        onClick={() => commit.mutate()}
+      >
+        确认角色设定
+      </Button>
+    </Space>
+  )
+}
+
+function CharacterSidebar({ character, decisions }: { character: Character; decisions: string[] }) {
+  const memories = useQuery({
+    queryKey: ['memories', character.id],
+    queryFn: () => listMemories(character.id),
+  })
+  const renders = useQuery({
+    queryKey: ['character-renders', character.id],
+    queryFn: () => listRenders(character.id),
+  })
+  const views = useQuery({
+    queryKey: ['character-views', character.id],
+    queryFn: () => listViews(character.id),
+  })
+
+  const ownMemories = (memories.data ?? []).filter(
+    (one) => one.character_ref === character.id && one.enabled,
+  )
+  const finalRenders = (renders.data ?? []).filter((one) => one.is_final)
+  const finalViews = (views.data ?? []).filter((one) => one.is_final)
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Card size="small" title="角色信息">
+        <Space direction="vertical" size={5} style={{ width: '100%' }}>
+          <Space size={6} wrap>
+            <Typography.Text strong>{character.name}</Typography.Text>
+            <Tag color="processing">{character.state_label}</Tag>
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+            {character.dir_name}
+          </Typography.Text>
+        </Space>
+      </Card>
+      <MemoryCard decisions={decisions} memories={ownMemories} loading={memories.isLoading} />
+      <PreviewCard
+        characterId={character.id}
+        renders={finalRenders}
+        views={finalViews}
+        loading={renders.isLoading || views.isLoading}
+      />
+    </Space>
+  )
+}
+
+function MemoryCard({
+  decisions,
+  memories,
+  loading,
+}: {
+  decisions: string[]
+  memories: ProjectMemoryItem[]
+  loading: boolean
+}) {
+  const remembered = new Set(memories.map((one) => one.content))
+  const settled = decisions.filter((one) => !remembered.has(one))
+  const empty = settled.length === 0 && memories.length === 0
+
+  return (
+    <Card size="small" title="角色记忆" loading={loading}>
+      {empty ? (
+        <Empty image={null} description="聊定并沉淀的角色信息会出现在这里。" />
       ) : (
-        <div style={{ maxHeight: 420, overflowY: 'auto', paddingTop: 4 }}>
-          <Timeline
-            items={[...events].reverse().map((one) => ({
-              key: one.seq,
-              color: LEVEL_COLORS[one.level] ?? 'gray',
-              children: (
-                <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                  <Space size={6}>
-                    <Typography.Text strong style={{ fontSize: 13 }}>
-                      {one.event}
-                    </Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      {one.ts.replace('T', ' ').slice(0, 19)}
-                    </Typography.Text>
-                  </Space>
-                  <Typography.Paragraph
-                    style={{ fontSize: 12, marginBottom: 0 }}
-                    ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
-                  >
-                    <span style={{ whiteSpace: 'pre-wrap' }}>{one.message}</span>
-                  </Typography.Paragraph>
-                </Space>
-              ),
-            }))}
-          />
-        </div>
+        <Space direction="vertical" size={7} style={{ width: '100%' }}>
+          {settled.map((content) => (
+            <MemoryRow key={`settled:${content}`} label="已定" content={content} />
+          ))}
+          {memories.map((one) => (
+            <MemoryRow
+              key={one.id}
+              label={MEMORY_LABELS[one.kind] ?? one.kind}
+              content={one.content}
+            />
+          ))}
+        </Space>
       )}
     </Card>
+  )
+}
+
+function MemoryRow({ label, content }: { label: string; content: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+      <Tag style={{ margin: 0, flex: '0 0 auto' }}>{label}</Tag>
+      <Typography.Text style={{ fontSize: 12 }}>{content}</Typography.Text>
+    </div>
+  )
+}
+
+function PreviewCard({
+  characterId,
+  renders,
+  views,
+  loading,
+}: {
+  characterId: string
+  renders: Generation[]
+  views: Generation[]
+  loading: boolean
+}) {
+  const images = [
+    ...renders.map((row) => ({ row, label: '角色渲染图' })),
+    ...views.map((row) => ({
+      row,
+      label: VIEW_LABELS[row.variant ?? ''] ?? row.variant ?? '视图',
+    })),
+  ]
+
+  return (
+    <Card size="small" title="已定稿图片" loading={loading}>
+      {images.length === 0 ? (
+        <Empty image={null} description="定稿后的渲染图与四视图会出现在这里。" />
+      ) : (
+        <Image.PreviewGroup>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {images.map(({ row, label }) => (
+              <PreviewImage key={row.id} characterId={characterId} row={row} label={label} />
+            ))}
+          </div>
+        </Image.PreviewGroup>
+      )}
+    </Card>
+  )
+}
+
+function PreviewImage({
+  characterId,
+  row,
+  label,
+}: {
+  characterId: string
+  row: Generation
+  label: string
+}) {
+  const url = useQuery({
+    queryKey: ['character-image-url', characterId, row.id],
+    queryFn: () => renderImageUrl(characterId, row.id),
+  })
+
+  return (
+    <Space direction="vertical" size={2} align="center">
+      {url.data ? (
+        <Image src={url.data} width={116} height={116} style={{ objectFit: 'cover' }} />
+      ) : (
+        <div style={{ width: 116, height: 116, borderRadius: 4, background: '#f5f5f5' }} />
+      )}
+      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+        {label}
+      </Typography.Text>
+    </Space>
   )
 }

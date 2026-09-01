@@ -147,6 +147,13 @@ describe('项目记忆', () => {
     expect(onlyCall().url).toBe('http://127.0.0.1:62066/api/memory')
   })
 
+  it('角色页只请求项目级加当前角色的记忆', async () => {
+    await listMemories('CHAR-孙悟空')
+    expect(onlyCall().url).toBe(
+      'http://127.0.0.1:62066/api/memory?character_ref=CHAR-%E5%AD%99%E6%82%9F%E7%A9%BA',
+    )
+  })
+
   it('新增带 kind', async () => {
     await addMemory('taboo', '不要露肩')
     expect(onlyCall().body).toEqual({ kind: 'taboo', content: '不要露肩' })
