@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from atelier.agents import conversation as engine
 from atelier.agents import render as painter
-from atelier.assets import archive, characters, layout
+from atelier.agents import vision
+from atelier.assets import archive, characters, generations, layout
 from atelier.assets import memory as memory_files
 from atelier.assets.layout import LayoutError
 from atelier.assets.projects import ProjectRef
@@ -40,6 +41,7 @@ from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
 from tests.test_characters import make as make_real_character
 from tests.test_characters import spec_on_disk
 from tests.test_render import CARD, ScriptedDraw
+from tests.test_vision import APPROVE
 
 DESIGNER = "game_designer"
 WRITER = "spec_writer"
@@ -352,6 +354,40 @@ def test_自动续写达到上限后明确失败且不解析残缺内容(
     assert rows[-1].status == engine.FAILED
     assert "自动续写仍未完成" in rows[-1].content
     assert engine.drafts_of(project_db, conversation.id) == []
+
+
+def test_协议自动纠正一次仍失败会退出专业agent焦点(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    bind_text_model(session, WRITER)
+    character = make_character(project_db)
+    conversation = engine.start(
+        project_db,
+        agent_code=WRITER,
+        target_kind="character",
+        target_ref=character.id,
+    )
+    malformed = """我需要转交。
+
+[交接开始]
+status: unknown
+reason: 无法继续
+[交接结束]
+"""
+    chat = SequencedReplies(
+        ChatReply(content=malformed),
+        ChatReply(content=malformed),
+    )
+
+    with pytest.raises(Conflict, match="已自动纠正一次仍无法解析"):
+        send(project_db, session, project, conversation, "继续设计", chat)
+
+    project_db.refresh(conversation)
+    assert len(chat.calls) == 2
+    assert conversation.focus_agent_code is None
+    rows = engine.messages_of(project_db, conversation.id)
+    assert rows[-1].agent_code == WRITER
+    assert rows[-1].status == engine.FAILED
 
 
 def test_回答落库带上说话的agent(
@@ -1315,3 +1351,106 @@ def test_效果图评审阶段发言直接重画不走文本模型(
     assert result.turn_no == messages[-1].turn_no
     assert draw.calls != []
     assert character.state == characters.RENDER_GENERATED
+
+
+def test_图生图会读取上一张效果图并使用独立绑定(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    bind_text_model(session, painter.SMITH, code="smith")
+    bind_image_model(session, "image_i2i", code="ark-i2i")
+    character = make_real_character(project_db, project)
+    spec_on_disk(project, character)
+    characters.confirm_spec(project_db, project, character)
+    previous_path = f"{character.dir_name}/tmp/previous.png"
+    project.absolute(previous_path).write_bytes(ScriptedDraw().data)
+    generations.record(
+        project_db,
+        target_ref=character.id,
+        stage=generations.RENDER,
+        file_path=previous_path,
+        file_hash="previous",
+    )
+    project_db.commit()
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+    draw = ScriptedDraw()
+    seen: dict[str, Any] = {}
+
+    def capture(*args: Any, **kwargs: Any):
+        seen["references"] = tuple(kwargs.get("references", ()))
+        return draw(*args, **kwargs)
+
+    result = engine.generate_render_turn(
+        project_db,
+        session,
+        project,
+        conversation,
+        note="把腿拉长",
+        chat=ScriptedChat(CARD),
+        generate=capture,
+        image_agent_code="image_i2i",
+    )
+
+    assert result.agent_code == "image_i2i"
+    assert seen["references"] == (str(project.absolute(previous_path)),)
+    assert project_db.get(
+        ConversationAgentBinding, f"{conversation.id}:image_i2i"
+    ).bound_provider_label.startswith("ark-i2i/")
+    assert engine.messages_of(project_db, conversation.id)[-1].agent_code == "image_i2i"
+
+
+def test_视觉审校作为真实会话Agent落消息与独立绑定(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    character = _spec_落盘的角色(project_db, project, session)
+    bind_text_model(session, vision.REVIEWER, code="reviewer")
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+    engine.generate_render_turn(
+        project_db,
+        session,
+        project,
+        conversation,
+        chat=ScriptedChat(CARD),
+        generate=ScriptedDraw(),
+    )
+
+    result = engine.review_visual_turn(
+        project_db,
+        session,
+        project,
+        conversation,
+        note="检查双尾",
+        chat=ScriptedChat(APPROVE),
+    )
+
+    message = engine.messages_of(project_db, conversation.id)[-1]
+    assert result.agent_code == vision.REVIEWER
+    assert message.agent_code == vision.REVIEWER
+    assert message.status == engine.DONE
+    assert "VIEW-CHECK: APPROVE" in message.content
+    assert project_db.get(
+        ConversationAgentBinding, f"{conversation.id}:{vision.REVIEWER}"
+    ).bound_provider_label.startswith("reviewer/")
+
+
+@pytest.mark.parametrize("runner", [engine.generate_views_turn, engine.review_visual_turn])
+def test_执行Agent选不到Provider时不会遗留thinking消息(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    runner: Any,
+) -> None:
+    character = make_real_character(project_db, project)
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    with pytest.raises(NoCandidateError):
+        runner(project_db, session, project, conversation)
+
+    message = engine.messages_of(project_db, conversation.id)[-1]
+    assert message.status == engine.FAILED
+    assert message.content

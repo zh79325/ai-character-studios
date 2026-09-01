@@ -172,7 +172,7 @@ def test_project_routing_migration_preserves_legacy_actor_and_binding(tmp_path: 
                 "turn_no INTEGER NOT NULL, role VARCHAR(16) NOT NULL, content TEXT NOT NULL, "
                 "token_count INTEGER NOT NULL, folded BOOLEAN NOT NULL, "
                 "status VARCHAR(16) NOT NULL, agent_code VARCHAR(64) NOT NULL, "
-                "created_at DATETIME NOT NULL)"
+                "attachments JSON NOT NULL, created_at DATETIME NOT NULL)"
             )
         )
         connection.execute(
@@ -206,10 +206,7 @@ def test_project_routing_migration_preserves_legacy_actor_and_binding(tmp_path: 
             )
         ).one()
         messages = connection.execute(
-            text(
-                "SELECT role, agent_code, recipient_agent_code FROM messages "
-                "ORDER BY turn_no"
-            )
+            text("SELECT role, agent_code, recipient_agent_code FROM messages ORDER BY turn_no")
         ).all()
         binding = connection.execute(
             text(

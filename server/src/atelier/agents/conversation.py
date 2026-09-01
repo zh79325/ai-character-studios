@@ -986,6 +986,13 @@ def _protocol_retry(
     )
 
 
+def _parse_agent_turn(agent: AgentDefinition, content: str) -> parsing.TurnOutput:
+    parsed = parsing.parse_turn(content)
+    if agent.agent_code == orchestrator.DIRECTOR and parsed.route is None:
+        raise parsing.ProtocolError("总管回答缺少路由块")
+    return parsed
+
+
 def _run_text_agent(
     project: Session,
     runtime: Session,
@@ -1044,9 +1051,7 @@ def _run_text_agent(
         )
         content = reply.content.strip()
         try:
-            parsed = parsing.parse_turn(content)
-            if agent.agent_code == orchestrator.DIRECTOR and parsed.route is None:
-                raise parsing.ProtocolError("总管回答缺少路由块")
+            parsed = _parse_agent_turn(agent, content)
         except parsing.ProtocolError:
             reply = _protocol_retry(
                 runtime,
@@ -1062,9 +1067,14 @@ def _run_text_agent(
                 turn_audit,
             )
             content = reply.content.strip()
-            parsed = parsing.parse_turn(content)
-            if agent.agent_code == orchestrator.DIRECTOR and parsed.route is None:
-                raise Conflict("总管自动纠正后仍未输出路由块") from None
+            try:
+                parsed = _parse_agent_turn(agent, content)
+            except parsing.ProtocolError as exc:
+                orchestrator.set_focus(conversation, None)
+                project.commit()
+                raise Conflict(
+                    f"{agent.role} 的输出协议格式错误，已自动纠正一次仍无法解析：{exc}"
+                ) from exc
     except Exception as exc:
         if isinstance(exc, Interrupted) or BUS.cancel_requested(conversation.id):
             BUS.clear_cancel(conversation.id)
