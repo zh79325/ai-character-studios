@@ -188,6 +188,37 @@ def test_请求先落盘再调模型_回答之后才追加(
     assert "- Total tokens：30" in final
 
 
+def test_自动续写逐次记在同一轮审计文件(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    enable_audit(project)
+    conversation = start_project_talk(project_db)
+    replies = iter(
+        [
+            ChatReply(content="回答前半段", finish_reason="length"),
+            ChatReply(content="与后半段", finish_reason="stop"),
+        ]
+    )
+
+    def chat(_candidate: Candidate, _messages: Any, **_kwargs: Any) -> ChatReply:
+        return next(replies)
+
+    result = send(project_db, session, project, conversation, "给出完整回答", chat)
+
+    assert result.content == "回答前半段与后半段"
+    text = audit_files(project.dir)[0].read_text(encoding="utf-8")
+    marker = "## 调用 2：自动续写 1"
+    assert text.index("## 调用 1：主回答") < text.index(marker)
+    first, continuation = text.split(marker, maxsplit=1)
+    assert "- Max tokens：8192" in first
+    assert "- Max tokens：16384" in continuation
+    assert text.count("### Response") == 2
+    assert "- Finish reason：length" in text
+    assert "- Finish reason：stop" in text
+    assert "回答前半段" in continuation
+    assert "输出长度限制" in continuation
+
+
 def test_请求按消息逐条分节而不是一坨JSON(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:

@@ -69,6 +69,22 @@ MAX_FOLD_ROUNDS = 5
 压不下来，此时宁可带着超预算发出去让供应商报错，也比无声地空转几十次好。
 """
 
+MAX_AUTO_CONTINUATIONS = 2
+"""主回答被输出上限截断后最多自动续写几次，避免异常模型无限消耗额度。"""
+
+MAX_AUTO_OUTPUT_TOKENS = 32768
+"""自动续写逐次翻倍时的安全上限；模型原配置更高时保持原配置，不反向缩小。"""
+
+AUTO_CONTINUE_PROMPT = (
+    "上一段回答因输出长度限制被截断。请从截断处直接继续，只输出尚未完成的内容，"
+    "不要重复已经输出的文字，也不要解释续写过程。"
+)
+
+AUTO_RETRY_EMPTY_PROMPT = (
+    "上一次生成因输出长度限制结束，并且没有产生任何可见正文。请停止扩展内部分析，"
+    "直接给出完整答复；优先完成规定的结构化内容。"
+)
+
 FOLD_SUMMARY_SYSTEM = "你在为「{role}」这场对话做前情摘要，只做压缩，不要参与讨论。"
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -926,6 +942,36 @@ def _select(
     return decision
 
 
+def _capture_deltas(received: list[str], publish: Callable[[str], None]) -> Callable[[str], None]:
+    """流式片段一份写审计、一份照常广播。"""
+
+    def capture(piece: str) -> None:
+        received.append(piece)
+        publish(piece)
+
+    return capture
+
+
+def _sum_reported(values: Sequence[int | None]) -> int | None:
+    """多次调用的用量必须全部有供应商实报才能相加，缺一段就不猜。"""
+    return sum(value for value in values if value is not None) if None not in values else None
+
+
+def _merge_replies(replies: Sequence[text_chat.ChatReply]) -> text_chat.ChatReply:
+    """把同一逻辑轮次的主回答与自动续写合成一份结果。"""
+    last = replies[-1]
+    return text_chat.ChatReply(
+        content="".join(reply.content for reply in replies),
+        prompt_tokens=_sum_reported(tuple(reply.prompt_tokens for reply in replies)),
+        completion_tokens=_sum_reported(tuple(reply.completion_tokens for reply in replies)),
+        total_tokens=_sum_reported(tuple(reply.total_tokens for reply in replies)),
+        remaining=last.remaining,
+        latency_ms=sum(reply.latency_ms for reply in replies),
+        finish_reason=last.finish_reason,
+        reasoning="".join(reply.reasoning for reply in replies),
+    )
+
+
 def _call(
     runtime: Session,
     project: Session,
@@ -938,8 +984,10 @@ def _call(
     on_delta: Callable[[str], None] | None,
     turn_audit: audit.TurnAudit | None,
 ) -> text_chat.ChatReply:
-    """发出去并记账。重试与换候选的规矩在 `dispatch`，这里只多一件会话自己的事：换了候选要
-    把新的绑定与原因落进会话行，下一轮才知道该接着粘在谁身上。
+    """发出一轮完整回答；被输出上限截断时在同一轮内自动续写并合并。
+
+    每段仍分别经过 `dispatch` 记账并写入同一份审计文件。续写只存在于本次 provider payload，
+    不伪造成用户消息落库；全部完成后，上层才解析待选项、草稿与记忆。
     """
 
     def rebind(error: ProviderError) -> Decision:
@@ -950,43 +998,72 @@ def _call(
             project.commit()
         return picked
 
-    payload = assembled.payload()
-    partial: list[str] = []
-    effective_delta = on_delta
-    if turn_audit is not None:
-        turn_audit.write_request(
-            "主回答",
-            decision.candidate,
-            payload,
-            max_tokens=text_chat.output_budget(decision.candidate, None),
+    base_payload = assembled.payload()
+    payload = base_payload
+    replies: list[text_chat.ChatReply] = []
+
+    for continuation_no in range(MAX_AUTO_CONTINUATIONS + 1):
+        purpose = "主回答" if continuation_no == 0 else f"自动续写 {continuation_no}"
+        configured_max_tokens = text_chat.output_budget(decision.candidate, None)
+        max_tokens = min(
+            configured_max_tokens * (2**continuation_no),
+            max(configured_max_tokens, MAX_AUTO_OUTPUT_TOKENS),
         )
-        if on_delta is not None:
-
-            def audited_delta(piece: str) -> None:
-                partial.append(piece)
-                on_delta(piece)
-
-            effective_delta = audited_delta
-
-    try:
-        reply = dispatch.call(
-            runtime,
-            agent.agent_code,
-            decision,
-            payload,
-            chat,
-            project_code=ref.code,
-            on_delta=effective_delta,
-            reselect=rebind,
-        )
-    except Exception as exc:
+        partial: list[str] = []
+        effective_delta = on_delta
         if turn_audit is not None:
-            turn_audit.write_error(exc, "".join(partial))
-        raise
+            turn_audit.write_request(
+                purpose,
+                decision.candidate,
+                payload,
+                max_tokens=max_tokens,
+            )
+            if on_delta is not None:
+                effective_delta = _capture_deltas(partial, on_delta)
 
-    if turn_audit is not None:
-        turn_audit.write_response(reply)
-    return reply
+        try:
+            reply = dispatch.call(
+                runtime,
+                agent.agent_code,
+                decision,
+                payload,
+                chat,
+                project_code=ref.code,
+                on_delta=effective_delta,
+                reselect=rebind,
+                allow_truncated_empty=True,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            if turn_audit is not None:
+                turn_audit.write_error(exc, "".join(partial))
+            raise
+
+        if turn_audit is not None:
+            turn_audit.write_response(reply)
+        replies.append(reply)
+        if not reply.truncated:
+            return _merge_replies(replies)
+        if continuation_no == MAX_AUTO_CONTINUATIONS:
+            raise ProviderError(
+                f"AI 连续 {MAX_AUTO_CONTINUATIONS + 1} 次达到输出上限，自动续写仍未完成"
+            )
+
+        continued_content = "".join(item.content for item in replies)
+        payload = [*base_payload]
+        if continued_content:
+            payload.append({"role": "assistant", "content": continued_content})
+        payload.append(
+            {
+                "role": "user",
+                "content": AUTO_CONTINUE_PROMPT
+                if continued_content
+                else AUTO_RETRY_EMPTY_PROMPT,
+            }
+        )
+        decision = _select(runtime, project, ref, conversation, agent)
+
+    raise AssertionError("自动续写循环未返回")
 
 
 # --------------------------------------------------------------------------- #

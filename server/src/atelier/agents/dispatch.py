@@ -153,8 +153,13 @@ def _drive[Reply](
     raise last_error if last_error is not None else ProviderError("没有可用候选")
 
 
-def _reject_empty(candidate: Candidate, reply: text_chat.ChatReply) -> text_chat.ChatReply:
-    """一字未回的应答当失败算。
+def _reject_empty(
+    candidate: Candidate,
+    reply: text_chat.ChatReply,
+    *,
+    allow_truncated: bool = False,
+) -> text_chat.ChatReply:
+    """一字未回的应答当失败；会话可放行被长度截断的空回答，由上层自动续写。
 
     不报 `RetryableError`：同一个模型刚才没说出话，退避几秒再原封不动发一遍大概率还是不说话，
     有别的候选就直接换人。也不报普通 `ProviderError`：那会把这个模型熔断几分钟，而它并没坏。
@@ -162,7 +167,7 @@ def _reject_empty(candidate: Candidate, reply: text_chat.ChatReply) -> text_chat
     错误文案带上 finish_reason 与用量：空回答最常见的两个因为——输出预算被推理链吃完（length +
     有推理字数）与内容安全拦截（既没 usage 也没 finish_reason）——靠这两个数字就能分开。
     """
-    if reply.content.strip():
+    if reply.content.strip() or (allow_truncated and reply.truncated):
         return reply
     facts = [f"finish_reason={reply.finish_reason or '未给'}"]
     if reply.completion_tokens:
@@ -183,14 +188,20 @@ def call(
     task_id: str | None = None,
     on_delta: Callable[[str], None] | None = None,
     reselect: Reselect | None = None,
+    allow_truncated_empty: bool = False,
+    max_tokens: int | None = None,
 ) -> text_chat.ChatReply:
-    """发一轮对话。空回答当失败，跟报错一样换候选（`run` 也走这里，因此评审、翻译一并覆盖）。"""
+    """发一轮对话。空回答默认换候选；会话层可接管因输出上限产生的空回答。"""
     body = [dict(one) for one in payload]
     return _drive(
         runtime,
         agent_code,
         decision,
-        lambda candidate: _reject_empty(candidate, chat(candidate, body, on_delta=on_delta)),
+        lambda candidate: _reject_empty(
+            candidate,
+            chat(candidate, body, on_delta=on_delta, max_tokens=max_tokens),
+            allow_truncated=allow_truncated_empty,
+        ),
         outcome_of,
         limit_kind="tokens",
         project_code=project_code,

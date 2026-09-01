@@ -31,7 +31,8 @@ from atelier.db.project_models import (
 )
 from atelier.db.runtime_models import RouteLog
 from atelier.errors import Conflict, Interrupted, NotFound
-from atelier.providers.base import NoCandidateError
+from atelier.providers.base import NoCandidateError, ProviderError
+from atelier.providers.text_chat import ChatReply
 from tests.conftest import ScriptedChat, bind_text_model
 
 DESIGNER = "game_designer"
@@ -53,6 +54,28 @@ DRAFT_REPLY = """明白了，先给一版。
 preference: 喜欢冷色调
 taboo: 不要蒸汽朋克齿轮
 """
+
+
+class SequencedReplies:
+    """按次返回完整 ChatReply，专门模拟截断、续写和供应商用量。"""
+
+    def __init__(self, *replies: ChatReply) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[dict[str, Any]]] = []
+        self.deltas: list[str] = []
+        self.max_tokens: list[int | None] = []
+
+    def __call__(
+        self, _candidate: Any, messages: Any, *, on_delta: Any = None, **_kwargs: Any
+    ) -> ChatReply:
+        self.calls.append([dict(message) for message in messages])
+        value = _kwargs.get("max_tokens")
+        self.max_tokens.append(value if isinstance(value, int) else None)
+        reply = self.replies.pop(0)
+        if on_delta is not None:
+            self.deltas.append(reply.content)
+            on_delta(reply.content)
+        return reply
 
 
 @pytest.fixture
@@ -77,7 +100,7 @@ def send(
     project: ProjectRef,
     conversation: Conversation,
     text: str,
-    chat: ScriptedChat,
+    chat: Any,
     *,
     stream: bool = False,
 ) -> engine.TurnResult:
@@ -195,6 +218,112 @@ def test_一轮对话记下两条消息与一份草稿(
     # 用量以供应商为准，不用估算值
     assert result.completion_tokens == 20
     assert messages[1].token_count == 20
+
+
+def test_输出截断会在同一轮自动续写并在完成后统一解析(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    first = "先确定：\n\n[待选项]\n- 项: 毛色 / 选项: 金"
+    second = "黄 | 灰色 / 多选: 否 / 推荐: 金黄\n"
+    chat = SequencedReplies(
+        ChatReply(
+            content=first,
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
+            latency_ms=100,
+            finish_reason="length",
+        ),
+        ChatReply(
+            content=second,
+            prompt_tokens=15,
+            completion_tokens=8,
+            total_tokens=23,
+            latency_ms=80,
+            finish_reason="stop",
+        ),
+    )
+
+    result = send(project_db, session, project, conversation, "设计角色", chat, stream=True)
+
+    assert result.content == (first + second).strip()
+    assert result.prompt_tokens == 25
+    assert result.completion_tokens == 28
+    assert [choice.item for choice in result.choices] == ["毛色"]
+    assert chat.deltas == [first, second]
+    assert len(chat.calls) == 2
+    assert chat.max_tokens == [8192, 16384]
+    assert chat.calls[1][-2] == {"role": "assistant", "content": first}
+    assert "输出长度限制" in chat.calls[1][-1]["content"]
+    rows = engine.messages_of(project_db, conversation.id)
+    assert [(row.role, row.status) for row in rows] == [
+        ("user", engine.DONE),
+        ("assistant", engine.DONE),
+    ]
+    assert rows[1].content == (first + second).strip()
+    assert rows[1].token_count == 28
+
+
+def test_推理耗尽预算但正文为空时自动重试并直接回答(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    chat = SequencedReplies(
+        ChatReply(
+            content="",
+            prompt_tokens=3001,
+            completion_tokens=8192,
+            total_tokens=11193,
+            finish_reason="length",
+            reasoning="很长的内部推理",
+        ),
+        ChatReply(
+            content="这是直接回答。",
+            prompt_tokens=3100,
+            completion_tokens=20,
+            total_tokens=3120,
+            finish_reason="stop",
+        ),
+    )
+
+    result = send(project_db, session, project, conversation, "设计角色", chat)
+
+    assert result.content == "这是直接回答。"
+    assert result.prompt_tokens == 6101
+    assert result.completion_tokens == 8212
+    assert len(chat.calls) == 2
+    assert chat.max_tokens == [8192, 16384]
+    assert chat.calls[1][-1]["role"] == "user"
+    assert "没有产生任何可见正文" in chat.calls[1][-1]["content"]
+    assert not any(
+        message["role"] == "assistant" and not message["content"] for message in chat.calls[1]
+    )
+    rows = engine.messages_of(project_db, conversation.id)
+    assert rows[-1].status == engine.DONE
+    assert rows[-1].content == "这是直接回答。"
+
+
+def test_自动续写达到上限后明确失败且不解析残缺内容(
+    project_db: Session, project: ProjectRef, session: Session, candidate: None
+) -> None:
+    conversation = start_project_talk(project_db)
+    chat = SequencedReplies(
+        *(
+            ChatReply(content=f"残缺片段{index}", finish_reason="length")
+            for index in range(engine.MAX_AUTO_CONTINUATIONS + 1)
+        )
+    )
+
+    with pytest.raises(ProviderError, match="自动续写仍未完成"):
+        send(project_db, session, project, conversation, "生成完整方案", chat)
+
+    assert len(chat.calls) == engine.MAX_AUTO_CONTINUATIONS + 1
+    assert chat.max_tokens == [8192, 16384, 32768]
+    rows = engine.messages_of(project_db, conversation.id)
+    assert rows[-1].status == engine.FAILED
+    assert "自动续写仍未完成" in rows[-1].content
+    assert engine.drafts_of(project_db, conversation.id) == []
 
 
 def test_回答落库带上说话的agent(
