@@ -6,8 +6,10 @@
  * `ready` 为假的类别只有入口没有流程：后端目前只跑得通 character 一条，但菜单里先摆着，
  * 用户才知道这个平台打算往哪走。
  */
+import { projectPath } from '@/lib/projectRoute'
+
 export interface DesignEntry {
-  /** 也是路由：`/design/{slug}`。 */
+  /** 也是项目内领域路由的末段。 */
   slug: string
   label: string
   hint: string
@@ -26,8 +28,8 @@ export const DESIGN_ENTRIES: DesignEntry[] = [
   { slug: 'scenes', label: '场景设计', hint: '场景概念图与环境资产', ready: false },
 ]
 
-export function designPath(slug: string): string {
-  return `/design/${slug}`
+export function designPath(projectCode: string, slug: string): string {
+  return projectPath(projectCode, `design/${slug}`)
 }
 
 export function designEntry(slug: string): DesignEntry | undefined {
@@ -35,8 +37,14 @@ export function designEntry(slug: string): DesignEntry | undefined {
 }
 
 /** 项目本身的几张表：立项对焦、配置、视觉规范。 */
-export const PROJECT_ENTRIES = [
-  { key: '/project', label: '立项对焦', hint: '跟设计师聊项目要什么' },
-  { key: '/project/config', label: '项目配置', hint: '风格基调与生产参数' },
-  { key: '/project/art-bible', label: '视觉规范', hint: '视觉真相，禁止项会进 negative' },
-]
+export function projectEntries(projectCode: string) {
+  return [
+    { key: projectPath(projectCode), label: '立项对焦', hint: '跟设计师聊项目要什么' },
+    { key: projectPath(projectCode, 'config'), label: '项目配置', hint: '风格基调与生产参数' },
+    {
+      key: projectPath(projectCode, 'art-bible'),
+      label: '视觉规范',
+      hint: '视觉真相，禁止项会进 negative',
+    },
+  ]
+}

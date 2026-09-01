@@ -39,10 +39,11 @@ const DECISION_COLORS: Record<string, string> = {
 }
 
 interface Props {
+  projectCode: string
   character: Character
 }
 
-export default function ViewsGateCard({ character }: Props) {
+export default function ViewsGateCard({ projectCode, character }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
   const [picks, setPicks] = useState<Record<string, string>>({})
@@ -54,20 +55,26 @@ export default function ViewsGateCard({ character }: Props) {
   const confirmed = Object.keys(character.view_paths).length > 0
 
   const views = useQuery({
-    queryKey: ['character-views', character.id],
-    queryFn: () => listViews(character.id),
+    queryKey: ['project', projectCode, 'character-views', character.id],
+    queryFn: () => listViews(projectCode, character.id),
   })
   const candidates = views.data ?? []
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['character', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['character-events', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['character-views', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['characters'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character', character.id],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-events', character.id],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-views', character.id],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'characters'] })
   }
 
   const draw = useMutation({
-    mutationFn: (variants: string[]) => generateViews(character.id, variants),
+    mutationFn: (variants: string[]) => generateViews(projectCode, character.id, variants),
     onSuccess: (result) => {
       setBatch(result)
       // 新出的那几张直接选上：用户点了「重生背面」，要挑的就是这一张新的
@@ -82,7 +89,7 @@ export default function ViewsGateCard({ character }: Props) {
   })
 
   const review = useMutation({
-    mutationFn: () => reviewViews(character.id),
+    mutationFn: () => reviewViews(projectCode, character.id),
     onSuccess: (result) => {
       setVerdict(result)
       refresh()
@@ -96,7 +103,8 @@ export default function ViewsGateCard({ character }: Props) {
   })
 
   const adopt = useMutation({
-    mutationFn: () => confirmViews(character.id, chosen(candidates, picks), note.trim()),
+    mutationFn: () =>
+      confirmViews(projectCode, character.id, chosen(candidates, picks), note.trim()),
     onSuccess: (result) => {
       setAsking(false)
       setNote('')
@@ -166,6 +174,7 @@ export default function ViewsGateCard({ character }: Props) {
             {VARIANTS.map((one) => (
               <Lane
                 key={one.code}
+                projectCode={projectCode}
                 characterId={character.id}
                 label={one.label}
                 rows={candidates.filter((row) => row.variant === one.code)}
@@ -272,6 +281,7 @@ function labelOf(code: string): string {
 
 /** 一个视角一栏：这个面的候选横着排，选中的描边，机器量出来的病贴在栏头。 */
 function Lane({
+  projectCode,
   characterId,
   label,
   rows,
@@ -281,6 +291,7 @@ function Lane({
   onSelect,
   onRedraw,
 }: {
+  projectCode: string
   characterId: string
   label: string
   rows: Generation[]
@@ -310,6 +321,7 @@ function Lane({
         {rows.map((row) => (
           <Thumb
             key={row.id}
+            projectCode={projectCode}
             characterId={characterId}
             row={row}
             active={row.id === selected}
@@ -322,11 +334,13 @@ function Lane({
 }
 
 function Thumb({
+  projectCode,
   characterId,
   row,
   active,
   onSelect,
 }: {
+  projectCode: string
   characterId: string
   row: Generation
   active: boolean
@@ -334,8 +348,8 @@ function Thumb({
 }) {
   // 图本体走 `<img src>`：一张 4K 图转 base64 塞进 JSON 再膨 33%，而浏览器对地址本来就会缓存
   const url = useQuery({
-    queryKey: ['render-url', characterId, row.id],
-    queryFn: () => renderImageUrl(characterId, row.id),
+    queryKey: ['project', projectCode, 'render-url', characterId, row.id],
+    queryFn: () => renderImageUrl(projectCode, characterId, row.id),
     staleTime: Infinity,
   })
 

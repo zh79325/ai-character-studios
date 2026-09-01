@@ -16,6 +16,8 @@ import { ApiError } from '@/api/client'
 import ChatPanel from '@/components/chat'
 import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame from '@/components/ProjectFrame'
+import { designPath } from '@/lib/design'
+import { projectPath, useProjectCode } from '@/lib/projectRoute'
 import type { Character, Draft, Generation, ProjectMemoryItem } from '@/types/api'
 
 const WRITER = 'spec_writer'
@@ -34,27 +36,32 @@ const VIEW_LABELS: Record<string, string> = {
 }
 
 export default function CharacterPage() {
+  const projectCode = useProjectCode()
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [conversationId, setConversationId] = useState<string | null>(null)
 
   const character = useQuery({
-    queryKey: ['character', id],
-    queryFn: () => readCharacter(id),
+    queryKey: ['project', projectCode, 'character', id],
+    queryFn: () => readCharacter(projectCode, id),
     enabled: id !== '',
   })
   const detail = useQuery({
-    queryKey: ['conversation', conversationId],
-    queryFn: () => readConversation(conversationId!),
+    queryKey: ['project', projectCode, 'conversation', conversationId],
+    queryFn: () => readConversation(projectCode, conversationId!),
     enabled: conversationId !== null,
   })
 
   if (character.error instanceof ApiError && character.error.status === 404) {
     return (
-      <ProjectFrame breadcrumb={[{ label: '角色设计', path: '/design/characters' }]}>
+      <ProjectFrame
+        breadcrumb={[{ label: '角色设计', path: designPath(projectCode, 'characters') }]}
+      >
         <Card>
-          <Empty description="这个角色不在当前项目里。可能是切过项目，或者它已经被移出。">
-            <Typography.Link onClick={() => navigate('/project')}>回到当前项目</Typography.Link>
+          <Empty description="这个角色不在该项目里，可能已被移出。">
+            <Typography.Link onClick={() => navigate(projectPath(projectCode))}>
+              回到项目首页
+            </Typography.Link>
           </Empty>
         </Card>
       </ProjectFrame>
@@ -69,11 +76,12 @@ export default function CharacterPage() {
     <ProjectFrame
       requireReady
       breadcrumb={[
-        { label: '角色设计', path: '/design/characters' },
+        { label: '角色设计', path: designPath(projectCode, 'characters') },
         { label: row?.name ?? '角色' },
       ]}
     >
       <ChatPanel
+        projectCode={projectCode}
         agentCode={WRITER}
         targetKind="character"
         targetRef={id}
@@ -84,7 +92,11 @@ export default function CharacterPage() {
         draftsAside
         sidebar={
           row ? (
-            <CharacterSidebar character={row} decisions={detail.data?.memory.decisions ?? []} />
+            <CharacterSidebar
+              projectCode={projectCode}
+              character={row}
+              decisions={detail.data?.memory.decisions ?? []}
+            />
           ) : null
         }
         finaleTitle="确认角色设定"
@@ -92,7 +104,13 @@ export default function CharacterPage() {
         finale={
           drafts.length === 0
             ? null
-            : () => <CharacterDraftGate conversationId={conversationId} drafts={drafts} />
+            : () => (
+                <CharacterDraftGate
+                  projectCode={projectCode}
+                  conversationId={conversationId}
+                  drafts={drafts}
+                />
+              )
         }
         starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
       />
@@ -101,9 +119,11 @@ export default function CharacterPage() {
 }
 
 function CharacterDraftGate({
+  projectCode,
   conversationId,
   drafts,
 }: {
+  projectCode: string
   conversationId: string | null
   drafts: Draft[]
 }) {
@@ -112,14 +132,17 @@ function CharacterDraftGate({
   const commit = useMutation({
     mutationFn: () =>
       commitConversation(
+        projectCode,
         conversationId!,
         drafts.map((one) => one.id),
       ),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] }),
-        queryClient.invalidateQueries({ queryKey: ['character'] }),
-        queryClient.invalidateQueries({ queryKey: ['memories'] }),
+        queryClient.invalidateQueries({
+          queryKey: ['project', projectCode, 'conversation', conversationId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'character'] }),
+        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'memories'] }),
       ])
       message.success('角色设定已写入项目目录')
     },
@@ -156,18 +179,26 @@ function CharacterDraftGate({
   )
 }
 
-function CharacterSidebar({ character, decisions }: { character: Character; decisions: string[] }) {
+function CharacterSidebar({
+  projectCode,
+  character,
+  decisions,
+}: {
+  projectCode: string
+  character: Character
+  decisions: string[]
+}) {
   const memories = useQuery({
-    queryKey: ['memories', character.id],
-    queryFn: () => listMemories(character.id),
+    queryKey: ['project', projectCode, 'memories', character.id],
+    queryFn: () => listMemories(projectCode, character.id),
   })
   const renders = useQuery({
-    queryKey: ['character-renders', character.id],
-    queryFn: () => listRenders(character.id),
+    queryKey: ['project', projectCode, 'character-renders', character.id],
+    queryFn: () => listRenders(projectCode, character.id),
   })
   const views = useQuery({
-    queryKey: ['character-views', character.id],
-    queryFn: () => listViews(character.id),
+    queryKey: ['project', projectCode, 'character-views', character.id],
+    queryFn: () => listViews(projectCode, character.id),
   })
 
   const ownMemories = (memories.data ?? []).filter(
@@ -191,6 +222,7 @@ function CharacterSidebar({ character, decisions }: { character: Character; deci
       </Card>
       <MemoryCard decisions={decisions} memories={ownMemories} loading={memories.isLoading} />
       <PreviewCard
+        projectCode={projectCode}
         characterId={character.id}
         renders={finalRenders}
         views={finalViews}
@@ -245,11 +277,13 @@ function MemoryRow({ label, content }: { label: string; content: string }) {
 }
 
 function PreviewCard({
+  projectCode,
   characterId,
   renders,
   views,
   loading,
 }: {
+  projectCode: string
   characterId: string
   renders: Generation[]
   views: Generation[]
@@ -271,7 +305,13 @@ function PreviewCard({
         <Image.PreviewGroup>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {images.map(({ row, label }) => (
-              <PreviewImage key={row.id} characterId={characterId} row={row} label={label} />
+              <PreviewImage
+                key={row.id}
+                projectCode={projectCode}
+                characterId={characterId}
+                row={row}
+                label={label}
+              />
             ))}
           </div>
         </Image.PreviewGroup>
@@ -281,17 +321,19 @@ function PreviewCard({
 }
 
 function PreviewImage({
+  projectCode,
   characterId,
   row,
   label,
 }: {
+  projectCode: string
   characterId: string
   row: Generation
   label: string
 }) {
   const url = useQuery({
-    queryKey: ['character-image-url', characterId, row.id],
-    queryFn: () => renderImageUrl(characterId, row.id),
+    queryKey: ['project', projectCode, 'character-image-url', characterId, row.id],
+    queryFn: () => renderImageUrl(projectCode, characterId, row.id),
   })
 
   return (

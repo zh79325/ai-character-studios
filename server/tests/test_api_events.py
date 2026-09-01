@@ -136,7 +136,7 @@ def test_fetch_task_events_respects_the_sequence(tasks: Session) -> None:
 
 def test_unknown_task_is_404(client: TestClient, tasks: Session) -> None:
     """项目是选好的，只是任务号不存在——404 得来自任务而不是「没选项目」。"""
-    assert client.get("/api/events/nope").status_code == 404
+    assert client.get("/api/projects/demo/events/nope").status_code == 404
 
 
 def test_finished_task_replays_then_closes(
@@ -148,7 +148,7 @@ def test_finished_task_replays_then_closes(
     add_route_log(session, task_id="t-1")
     add_route_log(session, task_id="other")  # 别的任务的日志不该混进来
 
-    body = client.get("/api/events/t-1").text
+    body = client.get("/api/projects/demo/events/t-1").text
 
     assert "event: ready" in body
     assert body.count("event: task_event") == 2
@@ -163,7 +163,7 @@ def test_after_seq_skips_what_the_panel_already_has(client: TestClient, tasks: S
     add_event(tasks, "t-1", 1, "started", "第一条")
     add_event(tasks, "t-1", 2, "finished", "第二条")
 
-    body = client.get("/api/events/t-1", params={"after_seq": 1}).text
+    body = client.get("/api/projects/demo/events/t-1", params={"after_seq": 1}).text
     assert "第一条" not in body
     assert "第二条" in body
 
@@ -172,7 +172,7 @@ def test_failed_task_also_closes_the_stream(client: TestClient, tasks: Session) 
     make_task(tasks, "t-1", status="failed")
     add_event(tasks, "t-1", 1, "failed", "provider 502")
 
-    body = client.get("/api/events/t-1").text
+    body = client.get("/api/projects/demo/events/t-1").text
     assert "event: done" in body
     assert body.rstrip().endswith("data: failed")
 
@@ -199,7 +199,7 @@ def test_stream_sees_writes_that_land_after_it_started(
     timer = threading.Timer(0.1, write_later)
     timer.start()
     try:
-        body = client.get("/api/events/t-1").text
+        body = client.get("/api/projects/demo/events/t-1").text
     finally:
         timer.cancel()
 

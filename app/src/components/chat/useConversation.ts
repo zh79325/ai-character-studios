@@ -39,6 +39,7 @@ export interface Handoff {
 }
 
 interface Options {
+  projectCode: string
   agentCode: string
   targetKind: TargetKind
   targetRef?: string | null
@@ -50,6 +51,7 @@ interface Options {
 }
 
 export function useConversation({
+  projectCode,
   agentCode,
   targetKind,
   targetRef = null,
@@ -69,9 +71,9 @@ export function useConversation({
 
   // 一物一会话：这一口是幂等的，同一个对象进来永远是同一场，用户不用先做一次「建会话」的动作
   const ensured = useQuery({
-    queryKey: ['conversation-ensure', targetKind, targetRef, agentCode],
+    queryKey: ['project', projectCode, 'conversation-ensure', targetKind, targetRef, agentCode],
     queryFn: () =>
-      ensureConversation({
+      ensureConversation(projectCode, {
         agent_code: agentCode,
         target_kind: targetKind,
         target_ref: targetRef,
@@ -84,15 +86,17 @@ export function useConversation({
   useEffect(() => {
     const fresh = ensured.data
     if (fresh === undefined) return
-    queryClient.setQueryData(['conversation', fresh.conversation.id], fresh)
-    void queryClient.invalidateQueries({ queryKey: ['conversations'] })
-  }, [ensured.data, queryClient])
+    queryClient.setQueryData(['project', projectCode, 'conversation', fresh.conversation.id], fresh)
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'conversations'],
+    })
+  }, [ensured.data, projectCode, queryClient])
 
   const id = ensured.data?.conversation.id ?? null
 
   const detail = useQuery({
-    queryKey: ['conversation', id],
-    queryFn: () => readConversation(id!),
+    queryKey: ['project', projectCode, 'conversation', id],
+    queryFn: () => readConversation(projectCode, id!),
     enabled: id !== null,
   })
 
@@ -109,8 +113,9 @@ export function useConversation({
       setStreaming('')
       stop.current?.()
       // 先发出去（不等），后端清掉上一轮缓冲之后这条流才订得上本轮的字
-      const turn = sendMessage(id, content)
+      const turn = sendMessage(projectCode, id, content)
       stop.current = subscribeConversation({
+        projectCode,
         conversationId: id,
         fresh: true,
         onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
@@ -129,17 +134,26 @@ export function useConversation({
     },
     onSuccess: async (turn) => {
       // 等详情真拉回来再抖掉那句话，不然气泡会先消失一下再出现
-      await queryClient.invalidateQueries({ queryKey: ['conversation', id] })
+      await queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', id],
+      })
       setPending(null)
-      void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversations'] })
       if (turn.folded_turns.length > 0) {
         toast.info(`上下文快满了，第 ${turn.folded_turns.join('、')} 轮已折进摘要，原文还在`)
       }
     },
     // 后端是先落库再调模型，所以要先看这句话到底存下没：存下了就别再送回输入框，否则重发会冒出两条同样的话
     onError: async (err: Error, content) => {
-      await queryClient.invalidateQueries({ queryKey: ['conversation', id] })
-      const fresh = queryClient.getQueryData<ConversationDetail>(['conversation', id])
+      await queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', id],
+      })
+      const fresh = queryClient.getQueryData<ConversationDetail>([
+        'project',
+        projectCode,
+        'conversation',
+        id,
+      ])
       const landed = fresh?.messages.some((one) => one.role === 'user' && one.content === content)
       setPending(null)
       if (landed !== true) setInput((prev) => (prev === '' ? content : prev))
@@ -153,14 +167,16 @@ export function useConversation({
   })
 
   const interrupt = useMutation({
-    mutationFn: () => interruptConversation(id!),
+    mutationFn: () => interruptConversation(projectCode, id!),
     onSuccess: async () => {
       cut.current = true
       stop.current?.()
       stop.current = null
       setStreaming(null)
       setPending(null)
-      await queryClient.invalidateQueries({ queryKey: ['conversation', id] })
+      await queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', id],
+      })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -177,15 +193,18 @@ export function useConversation({
     setStreaming('')
     const settle = () => {
       setStreaming(null)
-      void queryClient.invalidateQueries({ queryKey: ['conversation', id] })
+      void queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', id],
+      })
     }
     return subscribeConversation({
+      projectCode,
       conversationId: id,
       onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
       onTurn: settle,
       onError: settle,
     })
-  }, [thinkingId, id, send.isPending, queryClient])
+  }, [thinkingId, id, send.isPending, projectCode, queryClient])
 
   // 只认 nonce：同一句话递两次是两件事，而重渲染不是
   const handled = useRef(0)

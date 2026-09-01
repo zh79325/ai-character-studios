@@ -4,12 +4,9 @@
 素材目录、以及 `.atelier/project.db`（这个项目的运行库）。目录可以放在磁盘任意位置，
 整份拷到另一台机器、挂上去就还是那个项目。
 
-全局 `runtime.db` 里只有一张 `project_registry`：本机打开过哪些项目、它们在哪。这张表
+全局 `runtime.db` 里只有一张 `project_registry`：本机登记过哪些项目、它们在哪。这张表
 是索引不是真相，删了不影响项目本身（重新导入一次就回来），所以任何时候都以磁盘上的
-`project.json` 为准，冲突时改库不改文件。
-
-「现在打开的是哪个项目」只活在内存里（见 `opened_code`）：重启之后就是没打开，开工从点
-「打开」开始。
+`project.json` 为准，冲突时改库不改文件。请求所操作的项目始终由 URL 中的 code 指定。
 
 「新建」与「导入」因此是同一件事的两半：新建 = 铺目录骨架 + 登记；导入 = 只登记。
 """
@@ -23,7 +20,6 @@ import secrets
 import shutil
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -58,10 +54,6 @@ DRAFT_CODE_PREFIX = "draft-"
 而真正的代号要等对焦完才定。"""
 
 DRAFT_NAME = "未命名项目"
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 # --------------------------------------------------------------------------- #
@@ -251,7 +243,6 @@ class ProjectSummary:
     dir_path: str
     managed: bool
     missing: bool
-    last_opened_at: datetime | None
     stage: Stage = "ready"
 
 
@@ -280,7 +271,6 @@ def list_projects(runtime: Session) -> list[ProjectSummary]:
                 dir_path=row.dir_path,
                 managed=row.managed,
                 missing=missing,
-                last_opened_at=row.last_opened_at,
                 stage="ready" if missing else stage_of(project_dir),
             )
         )
@@ -333,59 +323,7 @@ def forget(runtime: Session, code: str) -> None:
         raise NotFound(f"项目 {code} 没有登记在本机")
     dispose_project_engine(layout.project_db_path(Path(row.dir_path)))
     runtime.delete(row)
-    if opened_code() == code:
-        close_project()
     runtime.flush()
-
-
-# --------------------------------------------------------------------------- #
-# 打开的项目
-# --------------------------------------------------------------------------- #
-
-_opened: str | None = None
-"""本进程打开的项目代号。
-
-不入库：它不是要攻下来的数据，而是「现在在干哪个项目」这么一个会话事实。存进库里的后果是
-用户下次启动就看见一个自己没点过的项目被当成已打开，而开工本就该从点「打开」开始。"""
-
-_opened_lock = threading.Lock()
-
-
-def opened_code() -> str | None:
-    """本进程打开的项目代号，没打开就是 None。"""
-    with _opened_lock:
-        return _opened
-
-
-def close_project() -> None:
-    """回到「没打开任何项目」。项目本身一点不动。"""
-    global _opened
-    with _opened_lock:
-        _opened = None
-
-
-def opened(runtime: Session) -> ProjectRef | None:
-    """打开的项目；没打开、或打开的那个已经不在了就返回 None（前端引导用户去选）。"""
-    code = opened_code()
-    if code is None:
-        return None
-    try:
-        return resolve(runtime, code)
-    except (NotFound, Conflict):
-        return None
-
-
-def open_project(runtime: Session, code: str) -> ProjectRef:
-    """打开某个项目：校准索引、把库补到 head、记住接下来干活就在它里。"""
-    global _opened
-    ref = resolve(runtime, code)
-    ensure_schema(ref)
-    row = runtime.get(ProjectRegistry, code)
-    if row is not None:
-        row.last_opened_at = _now()
-    with _opened_lock:
-        _opened = code
-    return ref
 
 
 # --------------------------------------------------------------------------- #
@@ -530,7 +468,7 @@ def bootstrap_project(runtime: Session, dir_path: Path, *, overwrite: bool = Fal
     ref = ProjectRef(code=code, name=name, dir=target)
     ensure_schema(ref)
     _register(runtime, ref, managed=_under_default_root(target))
-    return open_project(runtime, code)
+    return ref
 
 
 def finalize_project(runtime: Session, ref: ProjectRef, *, name: str, code: str) -> ProjectRef:
@@ -559,7 +497,7 @@ def finalize_project(runtime: Session, ref: ProjectRef, *, name: str, code: str)
     layout.ensure_git_files(ref.dir)
     ensure_schema(fresh)
     _register(runtime, fresh, managed=_under_default_root(ref.dir))
-    return open_project(runtime, safe_code)
+    return fresh
 
 
 def create_project(

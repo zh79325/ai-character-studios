@@ -4,6 +4,7 @@
  * 后端的 route-logs 是永不结束的流，所以退订必须由调用方显式做（返回的函数）。
  */
 import { baseUrl, withQuery } from './client'
+import { projectApiPath } from '@/lib/projectRoute'
 import type { RouteLog } from '@/types/api'
 
 export interface RouteLogSubscription {
@@ -45,6 +46,7 @@ export interface TaskEventPayload {
 }
 
 export interface TaskSubscription {
+  projectCode: string
   taskId: string
   afterSeq?: number
   onEvent: (event: TaskEventPayload) => void
@@ -60,9 +62,10 @@ export function subscribeTask(sub: TaskSubscription): () => void {
 
   void baseUrl().then((base) => {
     if (cancelled) return
-    const path = withQuery(`/api/events/${encodeURIComponent(sub.taskId)}`, {
-      after_seq: sub.afterSeq,
-    })
+    const path = withQuery(
+      projectApiPath(sub.projectCode, `events/${encodeURIComponent(sub.taskId)}`),
+      { after_seq: sub.afterSeq },
+    )
     source = new EventSource(`${base}${path}`)
     source.addEventListener('task_event', (event) => {
       sub.onEvent(JSON.parse((event as MessageEvent<string>).data) as TaskEventPayload)

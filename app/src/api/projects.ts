@@ -1,12 +1,11 @@
 /**
  * 项目接口。
  *
- * 两条约定值得在这里写清楚，因为它们决定了页面怎么写：
- * 一是换项目是 `PUT /current` 这一个明确动作，读接口上的 `?project=` 只是「看一眼别的
- * 项目」，不会把用户的当前项目换掉；二是列表类接口一律返回整份 ProjectList，前端拿到
- * 响应直接换掉缓存即可，不必自己算「切完之后谁是当前项目」。
+ * 项目管理接口返回注册表或单个项目摘要；项目内接口都以 `projectCode` 为首个必需参数，
+ * 直接映射到 URL 中的项目资源，不读取任何隐式“当前项目”状态。
  */
 import { request, withQuery } from './client'
+import { projectApiPath } from '@/lib/projectRoute'
 import type {
   ArtBible,
   Character,
@@ -35,73 +34,87 @@ export function inspectDir(dirPath: string): Promise<ProjectDirState> {
  * `overwrite` 只在用户对着确认框点过头之后带：它会抹掉目录里旧项目的 `project.json`、
  * `art-bible.md` 与 `.atelier/` 运行库（素材文件不动）。
  */
-export function bootstrapProject(dirPath: string, overwrite = false): Promise<ProjectList> {
-  return request<ProjectList>('/api/projects/bootstrap', {
+export function bootstrapProject(dirPath: string, overwrite = false): Promise<ProjectSummary> {
+  return request<ProjectSummary>('/api/projects/bootstrap', {
     method: 'POST',
     body: { dir_path: dirPath, overwrite },
   })
 }
 
 /** 立项收口：定下名字与代号，后端顺手铺素材目录、git 规则与 art bible。 */
-export function finalizeProject(payload: ProjectFinalizeIn): Promise<ProjectList> {
-  return request<ProjectList>('/api/projects/current/finalize', { method: 'POST', body: payload })
+export function finalizeProject(
+  projectCode: string,
+  payload: ProjectFinalizeIn,
+): Promise<ProjectSummary> {
+  return request<ProjectSummary>(projectApiPath(projectCode, 'finalize'), {
+    method: 'POST',
+    body: payload,
+  })
 }
 
 /** 挂上一个已有的项目目录：换机器、外置盘、同事拷来的都走这里。 */
-export function importProject(dirPath: string): Promise<ProjectList> {
-  return request<ProjectList>('/api/projects/import', {
+export function importProject(dirPath: string): Promise<ProjectSummary> {
+  return request<ProjectSummary>('/api/projects/import', {
     method: 'POST',
     body: { dir_path: dirPath },
   })
 }
 
-export function switchProject(code: string): Promise<ProjectList> {
-  return request<ProjectList>('/api/projects/current', { method: 'PUT', body: { code } })
-}
-
 /** 从本机移出，磁盘上的文件一个不动——项目目录是用户的资产。 */
-export function forgetProject(code: string): Promise<ProjectList> {
-  return request<ProjectList>(`/api/projects/${encodeURIComponent(code)}`, { method: 'DELETE' })
+export function forgetProject(code: string): Promise<void> {
+  return request<void>(projectApiPath(code), { method: 'DELETE' })
 }
 
-/** 没选过项目时后端是 404，调用方据此引导用户先新建或导入。 */
-export function currentProject(): Promise<ProjectSummary> {
-  return request<ProjectSummary>('/api/projects/current')
+/** 按 URL 中的项目代号读取摘要。 */
+export function readProject(projectCode: string): Promise<ProjectSummary> {
+  return request<ProjectSummary>(projectApiPath(projectCode))
 }
 
-export function readConfig(project?: string): Promise<ProjectConfig> {
-  return request<ProjectConfig>(withQuery('/api/projects/current/config', { project }))
+export function readConfig(projectCode: string): Promise<ProjectConfig> {
+  return request<ProjectConfig>(projectApiPath(projectCode, 'config'))
 }
 
-export function updateConfig(patch: ProjectConfigPatch): Promise<ProjectConfig> {
-  return request<ProjectConfig>('/api/projects/current/config', { method: 'PUT', body: patch })
+export function updateConfig(
+  projectCode: string,
+  patch: ProjectConfigPatch,
+): Promise<ProjectConfig> {
+  return request<ProjectConfig>(projectApiPath(projectCode, 'config'), {
+    method: 'PUT',
+    body: patch,
+  })
 }
 
-export function readArtBible(project?: string): Promise<ArtBible> {
-  return request<ArtBible>(withQuery('/api/projects/current/art-bible', { project }))
+export function readArtBible(projectCode: string): Promise<ArtBible> {
+  return request<ArtBible>(projectApiPath(projectCode, 'art-bible'))
 }
 
 /** 整篇覆盖保存：art bible 是视觉真相，编辑器给的就是全文。 */
-export function writeArtBible(content: string): Promise<ArtBible> {
-  return request<ArtBible>('/api/projects/current/art-bible', { method: 'PUT', body: { content } })
+export function writeArtBible(projectCode: string, content: string): Promise<ArtBible> {
+  return request<ArtBible>(projectApiPath(projectCode, 'art-bible'), {
+    method: 'PUT',
+    body: { content },
+  })
 }
 
-export function scanProject(): Promise<ScanResult> {
-  return request<ScanResult>('/api/projects/current/scan', { method: 'POST' })
+export function scanProject(projectCode: string): Promise<ScanResult> {
+  return request<ScanResult>(projectApiPath(projectCode, 'scan'), { method: 'POST' })
 }
 
-export function listCharacters(project?: string): Promise<Character[]> {
-  return request<Character[]>(withQuery('/api/projects/current/characters', { project }))
+export function listCharacters(projectCode: string): Promise<Character[]> {
+  return request<Character[]>(projectApiPath(projectCode, 'characters'))
 }
 
-/** 当前项目 `characters/` 下的分组目录（含空分组）。分组只是文件夹，后端直接读盘。 */
-export function listGroups(): Promise<string[]> {
-  return request<string[]>('/api/projects/current/groups')
+/** 指定项目 `characters/` 下的分组目录（含空分组）。分组只是文件夹，后端直接读盘。 */
+export function listGroups(projectCode: string): Promise<string[]> {
+  return request<string[]>(projectApiPath(projectCode, 'groups'))
 }
 
 /** 建一个空分组文件夹，返回建完后的最新分组列表。 */
-export function createGroup(path: string): Promise<string[]> {
-  return request<string[]>('/api/projects/current/groups', { method: 'POST', body: { path } })
+export function createGroup(projectCode: string, path: string): Promise<string[]> {
+  return request<string[]>(projectApiPath(projectCode, 'groups'), {
+    method: 'POST',
+    body: { path },
+  })
 }
 
 /**

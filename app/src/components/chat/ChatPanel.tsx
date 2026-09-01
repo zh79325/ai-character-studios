@@ -22,6 +22,7 @@ import { useConversation, type Handoff } from '@/components/chat/useConversation
 import type { TargetKind } from '@/types/api'
 
 interface Props {
+  projectCode: string
   agentCode: string
   targetKind: TargetKind
   targetRef?: string | null
@@ -61,6 +62,7 @@ interface Props {
 export type { Handoff }
 
 export default function ChatPanel({
+  projectCode,
   agentCode,
   targetKind,
   targetRef = null,
@@ -77,6 +79,7 @@ export default function ChatPanel({
   starters = [],
 }: Props) {
   const talk = useConversation({
+    projectCode,
     agentCode,
     targetKind,
     targetRef,
@@ -189,6 +192,7 @@ export default function ChatPanel({
         sidebar
       ) : (
         <DraftDiffPanel
+          projectCode={projectCode}
           conversationId={talk.id ?? ''}
           drafts={detail?.drafts ?? []}
           compact={draftsAside}

@@ -1,8 +1,8 @@
 /**
- * 项目内页面的外壳：把「有没有打开项目」这件事挡在页面内容前面。
+ * 项目内页面的外壳：用 URL 里的项目代号验证项目存在，再挡住尚未完成立项的页面。
  *
- * 每个项目页都要先回答同样两个问题——没打开项目时去哪、项目还在立项中时能不能干这件事。
- * 各页自己写一遍迟早走形，所以统一在这里出引导页，页面本身只管自己那块内容。
+ * 每个项目页都要先回答同样两个问题——URL 指定的项目是否存在、项目还在立项中时能不能干
+ * 这件事。各页自己写一遍迟早走形，所以统一在这里出引导页，页面本身只管自己那块内容。
  */
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
@@ -11,7 +11,8 @@ import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
-import { currentProject } from '@/api/projects'
+import { readProject } from '@/api/projects'
+import { projectPath, useProjectCode } from '@/lib/projectRoute'
 
 export interface ProjectBreadcrumbItem {
   label: string
@@ -26,25 +27,25 @@ interface Props {
   children: ReactNode
 }
 
-/** 当前项目。各页共用一个 key，切项目时一处失效全体跟上。 */
+/** URL 指定的项目。缓存按项目代号隔离。 */
 export function useCurrentProject() {
+  const projectCode = useProjectCode()
   return useQuery({
-    queryKey: ['project-current'],
-    queryFn: currentProject,
-    // 没选项目时后端就是 404，那是正常状态而不是故障，重试只会拖慢引导页出现
+    queryKey: ['project', projectCode],
+    queryFn: () => readProject(projectCode),
     retry: false,
   })
 }
 
 export default function ProjectFrame({ requireReady = false, breadcrumb = [], children }: Props) {
   const navigate = useNavigate()
+  const projectCode = useProjectCode()
   const current = useCurrentProject()
 
-  // 后端只把「打开了谁」记在内存里，没打开就是 404——那是正常状态，拿来出引导页
   if (current.error instanceof ApiError && current.error.status === 404) {
     return (
       <Card>
-        <Empty description="还没打开项目">
+        <Empty description="项目未登记或目录不存在">
           <Button
             type="primary"
             icon={<FolderOpenOutlined />}
@@ -61,7 +62,8 @@ export default function ProjectFrame({ requireReady = false, breadcrumb = [], ch
 
   const breadcrumbItems = [
     {
-      title: breadcrumb.length === 0 ? '项目首页' : <Link to="/project">项目首页</Link>,
+      title:
+        breadcrumb.length === 0 ? '项目首页' : <Link to={projectPath(projectCode)}>项目首页</Link>,
     },
     ...breadcrumb.map((item) => ({
       title: item.path ? <Link to={item.path}>{item.label}</Link> : item.label,
@@ -74,7 +76,7 @@ export default function ProjectFrame({ requireReady = false, breadcrumb = [], ch
       {requireReady && drafting ? (
         <Card>
           <Empty description="这个项目还在立项中，先把名字与代号定下来">
-            <Button type="primary" onClick={() => navigate('/project')}>
+            <Button type="primary" onClick={() => navigate(projectPath(projectCode))}>
               回立项对焦
             </Button>
           </Empty>

@@ -73,7 +73,7 @@ def talk(
     """一个已开好、已绑好候选的项目会话，返回它的 id。"""
     bind_text_model(session, DESIGNER)
     response = client.post(
-        "/api/conversations", json={"agent_code": DESIGNER, "target_kind": "project"}
+        "/api/projects/demo/conversations", json={"agent_code": DESIGNER, "target_kind": "project"}
     )
     assert response.status_code == 201
     yield response.json()["conversation"]["id"]
@@ -81,7 +81,7 @@ def talk(
 
 def send(client: TestClient, cid: str, text: str, *, stream: bool = False) -> dict[str, object]:
     response = client.post(
-        f"/api/conversations/{cid}/messages", json={"content": text, "stream": stream}
+        f"/api/projects/demo/conversations/{cid}/messages", json={"content": text, "stream": stream}
     )
     assert response.status_code == 200, response.text
     return dict(response.json())
@@ -126,7 +126,9 @@ def read_stream(
     TestClient 不做真正的增量读（拿到的是整段响应），所以这里靠的是接口本身会在一轮
     有了结果后收流——没这个收尾，这一句就是死等。
     """
-    body = client.get(f"/api/conversations/{cid}/stream", headers=headers, params=params).text
+    body = client.get(
+        f"/api/projects/demo/conversations/{cid}/stream", headers=headers, params=params
+    ).text
     return [f for f in parse_sse(body) if f.event != "ready"]
 
 
@@ -142,7 +144,7 @@ def _seq(frame: Frame) -> int:
 
 def test_开会话返回空的详情(client: TestClient, project: ProjectRef, session: Session) -> None:
     response = client.post(
-        "/api/conversations",
+        "/api/projects/demo/conversations",
         json={"agent_code": DESIGNER, "target_kind": "project", "title": "立项"},
     )
 
@@ -156,30 +158,39 @@ def test_开会话返回空的详情(client: TestClient, project: ProjectRef, se
 
 def test_非会话型agent开不了(client: TestClient, project: ProjectRef) -> None:
     response = client.post(
-        "/api/conversations", json={"agent_code": "prompt_smith", "target_kind": "project"}
+        "/api/projects/demo/conversations",
+        json={"agent_code": "prompt_smith", "target_kind": "project"},
     )
 
     assert response.status_code == 409
 
 
 def test_不存在的会话是404(client: TestClient, project: ProjectRef) -> None:
-    assert client.get("/api/conversations/nope").status_code == 404
+    assert client.get("/api/projects/demo/conversations/nope").status_code == 404
 
 
 def test_列表按目标过滤(client: TestClient, project: ProjectRef) -> None:
-    client.post("/api/conversations", json={"agent_code": DESIGNER, "target_kind": "project"})
+    client.post(
+        "/api/projects/demo/conversations", json={"agent_code": DESIGNER, "target_kind": "project"}
+    )
 
-    listed = client.get("/api/conversations", params={"target_kind": "project"}).json()
+    listed = client.get(
+        "/api/projects/demo/conversations", params={"target_kind": "project"}
+    ).json()
 
     assert len(listed) == 1
     assert listed[0]["message_count"] == 0
-    assert client.get("/api/conversations", params={"target_kind": "character"}).json() == []
+    assert (
+        client.get("/api/projects/demo/conversations", params={"target_kind": "character"}).json()
+        == []
+    )
 
 
-def ensure(client: TestClient) -> dict[str, object]:
-    """拿项目当下该聊的那场会话。立项页进来就调这一口。"""
+def ensure(client: TestClient, project_code: str = "demo") -> dict[str, object]:
+    """拿 URL 指定项目当下该聊的那场会话。立项页进来就调这一口。"""
     response = client.post(
-        "/api/conversations/ensure", json={"agent_code": DESIGNER, "target_kind": "project"}
+        f"/api/projects/{project_code}/conversations/ensure",
+        json={"agent_code": DESIGNER, "target_kind": "project"},
     )
     assert response.status_code == 200, response.text
     return dict(response.json())
@@ -192,18 +203,20 @@ def test_ensure接着还开着的那场聊(client: TestClient, project: ProjectR
     again = ensure(client)
 
     assert again["conversation"]["id"] == first["conversation"]["id"]  # type: ignore[index]
-    assert len(client.get("/api/conversations").json()) == 1
+    assert len(client.get("/api/projects/demo/conversations").json()) == 1
 
 
 def test_ensure沉淀过也还是同一场(client: TestClient, talk: str) -> None:
     """沉淀只是把草稿写进定稿位，聊到哪儿还在这场里，另起一场等于把上下文丢掉。"""
     send(client, talk, "拟一版")
-    assert client.post(f"/api/conversations/{talk}/commit", json={}).status_code == 200
+    assert (
+        client.post(f"/api/projects/demo/conversations/{talk}/commit", json={}).status_code == 200
+    )
 
     body = ensure(client)
 
     assert body["conversation"]["id"] == talk  # type: ignore[index]
-    assert len(client.get("/api/conversations").json()) == 1
+    assert len(client.get("/api/projects/demo/conversations").json()) == 1
 
 
 def test_开场提示报出项目现状(client: TestClient, project: ProjectRef) -> None:
@@ -220,7 +233,7 @@ def test_白纸项目直接请用户说想法(client: TestClient, projects_root:
     created = client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "新项目")})
     assert created.status_code == 201, created.text
 
-    body = ensure(client)
+    body = ensure(client, created.json()["code"])
 
     assert body["briefing"] == engine.BRIEFING_BLANK
     assert body["briefing_blank"] is True
@@ -239,7 +252,7 @@ def test_发一轮拿到回答与草稿(client: TestClient, talk: str) -> None:
     assert body["provider_label"] == "bailian/qwen-plus"
     assert body["context_tokens"] > 0
 
-    detail = client.get(f"/api/conversations/{talk}").json()
+    detail = client.get(f"/api/projects/demo/conversations/{talk}").json()
     assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
     assert detail["memory"]["decisions"] == ["题材是赛博朋克"]
     assert detail["drafts"][0]["target_path"] == "art-bible.md"
@@ -260,7 +273,7 @@ def test_待选项带着单选多选与推荐出去(client: TestClient, talk: st
     send(client, talk, "拟一版")
     send(client, talk, "接着说")
 
-    detail = client.get(f"/api/conversations/{talk}").json()
+    detail = client.get(f"/api/projects/demo/conversations/{talk}").json()
 
     assert detail["choices"] == [
         {
@@ -283,22 +296,24 @@ def test_命名建议要等风格落盘之后才出去(client: TestClient, talk:
     chat.replies[:] = [NAMING_REPLY, DRAFT_REPLY, NAMING_REPLY]
     send(client, talk, "叫什么名字好")
 
-    before = client.get(f"/api/conversations/{talk}").json()
+    before = client.get(f"/api/projects/demo/conversations/{talk}").json()
 
     assert before["settled"] is False
     assert before["naming"] == []
 
     send(client, talk, "先给一版风格")
-    client.post(f"/api/conversations/{talk}/commit", json={})
+    client.post(f"/api/projects/demo/conversations/{talk}/commit", json={})
     send(client, talk, "给几组项目名")
-    after = client.get(f"/api/conversations/{talk}").json()
+    after = client.get(f"/api/projects/demo/conversations/{talk}").json()
 
     assert after["settled"] is True
     assert [one["code"] for one in after["naming"]] == ["urban_monkey_king"]
 
 
 def test_空内容不发(client: TestClient, talk: str) -> None:
-    response = client.post(f"/api/conversations/{talk}/messages", json={"content": "   "})
+    response = client.post(
+        f"/api/projects/demo/conversations/{talk}/messages", json={"content": "   "}
+    )
 
     assert response.status_code == 409
 
@@ -308,7 +323,7 @@ def test_草稿的基线过期时提前标出来(client: TestClient, talk: str, 
     send(client, talk, "拟一版")
     project.absolute("art-bible.md").write_text("# 用户手改了\n", encoding="utf-8")
 
-    detail = client.get(f"/api/conversations/{talk}").json()
+    detail = client.get(f"/api/projects/demo/conversations/{talk}").json()
 
     assert detail["drafts"][0]["stale"] is True
 
@@ -322,7 +337,7 @@ def test_diff给两份全文交前端渲染(client: TestClient, talk: str, proje
     """算法与展示形式都是前端的事，后端算成文本传过去反而限制了它。"""
     draft_id = send(client, talk, "拟一版")["draft_ids"][0]  # type: ignore[index]
 
-    body = client.get(f"/api/conversations/{talk}/drafts/{draft_id}/diff").json()
+    body = client.get(f"/api/projects/demo/conversations/{talk}/drafts/{draft_id}/diff").json()
 
     assert body["target_path"] == "art-bible.md"
     assert body["current"] == project.absolute("art-bible.md").read_text(encoding="utf-8")
@@ -333,7 +348,7 @@ def test_diff顺手带上没写完的地方(client: TestClient, talk: str) -> No
     """这一屏是用户按下沉淀前看的最后一眼，缺的节得就在这里说，往后没机会了。"""
     draft_id = send(client, talk, "拟一版")["draft_ids"][0]  # type: ignore[index]
 
-    body = client.get(f"/api/conversations/{talk}/drafts/{draft_id}/diff").json()
+    body = client.get(f"/api/projects/demo/conversations/{talk}/drafts/{draft_id}/diff").json()
 
     # 剧本里的草稿只写了一句话，六节里的其余几节都还空着
     assert len(body["warnings"]) > 0
@@ -343,11 +358,14 @@ def test_diff顺手带上没写完的地方(client: TestClient, talk: str) -> No
 def test_别的会话的草稿看不到(client: TestClient, talk: str) -> None:
     send(client, talk, "拟一版")
     other = client.post(
-        "/api/conversations", json={"agent_code": DESIGNER, "target_kind": "project"}
+        "/api/projects/demo/conversations", json={"agent_code": DESIGNER, "target_kind": "project"}
     ).json()["conversation"]["id"]
-    draft_id = client.get(f"/api/conversations/{talk}").json()["drafts"][0]["id"]
+    draft_id = client.get(f"/api/projects/demo/conversations/{talk}").json()["drafts"][0]["id"]
 
-    assert client.get(f"/api/conversations/{other}/drafts/{draft_id}/diff").status_code == 404
+    assert (
+        client.get(f"/api/projects/demo/conversations/{other}/drafts/{draft_id}/diff").status_code
+        == 404
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -358,20 +376,23 @@ def test_别的会话的草稿看不到(client: TestClient, talk: str) -> None:
 def test_确认沉淀后定稿落盘(client: TestClient, talk: str, project: ProjectRef) -> None:
     send(client, talk, "拟一版")
 
-    body = client.post(f"/api/conversations/{talk}/commit", json={}).json()
+    body = client.post(f"/api/projects/demo/conversations/{talk}/commit", json={}).json()
 
     assert "湿滑金属" in project.absolute("art-bible.md").read_text(encoding="utf-8")
     assert body["archived"][0]["previous_path"].startswith("tmp/")
     assert body["memories_added"] == ["喜欢冷色调"]
     # 沉淀不收口会话：接着聊下一版还得在同一场里
-    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "active"
+    assert (
+        client.get(f"/api/projects/demo/conversations/{talk}").json()["conversation"]["status"]
+        == "active"
+    )
 
 
 def test_基线过期时沉淀返回409(client: TestClient, talk: str, project: ProjectRef) -> None:
     send(client, talk, "拟一版")
     project.absolute("art-bible.md").write_text("# 用户手改了\n", encoding="utf-8")
 
-    response = client.post(f"/api/conversations/{talk}/commit", json={})
+    response = client.post(f"/api/projects/demo/conversations/{talk}/commit", json={})
 
     assert response.status_code == 409
     assert project.absolute("art-bible.md").read_text(encoding="utf-8") == "# 用户手改了\n"
@@ -381,11 +402,14 @@ def test_丢弃后磁盘没动(client: TestClient, talk: str, project: ProjectRe
     before = project.absolute("art-bible.md").read_text(encoding="utf-8")
     send(client, talk, "拟一版")
 
-    body = client.post(f"/api/conversations/{talk}/discard").json()
+    body = client.post(f"/api/projects/demo/conversations/{talk}/discard").json()
 
     assert body["discarded"] == 1
     assert project.absolute("art-bible.md").read_text(encoding="utf-8") == before
-    assert client.get(f"/api/conversations/{talk}").json()["conversation"]["status"] == "active"
+    assert (
+        client.get(f"/api/projects/demo/conversations/{talk}").json()["conversation"]["status"]
+        == "active"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -424,7 +448,9 @@ def test_一轮失败也要告诉订流的那头(client: TestClient, talk: str, 
     """模型炸了而流里什么都没有，前端就只能干等到超时。"""
     chat.replies = ["   "]  # 空回答会被引擎当失败
 
-    response = client.post(f"/api/conversations/{talk}/messages", json={"content": "拟一版"})
+    response = client.post(
+        f"/api/projects/demo/conversations/{talk}/messages", json={"content": "拟一版"}
+    )
 
     assert response.status_code >= 400
     last = read_stream(client, talk)[-1]
@@ -482,7 +508,7 @@ def test_带fresh的流不推缓冲里剩下的那一轮(client: TestClient, tal
 
 
 def test_不存在的会话订不了流(client: TestClient, project: ProjectRef) -> None:
-    assert client.get("/api/conversations/nope/stream").status_code == 404
+    assert client.get("/api/projects/demo/conversations/nope/stream").status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -493,13 +519,13 @@ def test_不存在的会话订不了流(client: TestClient, project: ProjectRef)
 def test_答完的消息带着已完成的状态(client: TestClient, talk: str) -> None:
     send(client, talk, "拟一版")
 
-    rows = client.get(f"/api/conversations/{talk}").json()["messages"]
+    rows = client.get(f"/api/projects/demo/conversations/{talk}").json()["messages"]
     assert [one["status"] for one in rows] == ["done", "done"]
 
 
 def test_没在跑的时候中断也算成(client: TestClient, talk: str) -> None:
     """点下去那一瞬刚好回完也不算错，报个错只会让用户以为自己把事情搞砸了。"""
-    response = client.post(f"/api/conversations/{talk}/interrupt")
+    response = client.post(f"/api/projects/demo/conversations/{talk}/interrupt")
 
     assert response.status_code == 200
     assert response.json() == {"conversation_id": talk, "interrupted": False}
@@ -514,9 +540,12 @@ def test_重启卡住的那条正在想能被中断清掉(
     )
     project_db.commit()
 
-    assert client.post(f"/api/conversations/{talk}/interrupt").json()["interrupted"] is True
+    assert (
+        client.post(f"/api/projects/demo/conversations/{talk}/interrupt").json()["interrupted"]
+        is True
+    )
 
-    rows = client.get(f"/api/conversations/{talk}").json()["messages"]
+    rows = client.get(f"/api/projects/demo/conversations/{talk}").json()["messages"]
     assert [one["status"] for one in rows] == ["cancelled"]
 
 
@@ -526,26 +555,32 @@ def test_重启卡住的那条正在想能被中断清掉(
 
 
 def test_手写记忆的增改停删(client: TestClient, project: ProjectRef) -> None:
-    created = client.post("/api/memory", json={"kind": "taboo", "content": "不要齿轮"})
+    created = client.post(
+        "/api/projects/demo/memory", json={"kind": "taboo", "content": "不要齿轮"}
+    )
     assert created.status_code == 201
     memory_id = created.json()["id"]
 
     # 同一条再写一次是冲突，不是静默去重
     assert (
-        client.post("/api/memory", json={"kind": "taboo", "content": "不要齿轮 "}).status_code
+        client.post(
+            "/api/projects/demo/memory", json={"kind": "taboo", "content": "不要齿轮 "}
+        ).status_code
         == 409
     )
 
-    patched = client.patch(f"/api/memory/{memory_id}", json={"enabled": False}).json()
+    patched = client.patch(f"/api/projects/demo/memory/{memory_id}", json={"enabled": False}).json()
     assert patched["enabled"] is False
 
-    assert client.delete(f"/api/memory/{memory_id}").status_code == 204
-    assert client.get("/api/memory").json() == []
+    assert client.delete(f"/api/projects/demo/memory/{memory_id}").status_code == 204
+    assert client.get("/api/projects/demo/memory").json() == []
 
 
 def test_手写的记忆落在项目目录里(client: TestClient, project: ProjectRef) -> None:
     """接口写的是目录里那份文件而不是库，用户才能在 Git 里看见这条共识。"""
-    created = client.post("/api/memory", json={"kind": "taboo", "content": "不要齿轮"}).json()
+    created = client.post(
+        "/api/projects/demo/memory", json={"kind": "taboo", "content": "不要齿轮"}
+    ).json()
 
     assert created["id"] == memory_files.memory_hash("taboo", "不要齿轮")
     assert "不要齿轮" in layout.preferences_path(project.dir).read_text(encoding="utf-8")
@@ -553,10 +588,12 @@ def test_手写的记忆落在项目目录里(client: TestClient, project: Proje
 
 def test_停用的记忆还在列表里(client: TestClient, project: ProjectRef) -> None:
     """停用是让它不再注入，不是删掉——列表里要看得见才能改回来。"""
-    created = client.post("/api/memory", json={"kind": "preference", "content": "冷色调"}).json()
-    client.patch(f"/api/memory/{created['id']}", json={"enabled": False})
+    created = client.post(
+        "/api/projects/demo/memory", json={"kind": "preference", "content": "冷色调"}
+    ).json()
+    client.patch(f"/api/projects/demo/memory/{created['id']}", json={"enabled": False})
 
-    listed = client.get("/api/memory").json()
+    listed = client.get("/api/projects/demo/memory").json()
 
     assert len(listed) == 1
     assert listed[0]["enabled"] is False
@@ -565,10 +602,12 @@ def test_停用的记忆还在列表里(client: TestClient, project: ProjectRef)
 def test_改内容后去重的键跟着变(
     client: TestClient, project: ProjectRef, project_db: Session
 ) -> None:
-    created = client.post("/api/memory", json={"kind": "fact", "content": "平台是 PC"}).json()
+    created = client.post(
+        "/api/projects/demo/memory", json={"kind": "fact", "content": "平台是 PC"}
+    ).json()
 
     patched = client.patch(
-        f"/api/memory/{created['id']}", json={"content": "平台是 PC 与 Switch"}
+        f"/api/projects/demo/memory/{created['id']}", json={"content": "平台是 PC 与 Switch"}
     ).json()
 
     assert patched["id"] != created["id"]  # 内容哈希寻址，改完内容就换了个身份
@@ -577,5 +616,7 @@ def test_改内容后去重的键跟着变(
 
 
 def test_改不存在的记忆是404(client: TestClient, project: ProjectRef) -> None:
-    assert client.patch("/api/memory/nope", json={"enabled": False}).status_code == 404
-    assert client.delete("/api/memory/nope").status_code == 404
+    assert (
+        client.patch("/api/projects/demo/memory/nope", json={"enabled": False}).status_code == 404
+    )
+    assert client.delete("/api/projects/demo/memory/nope").status_code == 404

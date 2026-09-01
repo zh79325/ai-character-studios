@@ -28,6 +28,7 @@ import { collapseUnchanged, diffLines, diffStat } from '@/lib/diff'
 import type { Draft } from '@/types/api'
 
 interface Props {
+  projectCode: string
   conversationId: string
   drafts: Draft[]
   /** 挤在窄栏里：按钮改成竖排块级，diff 只留一小段能滚。 */
@@ -36,7 +37,12 @@ interface Props {
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
 
-export default function DraftDiffPanel({ conversationId, drafts, compact = false }: Props) {
+export default function DraftDiffPanel({
+  projectCode,
+  conversationId,
+  drafts,
+  compact = false,
+}: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<string | null>(null)
@@ -53,13 +59,19 @@ export default function DraftDiffPanel({ conversationId, drafts, compact = false
   const selected = picked ?? drafts.filter((draft) => !draft.stale).map((draft) => draft.id)
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-    void queryClient.invalidateQueries({ queryKey: ['art-bible'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'conversation', conversationId],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'art-bible'] })
   }
 
   const commit = useMutation({
     mutationFn: () =>
-      commitConversation(conversationId, selected.length === drafts.length ? undefined : selected),
+      commitConversation(
+        projectCode,
+        conversationId,
+        selected.length === drafts.length ? undefined : selected,
+      ),
     onSuccess: (result) => {
       const moved = result.archived.filter((one) => one.previous_path !== null).length
       message.success(
@@ -73,7 +85,7 @@ export default function DraftDiffPanel({ conversationId, drafts, compact = false
   })
 
   const discard = useMutation({
-    mutationFn: () => discardConversation(conversationId),
+    mutationFn: () => discardConversation(projectCode, conversationId),
     onSuccess: (result) => {
       message.success(`丢掉了 ${result.discarded} 份草稿，磁盘没动过`)
       refresh()
@@ -158,7 +170,12 @@ export default function DraftDiffPanel({ conversationId, drafts, compact = false
               }))}
             />
             {current && (
-              <DiffView conversationId={conversationId} draft={current} compact={compact} />
+              <DiffView
+                projectCode={projectCode}
+                conversationId={conversationId}
+                draft={current}
+                compact={compact}
+              />
             )}
             {compact && actions}
           </>
@@ -169,10 +186,12 @@ export default function DraftDiffPanel({ conversationId, drafts, compact = false
 }
 
 function DiffView({
+  projectCode,
   conversationId,
   draft,
   compact,
 }: {
+  projectCode: string
   conversationId: string
   draft: Draft
   /** 窄栏里只留一小扇窗，并去掉行号：两道行号能吃掉大半个宽度。 */
@@ -180,8 +199,8 @@ function DiffView({
 }) {
   const [opened, setOpened] = useState<number[]>([])
   const diff = useQuery({
-    queryKey: ['draft-diff', conversationId, draft.id],
-    queryFn: () => readDiff(conversationId, draft.id),
+    queryKey: ['project', projectCode, 'draft-diff', conversationId, draft.id],
+    queryFn: () => readDiff(projectCode, conversationId, draft.id),
   })
 
   useEffect(() => {

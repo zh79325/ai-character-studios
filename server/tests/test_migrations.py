@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
-from sqlalchemy import inspect
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import create_engine, inspect, text
 
 from atelier.db.migrate import downgrade_project, upgrade_project
 from atelier.db.project_models import ProjectBase
@@ -24,6 +27,37 @@ def table_names(db_path: Path) -> set[str]:
         return set(inspect(engine).get_table_names()) - {"alembic_version"}
     finally:
         dispose_project_engine(db_path)
+
+
+def test_runtime_migration_drops_project_access_state(tmp_path: Path) -> None:
+    """升级现有 runtime 库时，注册表不再保留最近打开时间。"""
+    db_path = tmp_path / "runtime.db"
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/runtime/versions/e2b4c6d8f901_drop_project_registry_last_opened_at.py"
+    )
+    spec = spec_from_file_location("drop_project_registry_last_opened_at", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE project_registry ("
+                "code VARCHAR(64) PRIMARY KEY, name VARCHAR(128) NOT NULL, "
+                "dir_path VARCHAR(1024) NOT NULL, managed BOOLEAN NOT NULL, "
+                "missing BOOLEAN NOT NULL, last_opened_at DATETIME, "
+                "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+
+    assert "last_opened_at" not in {
+        column["name"] for column in inspect(engine).get_columns("project_registry")
+    }
 
 
 def test_migration_builds_exactly_the_declared_schema(tmp_path: Path) -> None:

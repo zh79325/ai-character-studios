@@ -51,8 +51,8 @@ from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import ArtifactDraft, Character, Conversation, Message
 from atelier.errors import Conflict, NotFound
 
-router = APIRouter(prefix="/api/conversations", tags=["conversations"])
-memory_router = APIRouter(prefix="/api/memory", tags=["memory"])
+router = APIRouter(prefix="/api/projects/{project_code}/conversations", tags=["conversations"])
+memory_router = APIRouter(prefix="/api/projects/{project_code}/memory", tags=["memory"])
 
 POLL_SECONDS = 0.15
 """增量的上屏间隔。这条流是给人看字的，比日志面板要快一档。"""

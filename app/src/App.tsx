@@ -105,13 +105,15 @@ export default function App() {
         )}
         <Routes>
           <Route path="/projects" element={<ProjectsPage />} />
-          {/* 项目首页就是立项对焦页：已立项的项目在这儿接着调项目要求 */}
-          <Route path="/project" element={<ProjectPage />} />
-          <Route path="/project/config" element={<ProjectConfigPage />} />
-          <Route path="/project/art-bible" element={<ArtBiblePage />} />
-          <Route path="/design/:category" element={<DesignPage />} />
-          {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在角色素材表里 */}
-          <Route path="/characters/:id" element={<CharacterPage />} />
+          <Route path="/projects/:projectCode">
+            {/* 项目首页就是立项对焦页：已立项的项目在这儿接着调项目要求 */}
+            <Route index element={<ProjectPage />} />
+            <Route path="config" element={<ProjectConfigPage />} />
+            <Route path="art-bible" element={<ArtBiblePage />} />
+            <Route path="design/:category" element={<DesignPage />} />
+            {/* 角色工作台不进导航：它得先有个角色才打开得开，入口在角色素材表里 */}
+            <Route path="characters/:id" element={<CharacterPage />} />
+          </Route>
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/usage" element={<UsagePage />} />

@@ -27,6 +27,7 @@ from atelier.db.project_models import Task, TaskEvent
 from atelier.db.runtime_models import RouteLog
 
 router = APIRouter(prefix="/api/events", tags=["events"])
+task_router = APIRouter(prefix="/api/projects/{project_code}/events", tags=["events"])
 
 POLL_SECONDS = 0.5
 """轮询间隔。日志面板不需要更快，太快只是在空转 SQLite。"""
@@ -118,7 +119,7 @@ async def route_log_stream(
     return EventSourceResponse(stream(), ping=PING_SECONDS)
 
 
-@router.get("/{task_id}")
+@task_router.get("/{task_id}")
 async def task_event_stream(
     request: Request,
     runtime: RuntimeDb,

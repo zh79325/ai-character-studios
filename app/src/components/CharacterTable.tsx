@@ -27,6 +27,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { createCharacter, deleteMissingCharacter } from '@/api/characters'
 import { createGroup, listCharacters, listGroups, scanProject } from '@/api/projects'
+import { projectPath, useProjectCode } from '@/lib/projectRoute'
 import type { Character, ScanResult } from '@/types/api'
 
 const STAGE_COLORS = ['default', 'blue', 'cyan', 'geekblue', 'purple', 'gold', 'orange', 'green']
@@ -87,6 +88,7 @@ export default function CharacterTable() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const projectCode = useProjectCode()
   const [lastScan, setLastScan] = useState<ScanResult | null>(null)
   const [directoryFilter, setDirectoryFilter] = useState(ALL_GROUPS)
   const [keyword, setKeyword] = useState('')
@@ -97,12 +99,20 @@ export default function CharacterTable() {
   const [managedGroup, setManagedGroup] = useState('')
   const [groupName, setGroupName] = useState('')
 
-  const rows = useQuery({ queryKey: ['characters'], queryFn: () => listCharacters() })
-  const groups = useQuery({ queryKey: ['character-groups'], queryFn: listGroups })
+  const rows = useQuery({
+    queryKey: ['project', projectCode, 'characters'],
+    queryFn: () => listCharacters(projectCode),
+  })
+  const groups = useQuery({
+    queryKey: ['project', projectCode, 'character-groups'],
+    queryFn: () => listGroups(projectCode),
+  })
 
   const refreshAll = () => {
-    void queryClient.invalidateQueries({ queryKey: ['characters'] })
-    void queryClient.invalidateQueries({ queryKey: ['character-groups'] })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'characters'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-groups'],
+    })
   }
 
   const directoryTreeData = useMemo(() => {
@@ -149,11 +159,11 @@ export default function CharacterTable() {
   }
 
   const runCreate = (overwrite: boolean) =>
-    createCharacter(name.trim(), chosenGroup, overwrite).then((row) => {
+    createCharacter(projectCode, name.trim(), chosenGroup, overwrite).then((row) => {
       closeNaming()
       refreshAll()
       // 建完直接进工作台：刚建的角色下一步一定是去聊设定
-      navigate(`/characters/${row.id}`)
+      navigate(projectPath(projectCode, `characters/${encodeURIComponent(row.id)}`))
     })
 
   const create = useMutation({
@@ -180,11 +190,11 @@ export default function CharacterTable() {
   }
 
   const group = useMutation({
-    mutationFn: (path: string) => createGroup(path),
+    mutationFn: (path: string) => createGroup(projectCode, path),
     onSuccess: (nextGroups, path) => {
       setGroupName('')
       setManagedGroup(path)
-      queryClient.setQueryData(['character-groups'], nextGroups)
+      queryClient.setQueryData(['project', projectCode, 'character-groups'], nextGroups)
       message.success('分组建好了')
     },
     onError: (err: Error) => message.error(err.message),
@@ -197,7 +207,7 @@ export default function CharacterTable() {
   }
 
   const scan = useMutation({
-    mutationFn: scanProject,
+    mutationFn: () => scanProject(projectCode),
     onSuccess: (result) => {
       setLastScan(result)
       message.success(result.added.length ? `认领了 ${result.added.length} 个` : '没有新素材')
@@ -207,7 +217,7 @@ export default function CharacterTable() {
   })
 
   const removeMissing = useMutation({
-    mutationFn: deleteMissingCharacter,
+    mutationFn: (characterId: string) => deleteMissingCharacter(projectCode, characterId),
     onSuccess: (_, characterId) => {
       setLastScan((current) =>
         current
@@ -230,7 +240,12 @@ export default function CharacterTable() {
       dataIndex: 'name',
       render: (name: string, row) => (
         <Space direction="vertical" size={0}>
-          <Typography.Link strong onClick={() => navigate(`/characters/${row.id}`)}>
+          <Typography.Link
+            strong
+            onClick={() =>
+              navigate(projectPath(projectCode, `characters/${encodeURIComponent(row.id)}`))
+            }
+          >
             {name}
           </Typography.Link>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -290,7 +305,13 @@ export default function CharacterTable() {
             </Button>
           </Popconfirm>
         ) : (
-          <Button type="primary" size="small" onClick={() => navigate(`/characters/${row.id}`)}>
+          <Button
+            type="primary"
+            size="small"
+            onClick={() =>
+              navigate(projectPath(projectCode, `characters/${encodeURIComponent(row.id)}`))
+            }
+          >
             开始设计
           </Button>
         ),

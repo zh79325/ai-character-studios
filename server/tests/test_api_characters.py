@@ -107,7 +107,7 @@ def ready(project: ProjectRef) -> ProjectRef:
 
 
 def create(client: TestClient, name: str = "赤瞳") -> dict[str, object]:
-    response = client.post("/api/characters", json={"name": name})
+    response = client.post("/api/projects/demo/characters", json={"name": name})
     assert response.status_code == 201, response.text
     return dict(response.json())
 
@@ -119,14 +119,16 @@ def settle_spec(client: TestClient, character_id: str, chat: ScriptedChat) -> No
     """
     chat.replies.append(SPEC_REPLY)
     opened = client.post(
-        "/api/conversations",
+        "/api/projects/demo/conversations",
         json={"agent_code": WRITER, "target_kind": "character", "target_ref": character_id},
     )
     assert opened.status_code == 201, opened.text
     cid = opened.json()["conversation"]["id"]
-    turn = client.post(f"/api/conversations/{cid}/messages", json={"content": "先出一版"})
+    turn = client.post(
+        f"/api/projects/demo/conversations/{cid}/messages", json={"content": "先出一版"}
+    )
     assert turn.status_code == 200, turn.text
-    committed = client.post(f"/api/conversations/{cid}/commit", json={})
+    committed = client.post(f"/api/projects/demo/conversations/{cid}/commit", json={})
     assert committed.status_code == 200, committed.text
 
 
@@ -139,7 +141,7 @@ def test_项目还没写视觉规范就不给建角色(
     client: TestClient, project: ProjectRef, candidates: None
 ) -> None:
     """art bible 是设定的风格锚点，拿模板原样当锚点等于没有锚点。"""
-    response = client.post("/api/characters", json={"name": "赤瞳"})
+    response = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
 
     assert response.status_code == 409
     assert "视觉规范" in response.json()["detail"]
@@ -158,14 +160,14 @@ def test_建角色给出状态与人话说法(client: TestClient, ready: Project
 def test_同名角色只能有一个(client: TestClient, ready: ProjectRef, candidates: None) -> None:
     create(client)
 
-    again = client.post("/api/characters", json={"name": "赤瞳"})
+    again = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
 
     assert again.status_code == 409
 
 
 def test_建在分组下且跨组允许同名(client: TestClient, ready: ProjectRef, candidates: None) -> None:
-    hero = client.post("/api/characters", json={"name": "赤瞳", "group": "玩家角色"})
-    boss = client.post("/api/characters", json={"name": "赤瞳", "group": "boss角色"})
+    hero = client.post("/api/projects/demo/characters", json={"name": "赤瞳", "group": "玩家角色"})
+    boss = client.post("/api/projects/demo/characters", json={"name": "赤瞳", "group": "boss角色"})
 
     assert hero.status_code == 201, hero.text
     assert boss.status_code == 201, boss.text
@@ -176,7 +178,7 @@ def test_建在分组下且跨组允许同名(client: TestClient, ready: Project
 def test_覆盖为真时删旧重建(client: TestClient, ready: ProjectRef, candidates: None) -> None:
     first = create(client)
 
-    again = client.post("/api/characters", json={"name": "赤瞳", "overwrite": True})
+    again = client.post("/api/projects/demo/characters", json={"name": "赤瞳", "overwrite": True})
 
     assert again.status_code == 201, again.text
     assert again.json()["id"] == first["id"]  # dir_name 没变，id 由它派生
@@ -186,22 +188,22 @@ def test_扫描缺失角色后可手动删除记录并重建(client: TestClient,
     first = create(client)
     shutil.rmtree(ready.dir / str(first["dir_name"]))
 
-    blocked = client.post("/api/characters", json={"name": "赤瞳"})
+    blocked = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
     assert blocked.status_code == 409
     assert "扫描目录" in blocked.json()["detail"]
 
-    scanned = client.post("/api/projects/current/scan")
+    scanned = client.post("/api/projects/demo/scan")
 
     assert scanned.status_code == 200, scanned.text
     assert scanned.json()["missing"] == [
         {"id": first["id"], "name": "赤瞳", "dir_name": "characters/赤瞳"}
     ]
 
-    removed = client.delete(f"/api/characters/{first['id']}")
+    removed = client.delete(f"/api/projects/demo/characters/{first['id']}")
 
     assert removed.status_code == 204, removed.text
-    assert client.get("/api/projects/current/characters").json() == []
-    rebuilt = client.post("/api/characters", json={"name": "赤瞳"})
+    assert client.get("/api/projects/demo/characters").json() == []
+    rebuilt = client.post("/api/projects/demo/characters", json={"name": "赤瞳"})
     assert rebuilt.status_code == 201, rebuilt.text
     assert rebuilt.json()["id"] == first["id"]
 
@@ -209,25 +211,25 @@ def test_扫描缺失角色后可手动删除记录并重建(client: TestClient,
 def test_角色目录仍存在时不能只删除数据库记录(client: TestClient, ready: ProjectRef) -> None:
     character = create(client)
 
-    response = client.delete(f"/api/characters/{character['id']}")
+    response = client.delete(f"/api/projects/demo/characters/{character['id']}")
 
     assert response.status_code == 409
     assert "角色目录仍存在" in response.json()["detail"]
-    assert len(client.get("/api/projects/current/characters").json()) == 1
+    assert len(client.get("/api/projects/demo/characters").json()) == 1
 
 
 def test_分组接口列出并新建空分组(client: TestClient, ready: ProjectRef, candidates: None) -> None:
-    assert client.get("/api/projects/current/groups").json() == []
+    assert client.get("/api/projects/demo/groups").json() == []
 
-    created = client.post("/api/projects/current/groups", json={"path": "boss角色/精英"})
+    created = client.post("/api/projects/demo/groups", json={"path": "boss角色/精英"})
 
     assert created.status_code == 201, created.text
     assert created.json() == ["boss角色", "boss角色/精英"]
-    assert client.get("/api/projects/current/groups").json() == ["boss角色", "boss角色/精英"]
+    assert client.get("/api/projects/demo/groups").json() == ["boss角色", "boss角色/精英"]
 
 
 def test_不存在的角色是404(client: TestClient, ready: ProjectRef) -> None:
-    assert client.get("/api/characters/nope").status_code == 404
+    assert client.get("/api/projects/demo/characters/nope").status_code == 404
 
 
 def test_列表与详情给的是同一份字段(
@@ -236,8 +238,8 @@ def test_列表与详情给的是同一份字段(
     """两处各拼一遍的话，加字段时总会只加到其中一边。"""
     created = create(client)
 
-    listed = client.get("/api/projects/current/characters")
-    detail = client.get(f"/api/characters/{created['id']}")
+    listed = client.get("/api/projects/demo/characters")
+    detail = client.get(f"/api/projects/demo/characters/{created['id']}")
 
     assert listed.status_code == 200
     assert listed.json() == [detail.json()]
@@ -255,7 +257,7 @@ def test_评审给出裁决与约束清单(
     settle_spec(client, str(character["id"]), chat)
     chat.replies.append(APPROVE_REPLY)
 
-    response = client.post(f"/api/characters/{character['id']}/review", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/review", json={})
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -276,9 +278,9 @@ def test_通过了也还是要人按一下(
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
     chat.replies.append(APPROVE_REPLY)
-    client.post(f"/api/characters/{character['id']}/review", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/review", json={})
 
-    after = client.get(f"/api/characters/{character['id']}").json()
+    after = client.get(f"/api/projects/demo/characters/{character['id']}").json()
 
     assert after["state"] == characters.SPEC_DRAFTING
     assert after["gate_spec_confirmed_at"] is None
@@ -290,7 +292,7 @@ def test_一个字都没有时评审说不出话(
 ) -> None:
     character = create(client)
 
-    response = client.post(f"/api/characters/{character['id']}/review", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/review", json={})
 
     assert response.status_code == 409
     assert "还没有设定内容可审" in response.json()["detail"]
@@ -303,9 +305,9 @@ def test_裁决全文留在事件时间线里(
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
     chat.replies.append(REJECT_REPLY)
-    client.post(f"/api/characters/{character['id']}/review", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/review", json={})
 
-    events = client.get(f"/api/characters/{character['id']}/events").json()
+    events = client.get(f"/api/projects/demo/characters/{character['id']}/events").json()
 
     reviewed = [one for one in events if one["event"] == "spec_reviewed"]
     assert reviewed[-1]["message"] == REJECT_REPLY.strip()
@@ -319,16 +321,16 @@ def test_带上会话才会驳回后自动重生(
     """重生得有个会话承载新的一轮，不然这几轮对话跟用户自己那场对不上号。"""
     character = create(client)
     opened = client.post(
-        "/api/conversations",
+        "/api/projects/demo/conversations",
         json={"agent_code": WRITER, "target_kind": "character", "target_ref": character["id"]},
     )
     cid = opened.json()["conversation"]["id"]
     chat.replies.append(SPEC_REPLY)
-    client.post(f"/api/conversations/{cid}/messages", json={"content": "先出一版"})
+    client.post(f"/api/projects/demo/conversations/{cid}/messages", json={"content": "先出一版"})
     chat.replies.extend([REJECT_REPLY, SPEC_REPLY, APPROVE_REPLY])
 
     response = client.post(
-        f"/api/characters/{character['id']}/review", json={"conversation_id": cid}
+        f"/api/projects/demo/characters/{character['id']}/review", json={"conversation_id": cid}
     )
 
     assert response.status_code == 200, response.text
@@ -344,7 +346,7 @@ def test_指了一个不存在的会话是404(
     character = create(client)
 
     response = client.post(
-        f"/api/characters/{character['id']}/review", json={"conversation_id": "nope"}
+        f"/api/projects/demo/characters/{character['id']}/review", json={"conversation_id": "nope"}
     )
 
     assert response.status_code == 404
@@ -359,7 +361,7 @@ def test_没沉淀过设定就确认不了(client: TestClient, ready: ProjectRef
     """门禁确认的是磁盘上那一份；库里躺着的草稿不算。"""
     character = create(client)
 
-    response = client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
 
     assert response.status_code == 409
     assert "确认沉淀" in response.json()["detail"]
@@ -372,7 +374,8 @@ def test_人工确认后进设定已确认(
     settle_spec(client, str(character["id"]), chat)
 
     response = client.post(
-        f"/api/characters/{character['id']}/spec/confirm", json={"note": "看过了，可以"}
+        f"/api/projects/demo/characters/{character['id']}/spec/confirm",
+        json={"note": "看过了，可以"},
     )
 
     assert response.status_code == 200, response.text
@@ -380,7 +383,7 @@ def test_人工确认后进设定已确认(
     assert body["state"] == characters.SPEC_CONFIRMED
     assert body["state_label"] == "设定已确认"
     assert body["gate_spec_confirmed_at"] is not None
-    events = client.get(f"/api/characters/{character['id']}/events").json()
+    events = client.get(f"/api/projects/demo/characters/{character['id']}/events").json()
     gate = [one for one in events if one["event"] == "gate_spec_confirmed"]
     assert gate[-1]["message"] == "看过了，可以"
 
@@ -390,9 +393,9 @@ def test_确认过一次就不再确认(
 ) -> None:
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
-    client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
 
-    again = client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    again = client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
 
     assert again.status_code == 409
 
@@ -405,12 +408,13 @@ def test_驳回不动状态但留下理由(
     settle_spec(client, str(character["id"]), chat)
 
     response = client.post(
-        f"/api/characters/{character['id']}/spec/reject", json={"note": "环境设定还没写"}
+        f"/api/projects/demo/characters/{character['id']}/spec/reject",
+        json={"note": "环境设定还没写"},
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["state"] == characters.SPEC_DRAFTING
-    events = client.get(f"/api/characters/{character['id']}/events").json()
+    events = client.get(f"/api/projects/demo/characters/{character['id']}/events").json()
     assert events[-1]["event"] == "gate_spec_rejected"
     assert events[-1]["message"] == "环境设定还没写"
 
@@ -420,7 +424,9 @@ def test_驳回得写清哪里不行(
 ) -> None:
     character = create(client)
 
-    response = client.post(f"/api/characters/{character['id']}/spec/reject", json={"note": "  "})
+    response = client.post(
+        f"/api/projects/demo/characters/{character['id']}/spec/reject", json={"note": "  "}
+    )
 
     assert response.status_code == 409
 
@@ -437,10 +443,11 @@ def test_设定没确认后续步骤一律拦住(
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
     chat.replies.append(APPROVE_REPLY)
-    client.post(f"/api/characters/{character['id']}/review", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/review", json={})
 
     response = client.post(
-        f"/api/characters/{character['id']}/advance", json={"state": "S2_render_generated"}
+        f"/api/projects/demo/characters/{character['id']}/advance",
+        json={"state": "S2_render_generated"},
     )
 
     assert response.status_code == 409
@@ -452,10 +459,11 @@ def test_确认之后才能推到下一步(
 ) -> None:
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
-    client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
 
     response = client.post(
-        f"/api/characters/{character['id']}/advance", json={"state": "S2_render_generated"}
+        f"/api/projects/demo/characters/{character['id']}/advance",
+        json={"state": "S2_render_generated"},
     )
 
     assert response.status_code == 200, response.text
@@ -467,10 +475,11 @@ def test_不许跳级(
 ) -> None:
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
-    client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
 
     response = client.post(
-        f"/api/characters/{character['id']}/advance", json={"state": "S4_views_generated"}
+        f"/api/projects/demo/characters/{character['id']}/advance",
+        json={"state": "S4_views_generated"},
     )
 
     assert response.status_code == 409
@@ -482,7 +491,9 @@ def test_不认识的状态不当成还没开始(
 ) -> None:
     character = create(client)
 
-    response = client.post(f"/api/characters/{character['id']}/advance", json={"state": "S99"})
+    response = client.post(
+        f"/api/projects/demo/characters/{character['id']}/advance", json={"state": "S99"}
+    )
 
     assert response.status_code == 409
 
@@ -496,7 +507,7 @@ def confirmed(client: TestClient, chat: ScriptedChat) -> dict[str, object]:
     """设定已经过了门禁 1 的角色，够开工出渲染图。"""
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
-    passed = client.post(f"/api/characters/{character['id']}/spec/confirm", json={})
+    passed = client.post(f"/api/projects/demo/characters/{character['id']}/spec/confirm", json={})
     assert passed.status_code == 200, passed.text
     return character
 
@@ -508,7 +519,7 @@ def test_设定没确认就生不了图(
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
 
-    response = client.post(f"/api/characters/{character['id']}/render", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
     assert response.status_code == 409
     assert "才能生成渲染图" in response.json()["detail"]
@@ -522,7 +533,7 @@ def test_卡片可以先看不生图(
     character = confirmed(client, chat)
     chat.replies.append(CARD)
 
-    response = client.post(f"/api/characters/{character['id']}/asset-spec", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/asset-spec", json={})
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -539,14 +550,14 @@ def test_生图后候选里列得出来(
     character = confirmed(client, chat)
     chat.replies.append(CARD)
 
-    response = client.post(f"/api/characters/{character['id']}/render", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert "/tmp/" in body["file_path"]
     assert body["spec"]["code"] == "ASSET-DEMO-001"
     assert body["params"]["model"]
-    listed = client.get(f"/api/characters/{character['id']}/renders").json()
+    listed = client.get(f"/api/projects/demo/characters/{character['id']}/renders").json()
     assert [one["id"] for one in listed] == [body["generation_id"]]
     assert listed[0]["is_final"] is False
 
@@ -557,10 +568,12 @@ def test_图本体按原格式发出去(
     """一张 2048 的 png 动辄几 MB，转 base64 塞进 JSON 再膨 33%。"""
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+    rendered = client.post(
+        f"/api/projects/demo/characters/{character['id']}/render", json={}
+    ).json()
 
     response = client.get(
-        f"/api/characters/{character['id']}/renders/{rendered['generation_id']}/image"
+        f"/api/projects/demo/characters/{character['id']}/renders/{rendered['generation_id']}/image"
     )
 
     assert response.status_code == 200
@@ -573,11 +586,13 @@ def test_别人的产物读不到(
 ) -> None:
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+    rendered = client.post(
+        f"/api/projects/demo/characters/{character['id']}/render", json={}
+    ).json()
     other = create(client, "青瞳")
 
     response = client.get(
-        f"/api/characters/{other['id']}/renders/{rendered['generation_id']}/image"
+        f"/api/projects/demo/characters/{other['id']}/renders/{rendered['generation_id']}/image"
     )
 
     assert response.status_code == 404
@@ -589,9 +604,11 @@ def test_采用得指名哪一张(
     """默认采用「最新一张」在用户连生了几张之后就不是他指的那一张了。"""
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    client.post(f"/api/characters/{character['id']}/render", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
-    response = client.post(f"/api/characters/{character['id']}/render/confirm", json={})
+    response = client.post(
+        f"/api/projects/demo/characters/{character['id']}/render/confirm", json={}
+    )
 
     assert response.status_code == 422
 
@@ -601,10 +618,12 @@ def test_采用之后进渲染图已确认(
 ) -> None:
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    rendered = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+    rendered = client.post(
+        f"/api/projects/demo/characters/{character['id']}/render", json={}
+    ).json()
 
     response = client.post(
-        f"/api/characters/{character['id']}/render/confirm",
+        f"/api/projects/demo/characters/{character['id']}/render/confirm",
         json={"generation_id": rendered["generation_id"], "note": "就这张"},
     )
 
@@ -614,7 +633,7 @@ def test_采用之后进渲染图已确认(
     assert body["state_label"] == "渲染图已定稿"
     assert body["render_path"] == "characters/赤瞳/images/character_赤瞳_渲染图.png"
     assert body["gate_render_confirmed_at"] is not None
-    listed = client.get(f"/api/characters/{character['id']}/renders").json()
+    listed = client.get(f"/api/projects/demo/characters/{character['id']}/renders").json()
     assert listed[0]["is_final"] is True
     assert listed[0]["file_path"] == body["render_path"]
 
@@ -624,10 +643,11 @@ def test_不存在的产物采用不了(
 ) -> None:
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    client.post(f"/api/characters/{character['id']}/render", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
     response = client.post(
-        f"/api/characters/{character['id']}/render/confirm", json={"generation_id": "nope"}
+        f"/api/projects/demo/characters/{character['id']}/render/confirm",
+        json={"generation_id": "nope"},
     )
 
     assert response.status_code == 404
@@ -638,16 +658,17 @@ def test_驳回渲染图时状态停在S2(
 ) -> None:
     character = confirmed(client, chat)
     chat.replies.append(CARD)
-    client.post(f"/api/characters/{character['id']}/render", json={})
+    client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
     response = client.post(
-        f"/api/characters/{character['id']}/render/reject", json={"note": "尾巴粘在一起了"}
+        f"/api/projects/demo/characters/{character['id']}/render/reject",
+        json={"note": "尾巴粘在一起了"},
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["state"] == characters.RENDER_GENERATED
     assert response.json()["render_path"] is None
-    events = client.get(f"/api/characters/{character['id']}/events").json()
+    events = client.get(f"/api/projects/demo/characters/{character['id']}/events").json()
     assert events[-1]["event"] == "gate_render_rejected"
     assert events[-1]["message"] == "尾巴粘在一起了"
 
@@ -666,9 +687,9 @@ def staged(client: TestClient, chat: ScriptedChat, draw: ScriptedDraw) -> dict[s
     character = confirmed(client, chat)
     chat.replies.append(CARD)
     draw.data = white_png(2048, 2048)
-    body = client.post(f"/api/characters/{character['id']}/render", json={}).json()
+    body = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={}).json()
     passed = client.post(
-        f"/api/characters/{character['id']}/render/confirm",
+        f"/api/projects/demo/characters/{character['id']}/render/confirm",
         json={"generation_id": body["generation_id"]},
     )
     assert passed.status_code == 200, passed.text
@@ -676,14 +697,14 @@ def staged(client: TestClient, chat: ScriptedChat, draw: ScriptedDraw) -> dict[s
 
 
 def four(client: TestClient, character_id: str) -> dict[str, object]:
-    response = client.post(f"/api/characters/{character_id}/views", json={})
+    response = client.post(f"/api/projects/demo/characters/{character_id}/views", json={})
     assert response.status_code == 200, response.text
     return dict(response.json())
 
 
 def picks(client: TestClient, character_id: str) -> dict[str, str]:
     """每个视角最新那一张，当作用户在界面上挑的那一组。"""
-    listed = client.get(f"/api/characters/{character_id}/views").json()
+    listed = client.get(f"/api/projects/demo/characters/{character_id}/views").json()
     chosen: dict[str, str] = {}
     for one in listed:
         chosen.setdefault(str(one["variant"]), str(one["id"]))
@@ -696,7 +717,7 @@ def test_渲染图没定稿就出不了四视图(
     """四视图拿定稿渲染图当参考，没它就退化成纯文字生成，四张图会各说各话。"""
     character = confirmed(client, chat)
 
-    response = client.post(f"/api/characters/{character['id']}/views", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/views", json={})
 
     assert response.status_code == 409
     assert "才能生成四视图" in response.json()["detail"]
@@ -730,7 +751,7 @@ def test_不认识的视角当场报错(
     before = len(draw.calls)
 
     response = client.post(
-        f"/api/characters/{character['id']}/views", json={"variants": ["back-left"]}
+        f"/api/projects/demo/characters/{character['id']}/views", json={"variants": ["back-left"]}
     )
 
     assert response.status_code == 409
@@ -745,7 +766,9 @@ def test_只重生点名的那一个视角(
     four(client, str(character["id"]))
     before = len(draw.calls)
 
-    response = client.post(f"/api/characters/{character['id']}/views", json={"variants": ["back"]})
+    response = client.post(
+        f"/api/projects/demo/characters/{character['id']}/views", json={"variants": ["back"]}
+    )
 
     assert response.status_code == 200, response.text
     assert [one["variant"] for one in response.json()["images"]] == ["back"]
@@ -759,7 +782,7 @@ def test_候选列表标出是哪个面(
     character = staged(client, chat, draw)
     four(client, str(character["id"]))
 
-    listed = client.get(f"/api/characters/{character['id']}/views").json()
+    listed = client.get(f"/api/projects/demo/characters/{character['id']}/views").json()
 
     assert sorted(one["variant"] for one in listed) == sorted(one.code for one in views.VARIANTS)
     assert all(one["is_final"] is False for one in listed)
@@ -772,7 +795,7 @@ def test_评审给出裁决与理由(
     four(client, str(character["id"]))
     chat.replies.append(VIEW_APPROVE)
 
-    response = client.post(f"/api/characters/{character['id']}/views/review", json={})
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/views/review", json={})
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -794,12 +817,14 @@ def test_驳回也不定稿也不自己重生(
     before = len(draw.calls)
     chat.replies.append(VIEW_REJECT)
 
-    body = client.post(f"/api/characters/{character['id']}/views/review", json={}).json()
+    body = client.post(
+        f"/api/projects/demo/characters/{character['id']}/views/review", json={}
+    ).json()
 
     assert body["decision"] == "REJECT"
     assert body["regenerated"] == 0
     assert len(draw.calls) == before
-    after = client.get(f"/api/characters/{character['id']}").json()
+    after = client.get(f"/api/projects/demo/characters/{character['id']}").json()
     assert after["state"] == characters.VIEWS_GENERATED
     assert after["view_paths"] == {}
 
@@ -813,7 +838,7 @@ def test_驳回后可以让平台自己重生(
     chat.replies.extend([VIEW_REJECT, VIEW_APPROVE])
 
     body = client.post(
-        f"/api/characters/{character['id']}/views/review", json={"regenerate": True}
+        f"/api/projects/demo/characters/{character['id']}/views/review", json={"regenerate": True}
     ).json()
 
     assert body["decision"] == "APPROVE"
@@ -828,7 +853,7 @@ def test_定稿四张进定稿位并推到S5(
     four(client, str(character["id"]))
 
     response = client.post(
-        f"/api/characters/{character['id']}/views/confirm",
+        f"/api/projects/demo/characters/{character['id']}/views/confirm",
         json={"picks": picks(client, str(character["id"])), "note": "就这一组"},
     )
 
@@ -838,7 +863,7 @@ def test_定稿四张进定稿位并推到S5(
     assert body["state_label"] == "四视图已确认"
     assert sorted(body["view_paths"]) == sorted(one.code for one in views.VARIANTS)
     assert all(one.startswith("characters/赤瞳/images/") for one in body["view_paths"].values())
-    listed = client.get(f"/api/characters/{character['id']}/views").json()
+    listed = client.get(f"/api/projects/demo/characters/{character['id']}/views").json()
     assert sum(1 for one in listed if one["is_final"]) == 4
 
 
@@ -852,7 +877,7 @@ def test_四个角度不齐就不给定稿(
     chosen.pop("back")
 
     response = client.post(
-        f"/api/characters/{character['id']}/views/confirm", json={"picks": chosen}
+        f"/api/projects/demo/characters/{character['id']}/views/confirm", json={"picks": chosen}
     )
 
     assert response.status_code == 409
@@ -868,7 +893,7 @@ def test_不存在的产物定不了稿(
     chosen["front"] = "nope"
 
     response = client.post(
-        f"/api/characters/{character['id']}/views/confirm", json={"picks": chosen}
+        f"/api/projects/demo/characters/{character['id']}/views/confirm", json={"picks": chosen}
     )
 
     assert response.status_code == 404

@@ -158,9 +158,8 @@ def projects_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def project(session: Session, projects_root: Path) -> projects_mod.ProjectRef:
-    """一个建在临时项目根下、已登记且已设为当前的项目。"""
+    """一个建在临时项目根下、已登记的项目。"""
     ref = projects_mod.create_project(session, name="测试项目", code="demo")
-    projects_mod.open_project(session, ref.code)
     session.commit()
     return ref
 
@@ -279,15 +278,6 @@ def offline_usage(monkeypatch: pytest.MonkeyPatch) -> OfflineUsageClient:
     client = OfflineUsageClient()
     monkeypatch.setattr(usage, "get_usage_client", lambda: client)
     return client
-
-
-@pytest.fixture(autouse=True)
-def no_project_opened() -> Iterator[None]:
-    """「打开的是哪个项目」是进程内状态，用例之间必须清干净，否则前一个用例打开的项目会
-    漏进下一个（它的临时目录早已删掉，症状是莫名的 404）。"""
-    projects_mod.close_project()
-    yield
-    projects_mod.close_project()
 
 
 def make_provider(

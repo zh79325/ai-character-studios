@@ -8,6 +8,7 @@
  * 沉淀（`POST /commit`）是整条链路里唯一会改磁盘的动作，其余接口都只动库。
  */
 import { baseUrl, request, withQuery } from './client'
+import { projectApiPath } from '@/lib/projectRoute'
 import type {
   CommitResult,
   Conversation,
@@ -21,15 +22,26 @@ import type {
   Turn,
 } from '@/types/api'
 
+function conversationsPath(projectCode: string, suffix = ''): string {
+  return projectApiPath(projectCode, suffix ? `conversations/${suffix}` : 'conversations')
+}
+
+function memoryPath(projectCode: string, suffix = ''): string {
+  return projectApiPath(projectCode, suffix ? `memory/${suffix}` : 'memory')
+}
+
 export interface ConversationQuery {
   targetKind?: TargetKind
   targetRef?: string
   limit?: number
 }
 
-export function listConversations(query: ConversationQuery = {}): Promise<Conversation[]> {
+export function listConversations(
+  projectCode: string,
+  query: ConversationQuery = {},
+): Promise<Conversation[]> {
   return request<Conversation[]>(
-    withQuery('/api/conversations', {
+    withQuery(conversationsPath(projectCode), {
       target_kind: query.targetKind,
       target_ref: query.targetRef,
       limit: query.limit,
@@ -44,8 +56,14 @@ export interface StartConversationIn {
   title?: string
 }
 
-export function startConversation(payload: StartConversationIn): Promise<ConversationDetail> {
-  return request<ConversationDetail>('/api/conversations', { method: 'POST', body: payload })
+export function startConversation(
+  projectCode: string,
+  payload: StartConversationIn,
+): Promise<ConversationDetail> {
+  return request<ConversationDetail>(conversationsPath(projectCode), {
+    method: 'POST',
+    body: payload,
+  })
 }
 
 /**
@@ -53,42 +71,58 @@ export function startConversation(payload: StartConversationIn): Promise<Convers
  *
  * 幂等，可以当普通查询用：只有上一场已经沉淀或丢弃时才真的新建。
  */
-export function ensureConversation(payload: StartConversationIn): Promise<ConversationDetail> {
-  return request<ConversationDetail>('/api/conversations/ensure', {
+export function ensureConversation(
+  projectCode: string,
+  payload: StartConversationIn,
+): Promise<ConversationDetail> {
+  return request<ConversationDetail>(conversationsPath(projectCode, 'ensure'), {
     method: 'POST',
     body: payload,
   })
 }
 
-export function readConversation(id: string): Promise<ConversationDetail> {
-  return request<ConversationDetail>(`/api/conversations/${encodeURIComponent(id)}`)
+export function readConversation(projectCode: string, id: string): Promise<ConversationDetail> {
+  return request<ConversationDetail>(conversationsPath(projectCode, encodeURIComponent(id)))
 }
 
 /** 慢是应该的：用户按了发送就在等这一轮的结果，这里不做超时。 */
-export function sendMessage(id: string, content: string, stream = true): Promise<Turn> {
-  return request<Turn>(`/api/conversations/${encodeURIComponent(id)}/messages`, {
+export function sendMessage(
+  projectCode: string,
+  id: string,
+  content: string,
+  stream = true,
+): Promise<Turn> {
+  return request<Turn>(conversationsPath(projectCode, `${encodeURIComponent(id)}/messages`), {
     method: 'POST',
     body: { content, stream },
   })
 }
 
-export function readDiff(id: string, draftId: string): Promise<Diff> {
-  const path = `/api/conversations/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/diff`
+export function readDiff(projectCode: string, id: string, draftId: string): Promise<Diff> {
+  const path = conversationsPath(
+    projectCode,
+    `${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/diff`,
+  )
   return request<Diff>(path)
 }
 
 /** 不传 draftIds 就是沉淀全部待确认草稿。基线过期时后端返回 409，磁盘一个字节不动。 */
-export function commitConversation(id: string, draftIds?: string[]): Promise<CommitResult> {
-  return request<CommitResult>(`/api/conversations/${encodeURIComponent(id)}/commit`, {
+export function commitConversation(
+  projectCode: string,
+  id: string,
+  draftIds?: string[],
+): Promise<CommitResult> {
+  return request<CommitResult>(conversationsPath(projectCode, `${encodeURIComponent(id)}/commit`), {
     method: 'POST',
     body: { draft_ids: draftIds ?? null },
   })
 }
 
-export function discardConversation(id: string): Promise<DiscardResult> {
-  return request<DiscardResult>(`/api/conversations/${encodeURIComponent(id)}/discard`, {
-    method: 'POST',
-  })
+export function discardConversation(projectCode: string, id: string): Promise<DiscardResult> {
+  return request<DiscardResult>(
+    conversationsPath(projectCode, `${encodeURIComponent(id)}/discard`),
+    { method: 'POST' },
+  )
 }
 
 /**
@@ -96,36 +130,50 @@ export function discardConversation(id: string): Promise<DiscardResult> {
  *
  * 重启后卡住的那种也走这一口：叫停已经无人可叫，但状态总得能清。
  */
-export function interruptConversation(id: string): Promise<InterruptResult> {
-  return request<InterruptResult>(`/api/conversations/${encodeURIComponent(id)}/interrupt`, {
-    method: 'POST',
-  })
+export function interruptConversation(projectCode: string, id: string): Promise<InterruptResult> {
+  return request<InterruptResult>(
+    conversationsPath(projectCode, `${encodeURIComponent(id)}/interrupt`),
+    { method: 'POST' },
+  )
 }
 
 // --------------------------------------------------------------------------- //
 // 项目长期记忆
 // --------------------------------------------------------------------------- //
 
-export function listMemories(characterRef?: string): Promise<ProjectMemoryItem[]> {
-  return request<ProjectMemoryItem[]>(withQuery('/api/memory', { character_ref: characterRef }))
+export function listMemories(
+  projectCode: string,
+  characterRef?: string,
+): Promise<ProjectMemoryItem[]> {
+  return request<ProjectMemoryItem[]>(
+    withQuery(memoryPath(projectCode), { character_ref: characterRef }),
+  )
 }
 
-export function addMemory(kind: MemoryKind, content: string): Promise<ProjectMemoryItem> {
-  return request<ProjectMemoryItem>('/api/memory', { method: 'POST', body: { kind, content } })
+export function addMemory(
+  projectCode: string,
+  kind: MemoryKind,
+  content: string,
+): Promise<ProjectMemoryItem> {
+  return request<ProjectMemoryItem>(memoryPath(projectCode), {
+    method: 'POST',
+    body: { kind, content },
+  })
 }
 
 export function patchMemory(
+  projectCode: string,
   id: string,
   patch: { content?: string; enabled?: boolean },
 ): Promise<ProjectMemoryItem> {
-  return request<ProjectMemoryItem>(`/api/memory/${encodeURIComponent(id)}`, {
+  return request<ProjectMemoryItem>(memoryPath(projectCode, encodeURIComponent(id)), {
     method: 'PATCH',
     body: patch,
   })
 }
 
-export function deleteMemory(id: string): Promise<void> {
-  return request<void>(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export function deleteMemory(projectCode: string, id: string): Promise<void> {
+  return request<void>(memoryPath(projectCode, encodeURIComponent(id)), { method: 'DELETE' })
 }
 
 // --------------------------------------------------------------------------- //
@@ -133,6 +181,7 @@ export function deleteMemory(id: string): Promise<void> {
 // --------------------------------------------------------------------------- //
 
 export interface ConversationSubscription {
+  projectCode: string
   conversationId: string
   /** 断线重连或换会话时接着看：不给就从缓冲里还留着的那段开始。 */
   afterSeq?: number
@@ -161,10 +210,13 @@ export function subscribeConversation(sub: ConversationSubscription): () => void
 
   void baseUrl().then((base) => {
     if (cancelled) return
-    const path = withQuery(`/api/conversations/${encodeURIComponent(sub.conversationId)}/stream`, {
-      after_seq: sub.afterSeq,
-      fresh: sub.fresh === true ? 1 : undefined,
-    })
+    const path = withQuery(
+      conversationsPath(sub.projectCode, `${encodeURIComponent(sub.conversationId)}/stream`),
+      {
+        after_seq: sub.afterSeq,
+        fresh: sub.fresh === true ? 1 : undefined,
+      },
+    )
     source = new EventSource(`${base}${path}`)
     source.addEventListener('delta', (event) => {
       sub.onDelta((event as MessageEvent<string>).data)

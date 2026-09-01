@@ -12,11 +12,16 @@ import { Alert, App, Button, Card, Col, Input, Row, Space, Tag, Typography } fro
 import { useEffect, useState } from 'react'
 
 import { readArtBible, writeArtBible } from '@/api/projects'
+import { useProjectCode } from '@/lib/projectRoute'
 
 export default function ArtBibleEditor() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
-  const bible = useQuery({ queryKey: ['art-bible'], queryFn: () => readArtBible() })
+  const projectCode = useProjectCode()
+  const bible = useQuery({
+    queryKey: ['project', projectCode, 'art-bible'],
+    queryFn: () => readArtBible(projectCode),
+  })
   const [draft, setDraft] = useState<string | null>(null)
 
   useEffect(() => {
@@ -28,10 +33,10 @@ export default function ArtBibleEditor() {
   const dirty = draft !== null && draft !== bible.data?.content
 
   const save = useMutation({
-    mutationFn: () => writeArtBible(content),
+    mutationFn: () => writeArtBible(projectCode, content),
     onSuccess: (fresh) => {
       message.success('视觉规范已保存')
-      queryClient.setQueryData(['art-bible'], fresh)
+      queryClient.setQueryData(['project', projectCode, 'art-bible'], fresh)
       setDraft(null)
     },
     onError: (err: Error) => message.error(err.message),

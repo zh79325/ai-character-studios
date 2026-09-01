@@ -28,6 +28,13 @@ description: 开发纪律：读写代码的工具用法、验证命令、汇报�
 - 草稿确认、命名确认等收口动作统一通过 `ChatPanel` 的 `finale` / `finaleKey` 放进同一个抽屉，新内容到达时自动展开；页面不得另设一套常驻确认区。
 - 领域页只负责提供 `agentCode`、目标对象、右栏内容与收口动作；会话创建、流式输出、中断、待选项提交等行为留在通用组件中。
 
+## 项目上下文
+
+- 项目身份的唯一状态源是 `/projects/:projectCode/...` 页面路由；禁止写入 localStorage、Zustand、React Query 或后端进程级“当前项目”状态。
+- 项目内页面统一通过 `useProjectCode()` 读取代号，并使用 `projectPath()`、`designPath()` 构造页面链接，不得手拼项目路由。
+- 项目内 API 必须把 `projectCode` 作为显式参数，并使用 `/api/projects/{project_code}/...`；SSE 与图片 URL 同样不得省略。全局 Provider、Agent、用量、运行日志、转写和健康接口不携带项目上下文。
+- 项目级 React Query key 必须以 `['project', projectCode, ...]` 开头；mutation 只失效对应项目命名空间，禁止用无项目 key 或全量失效掩盖串缓存问题。
+
 ## 验证
 
 改动期间只跑受影响的文件，收尾再跑一次全量。命令一律接 `| tail -N`，不要把完整输出灌进上下文。

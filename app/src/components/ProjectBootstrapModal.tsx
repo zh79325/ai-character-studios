@@ -13,14 +13,14 @@ import { useState } from 'react'
 
 import { bootstrapProject, inspectDir } from '@/api/projects'
 import DirectoryPicker from '@/components/DirectoryPicker'
-import type { ProjectList } from '@/types/api'
+import type { ProjectSummary } from '@/types/api'
 
 interface Props {
   open: boolean
   /** 默认项目根，作为目录对话框的起点。 */
   defaultRoot: string
   onClose: () => void
-  onCreated: (list: ProjectList) => void
+  onCreated: (project: ProjectSummary) => void
 }
 
 export default function ProjectBootstrapModal({ open, defaultRoot, onClose, onCreated }: Props) {
@@ -34,10 +34,10 @@ export default function ProjectBootstrapModal({ open, defaultRoot, onClose, onCr
       if (state.occupied && !(await askOverwrite(modal, state.marks))) return null
       return bootstrapProject(path, state.occupied)
     },
-    onSuccess: (list) => {
-      if (list === null) return
+    onSuccess: (project) => {
+      if (project === null) return
       setDir('')
-      onCreated(list)
+      onCreated(project)
       onClose()
     },
     onError: (err: Error) => message.error(err.message),

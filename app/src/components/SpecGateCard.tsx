@@ -72,6 +72,7 @@ const GATES: Record<GateKind, Gate> = {
 }
 
 interface Props {
+  projectCode: string
   character: Character
   /** 当下那场设定会话；`REJECT` 后要靠它承载自动重生的几轮。 */
   conversationId: string | null
@@ -79,7 +80,7 @@ interface Props {
   onHandoff: (handoff: Handoff) => void
 }
 
-export default function SpecGateCard({ character, conversationId, onHandoff }: Props) {
+export default function SpecGateCard({ projectCode, character, conversationId, onHandoff }: Props) {
   const { message: toast, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [verdict, setVerdict] = useState<SpecReview | null>(null)
@@ -90,18 +91,24 @@ export default function SpecGateCard({ character, conversationId, onHandoff }: P
   const settled = character.spec_path !== null
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['character', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['character-events', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['characters'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character', character.id],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-events', character.id],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'characters'] })
   }
 
   const review = useMutation({
-    mutationFn: () => reviewSpec(character.id, conversationId),
+    mutationFn: () => reviewSpec(projectCode, character.id, conversationId),
     onSuccess: (result) => {
       setVerdict(result)
       refresh()
       if (result.regenerated > 0) {
-        void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+        void queryClient.invalidateQueries({
+          queryKey: ['project', projectCode, 'conversation', conversationId],
+        })
         toast.info(`驳回了 ${result.regenerated} 次，写手已按理由重生，会话里能看到这几轮`)
       }
       if (result.manual) {
@@ -114,8 +121,8 @@ export default function SpecGateCard({ character, conversationId, onHandoff }: P
   const decide = useMutation({
     mutationFn: async (chosen: Gate) => {
       const reason = note.trim()
-      if (chosen.kind === 'adopt') return confirmSpec(character.id, reason)
-      await rejectSpec(character.id, reason)
+      if (chosen.kind === 'adopt') return confirmSpec(projectCode, character.id, reason)
+      await rejectSpec(projectCode, character.id, reason)
       return null
     },
     onSuccess: (result, chosen) => {

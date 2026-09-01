@@ -72,10 +72,11 @@ const GATES: Record<GateKind, Gate> = {
 }
 
 interface Props {
+  projectCode: string
   character: Character
 }
 
-export default function RenderGateCard({ character }: Props) {
+export default function RenderGateCard({ projectCode, character }: Props) {
   const { message: toast } = App.useApp()
   const queryClient = useQueryClient()
   const [gate, setGate] = useState<Gate | null>(null)
@@ -87,21 +88,27 @@ export default function RenderGateCard({ character }: Props) {
   const confirmed = character.gate_render_confirmed_at !== null
 
   const renders = useQuery({
-    queryKey: ['character-renders', character.id],
-    queryFn: () => listRenders(character.id),
+    queryKey: ['project', projectCode, 'character-renders', character.id],
+    queryFn: () => listRenders(projectCode, character.id),
   })
   const candidates = renders.data ?? []
   const selected = chosen ?? candidates[0]?.id ?? null
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['character', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['character-events', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['character-renders', character.id] })
-    void queryClient.invalidateQueries({ queryKey: ['characters'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character', character.id],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-events', character.id],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['project', projectCode, 'character-renders', character.id],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'characters'] })
   }
 
   const preview = useMutation({
-    mutationFn: () => draftAssetSpec(character.id),
+    mutationFn: () => draftAssetSpec(projectCode, character.id),
     onSuccess: (result) => {
       setSpec(result)
       toast.success('卡片出来了，看一眼再生图')
@@ -111,7 +118,7 @@ export default function RenderGateCard({ character }: Props) {
 
   const draw = useMutation({
     mutationFn: (input: { note: string; field: string }) =>
-      renderCharacter(character.id, input.note, input.field),
+      renderCharacter(projectCode, character.id, input.note, input.field),
     onSuccess: (result) => {
       setSpec(result.spec)
       setChosen(result.generation_id)
@@ -126,11 +133,11 @@ export default function RenderGateCard({ character }: Props) {
       const reason = note.trim()
       if (which.kind === 'adopt') {
         if (selected === null) throw new Error('先选中要采用的那一张')
-        return confirmRender(character.id, selected, reason)
+        return confirmRender(projectCode, character.id, selected, reason)
       }
-      if (which.kind === 'stop') return rejectRender(character.id, reason)
+      if (which.kind === 'stop') return rejectRender(projectCode, character.id, reason)
       // 驳回的理由先记下来，再按这句话重出一张——不记的话时间线上就只剩下一张新图
-      await rejectRender(character.id, reason)
+      await rejectRender(projectCode, character.id, reason)
       await draw.mutateAsync({ note: reason, field: which.kind === 'revise' ? field.trim() : '' })
       return null
     },
@@ -184,6 +191,7 @@ export default function RenderGateCard({ character }: Props) {
           <Empty image={null} description="还没有出过图。生成之后候选都会留在这里。" />
         ) : (
           <Candidates
+            projectCode={projectCode}
             characterId={character.id}
             rows={candidates}
             selected={selected}
@@ -305,11 +313,13 @@ function SpecView({ spec }: { spec: AssetSpec }) {
 
 /** 候选图。选中的那一张描边，定稿的那一张挂个标——门禁要在这几张之间挑。 */
 function Candidates({
+  projectCode,
   characterId,
   rows,
   selected,
   onSelect,
 }: {
+  projectCode: string
   characterId: string
   rows: Generation[]
   selected: string | null
@@ -320,6 +330,7 @@ function Candidates({
       {rows.map((row) => (
         <Thumb
           key={row.id}
+          projectCode={projectCode}
           characterId={characterId}
           row={row}
           active={row.id === selected}
@@ -331,19 +342,21 @@ function Candidates({
 }
 
 function Thumb({
+  projectCode,
   characterId,
   row,
   active,
   onSelect,
 }: {
+  projectCode: string
   characterId: string
   row: Generation
   active: boolean
   onSelect: (id: string) => void
 }) {
   const url = useQuery({
-    queryKey: ['render-url', characterId, row.id],
-    queryFn: () => renderImageUrl(characterId, row.id),
+    queryKey: ['project', projectCode, 'render-url', characterId, row.id],
+    queryFn: () => renderImageUrl(projectCode, characterId, row.id),
     staleTime: Infinity,
   })
 

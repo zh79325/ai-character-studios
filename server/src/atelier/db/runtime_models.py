@@ -1,7 +1,7 @@
 """全局日志库（db/runtime.db，本地不进 Git）表定义。
 
 这里只放**机器级**数据：provider 凭证、Agent 绑定、额度用量、熔断、路由日志，加上
-「本机打开过哪些项目」的注册表与本机偏好。它们跟着这台机器走，不跟着项目走。
+「本机登记了哪些项目」的注册表与本机偏好。它们跟着这台机器走，不跟着项目走。
 
 项目自己的东西（素材、状态、任务、会话、记忆）在各项目目录下的 `.atelier/project.db`，
 见 `project_models.py`——项目目录连库整体搬走仍是同一个项目。
@@ -252,11 +252,11 @@ class RouteLog(RuntimeBase):
 
 
 class ProjectRegistry(RuntimeBase):
-    """本机打开过哪些项目，以及它们在磁盘上的位置。
+    """本机登记了哪些项目，以及它们在磁盘上的位置。
 
     项目的真相全在自己的目录里（`project.json` + `.atelier/project.db`），目录可以放在
-    磁盘任意位置。本表只是一份「最近打开」的索引，丢了也不影响项目本身：重新指向目录
-    导入一次就恢复。所以这里不存任何项目内容，只存路径与上次打开时间。
+    磁盘任意位置。本表只是一份本机索引，丢了也不影响项目本身：重新指向目录导入一次就恢复。
+    所以这里不存任何项目内容或访问状态，只存路径与索引信息。
     """
 
     __tablename__ = "project_registry"
@@ -270,6 +270,5 @@ class ProjectRegistry(RuntimeBase):
     """true = 位于默认项目根（仓库 assets/），扫描时自动登记；false = 从别处导入的。"""
     missing: Mapped[bool] = mapped_column(Boolean, default=False)
     """上次同步时目录不见了（外置盘没挂、被搬走）。只标记不删记录，等它回来。"""
-    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

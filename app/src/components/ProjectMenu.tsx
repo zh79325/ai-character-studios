@@ -1,12 +1,10 @@
 /**
  * 顶栏的项目相关菜单，两个一级项：
  *
- * - 「当前项目」：项目内的各个入口（立项对焦、配置、视觉规范、各类素材设计）。只有打开了项目
- *   才出现——而后端只把「打开了谁」记在内存里，重启之后就是没打开。它的 key 就是路由，
- *   交给调用方导航。
- * - 「项目」：打开已有项目、导入项目、新建项目。这些不是路由而是动作，自己消化掉。
+ * - 项目快捷入口只在 URL 命中项目路由时出现，名称来自该代号的项目详情；后端不保存当前项目。
+ * - 「项目」：进入已有项目、导入项目、新建项目。这些不是项目内路由而是动作，自己消化掉。
  *
- * 打开哪个项目，之后干活就在哪个项目里，所以这里没有「切换」这个动作，也不标谁是当前。
+ * 点击项目只导航到带代号的 URL，不调用切换接口。
  *
  * 菜单项要拼进顶栏那一整个 Menu，弹窗又得挂在页面上，所以做成 hook 交三样东西给调用方：
  * 菜单项、点击处理、要渲染的弹窗。
@@ -21,13 +19,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { App, Modal, Space, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 
-import { importProject, listProjects, switchProject } from '@/api/projects'
+import { importProject, listProjects, readProject } from '@/api/projects'
 import DirectoryPicker from '@/components/DirectoryPicker'
 import ProjectBootstrapModal from '@/components/ProjectBootstrapModal'
-import { DESIGN_ENTRIES, PROJECT_ENTRIES, designPath } from '@/lib/design'
-import type { ProjectList } from '@/types/api'
+import { DESIGN_ENTRIES, designPath, projectEntries } from '@/lib/design'
+import { projectPath } from '@/lib/projectRoute'
+import type { ProjectSummary } from '@/types/api'
 
 /** 菜单 key 都带这个前缀：顶栏其余菜单的 key 是路由路径，前缀一眼分得开。 */
 const PREFIX = 'project:'
@@ -49,40 +48,31 @@ export function useProjectMenu(): ProjectMenu {
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
   const [importDir, setImportDir] = useState<string | null>(null)
+  const { pathname } = useLocation()
+  const projectCode = matchPath('/projects/:projectCode/*', pathname)?.params.projectCode
 
   const list = useQuery({ queryKey: ['projects'], queryFn: () => listProjects() })
-  const projects = list.data?.projects ?? []
-  const current = projects.find((one) => one.code === list.data?.opened) ?? null
-
-  /**
-   * 打开项目等于换一个库，缓存里所有项目相关的东西一律作废。
-   *
-   * 逐个点名 key 迟早会漏（后面还要加会话、素材、渲染图），而这个动作是用户主动做的、
-   * 一秒钟一次都不到，全刷一遍的代价可以忽略。
-   */
-  const adopt = (fresh: ProjectList) => {
-    queryClient.setQueryData(['projects'], fresh)
-    void queryClient.invalidateQueries()
-  }
-
-  /** 打开某个项目走到底：换缓存，再进项目首页。 */
-  const enter = (fresh: ProjectList) => {
-    adopt(fresh)
-    navigate('/project')
-  }
-
-  const open = useMutation({
-    mutationFn: (code: string) => switchProject(code),
-    onSuccess: enter,
-    onError: (err: Error) => message.error(err.message),
+  const detail = useQuery({
+    queryKey: ['project', projectCode],
+    queryFn: () => readProject(projectCode!),
+    enabled: Boolean(projectCode),
+    retry: false,
   })
+  const projects = list.data?.projects ?? []
+  const current = detail.data ?? projects.find((one) => one.code === projectCode) ?? null
+
+  const enter = (project: ProjectSummary) => {
+    queryClient.setQueryData(['project', project.code], project)
+    void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    navigate(projectPath(project.code))
+  }
 
   const doImport = useMutation({
     mutationFn: (dir: string) => importProject(dir),
-    onSuccess: (fresh) => {
-      message.success(`已打开 ${fresh.opened}`)
+    onSuccess: (project) => {
+      message.success(`已导入 ${project.name}`)
       setImportDir(null)
-      enter(fresh)
+      enter(project)
     },
     onError: (err: Error) => message.error(err.message),
   })
@@ -101,7 +91,7 @@ export function useProjectMenu(): ProjectMenu {
     icon: <FolderOutlined />,
     label: '项目',
     children: [
-      { key: `${PREFIX}open`, label: '打开已有项目', children: openList },
+      { key: `${PREFIX}open`, label: '进入已有项目', children: openList },
       { key: IMPORT_KEY, icon: <FolderOpenOutlined />, label: '导入项目' },
       { key: NEW_KEY, icon: <PlusOutlined />, label: '新建项目' },
     ],
@@ -114,10 +104,10 @@ export function useProjectMenu(): ProjectMenu {
     icon: <AppstoreOutlined />,
     label: current.name,
     children: [
-      ...PROJECT_ENTRIES.map((entry) => ({ key: entry.key, label: entry.label })),
+      ...projectEntries(current.code).map((entry) => ({ key: entry.key, label: entry.label })),
       { type: 'divider' as const },
       ...DESIGN_ENTRIES.map((entry) => ({
-        key: designPath(entry.slug),
+        key: designPath(current.code, entry.slug),
         disabled: drafting,
         label: entry.ready ? entry.label : `${entry.label}（即将开放）`,
       })),
@@ -126,7 +116,7 @@ export function useProjectMenu(): ProjectMenu {
 
   const handle = (key: string) => {
     if (key.startsWith(OPEN_PREFIX)) {
-      open.mutate(key.slice(OPEN_PREFIX.length))
+      navigate(projectPath(key.slice(OPEN_PREFIX.length)))
       return true
     }
     if (key === IMPORT_KEY) {
@@ -152,7 +142,7 @@ export function useProjectMenu(): ProjectMenu {
       <Modal
         open={importDir !== null}
         title="导入项目"
-        okText="导入并打开"
+        okText="导入并进入"
         confirmLoading={doImport.isPending}
         okButtonProps={{ disabled: !importDir?.trim() }}
         onCancel={() => setImportDir(null)}

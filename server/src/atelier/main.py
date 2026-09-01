@@ -15,9 +15,7 @@ from fastapi.responses import JSONResponse
 
 from atelier.api import characters, config, conversations, events, plugins, providers, transcribe
 from atelier.api import projects as projects_api
-from atelier.api.deps import RuntimeDb
 from atelier.api.portable import PortableError
-from atelier.assets import projects
 from atelier.assets.layout import LayoutError
 from atelier.errors import Conflict, NotFound
 from atelier.providers.base import NoCandidateError, ProviderError
@@ -51,23 +49,21 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(conversations.memory_router)
     app.include_router(characters.router)
+    app.include_router(events.task_router)
     app.include_router(transcribe.router)
     app.include_router(plugins.router)
 
     _install_error_handlers(app)
 
     @app.get("/api/health", tags=["health"])
-    def health(session: RuntimeDb) -> dict[str, Any]:
-        """Electron 起完后端后靠这个确认真的能服务了。项目库跟着打开的项目走，没打开则为 null。"""
+    def health() -> dict[str, Any]:
+        """Electron 起完后端后靠这个确认系统级服务已经就绪。"""
         settings = get_settings()
-        ref = projects.opened(session)
         return {
             "ok": True,
             "config_db": str(settings.config_db_path),
             "runtime_db": str(settings.runtime_db_path),
             "usage_server": settings.usage_server_url or None,
-            "opened_project": ref.code if ref else None,
-            "project_db": str(ref.db_path) if ref else None,
         }
 
     return app

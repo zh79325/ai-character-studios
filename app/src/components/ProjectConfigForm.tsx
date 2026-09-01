@@ -13,6 +13,7 @@ import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, S
 import { useEffect } from 'react'
 
 import { buildConfigPatch, readConfig, updateConfig } from '@/api/projects'
+import { useProjectCode } from '@/lib/projectRoute'
 import type { ProjectConfig, ReviewMode } from '@/types/api'
 
 export const REVIEW_MODES = [
@@ -60,8 +61,12 @@ function toForm(config: ProjectConfig): FormValues {
 export default function ProjectConfigForm() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const projectCode = useProjectCode()
   const [form] = Form.useForm<FormValues>()
-  const config = useQuery({ queryKey: ['project-config'], queryFn: () => readConfig() })
+  const config = useQuery({
+    queryKey: ['project', projectCode, 'config'],
+    queryFn: () => readConfig(projectCode),
+  })
 
   useEffect(() => {
     if (config.data) form.setFieldsValue(toForm(config.data))
@@ -71,6 +76,7 @@ export default function ProjectConfigForm() {
     mutationFn: (values: FormValues) => {
       if (!config.data) throw new Error('配置还没读上来')
       return updateConfig(
+        projectCode,
         buildConfigPatch(config.data, {
           name: values.name,
           review_mode: values.review_mode,
@@ -95,9 +101,10 @@ export default function ProjectConfigForm() {
     },
     onSuccess: (fresh) => {
       message.success('已写回 project.json')
-      queryClient.setQueryData(['project-config'], fresh)
-      // 显示名跟着改了，项目列表与切换器上的名字得刷新
+      queryClient.setQueryData(['project', projectCode, 'config'], fresh)
+      // 显示名跟着改了，项目列表与当前项目摘要得刷新
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: ['project', projectCode] })
     },
     onError: (err: Error) => message.error(err.message),
   })

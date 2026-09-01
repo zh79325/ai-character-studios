@@ -6,7 +6,7 @@
  * `assets/`）。移出只删本机索引，磁盘上的文件一个不动——那是用户的资产。
  *
  * 顶栏的「项目」菜单干的是同一批事，两边都留着：菜单是干活途中的快捷入口，这页才看得到
- * 目录、最近打开时间这些对得上号的信息。
+ * 目录等索引信息。
  */
 import { FolderOpenOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -15,9 +15,10 @@ import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { forgetProject, importProject, listProjects, switchProject } from '@/api/projects'
+import { forgetProject, importProject, listProjects } from '@/api/projects'
 import DirectoryPicker from '@/components/DirectoryPicker'
 import ProjectBootstrapModal from '@/components/ProjectBootstrapModal'
+import { projectPath } from '@/lib/projectRoute'
 import type { ProjectList, ProjectSummary } from '@/types/api'
 
 export default function ProjectsPage() {
@@ -29,21 +30,14 @@ export default function ProjectsPage() {
 
   const list = useQuery({ queryKey: ['projects'], queryFn: () => listProjects() })
 
-  /**
-   * 打开项目等于换一个库，缓存里所有项目相关的东西一律作废。
-   *
-   * 逐个点名 key 迟早会漏（后面还要加会话、素材、渲染图），而这个动作是用户主动做的、
-   * 一秒钟一次都不到，全刷一遍的代价可以忽略。
-   */
   const adopt = (fresh: ProjectList) => {
     queryClient.setQueryData(['projects'], fresh)
-    void queryClient.invalidateQueries()
   }
 
-  /** 打开某个项目走到底：换缓存，再进项目首页。 */
-  const enter = (fresh: ProjectList) => {
-    adopt(fresh)
-    navigate('/project')
+  const enter = (project: ProjectSummary) => {
+    queryClient.setQueryData(['project', project.code], project)
+    void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    navigate(projectPath(project.code))
   }
 
   const sync = useMutation({
@@ -59,25 +53,19 @@ export default function ProjectsPage() {
 
   const doImport = useMutation({
     mutationFn: (dir: string) => importProject(dir),
-    onSuccess: (fresh) => {
-      message.success(`已导入并打开 ${fresh.opened}`)
+    onSuccess: (project) => {
+      message.success(`已导入 ${project.name}`)
       setImportDir(null)
-      enter(fresh)
+      enter(project)
     },
-    onError: (err: Error) => message.error(err.message),
-  })
-
-  const open = useMutation({
-    mutationFn: (code: string) => switchProject(code),
-    onSuccess: enter,
     onError: (err: Error) => message.error(err.message),
   })
 
   const forget = useMutation({
     mutationFn: (code: string) => forgetProject(code),
-    onSuccess: (fresh) => {
+    onSuccess: () => {
       message.success('已从本机移出，磁盘上的目录还在')
-      adopt(fresh)
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
     },
     onError: (err: Error) => message.error(err.message),
   })
@@ -113,12 +101,6 @@ export default function ProjectsPage() {
       ),
     },
     {
-      title: '最近打开',
-      dataIndex: 'last_opened_at',
-      width: 180,
-      render: (at: string | null) => (at ? at.replace('T', ' ').slice(0, 19) : '—'),
-    },
-    {
       title: '操作',
       width: 180,
       render: (_, row) => (
@@ -127,10 +109,9 @@ export default function ProjectsPage() {
             size="small"
             type="primary"
             disabled={row.missing}
-            loading={open.isPending && open.variables === row.code}
-            onClick={() => open.mutate(row.code)}
+            onClick={() => navigate(projectPath(row.code))}
           >
-            打开
+            进入
           </Button>
           <Popconfirm
             title={`把 ${row.code} 移出本机？`}
@@ -196,7 +177,7 @@ export default function ProjectsPage() {
       <Modal
         open={importDir !== null}
         title="导入项目"
-        okText="导入并打开"
+        okText="导入并进入"
         confirmLoading={doImport.isPending}
         okButtonProps={{ disabled: !importDir?.trim() }}
         onCancel={() => setImportDir(null)}

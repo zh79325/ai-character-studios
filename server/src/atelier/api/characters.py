@@ -52,7 +52,7 @@ from atelier.db.project_models import Character, Generation, TaskEvent
 from atelier.errors import Conflict, NotFound
 from atelier.providers import image_gen
 
-router = APIRouter(prefix="/api/characters", tags=["characters"])
+router = APIRouter(prefix="/api/projects/{project_code}/characters", tags=["characters"])
 
 
 def character_out(row: dict[str, object]) -> CharacterOut:

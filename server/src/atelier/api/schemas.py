@@ -304,15 +304,12 @@ class ProjectSummaryOut(Schema):
     dir_path: str
     managed: bool
     missing: bool
-    last_opened_at: str | None = None
     stage: Literal["drafting", "ready"] = "ready"
     """`drafting` = 还在立项对焦、名字与骨架都没定。"""
 
 
 class ProjectListOut(Schema):
     projects: list[ProjectSummaryOut]
-    opened: str | None = None
-    """本次运行里打开的项目代号。只存内存，后端重启就回到 null。"""
     default_root: str
     """默认项目根（仓库 `assets/`），前端新建时拿它做目录预填。"""
 
@@ -393,10 +390,6 @@ class ProjectFinalizeIn(Schema):
 
 class ProjectImportIn(Schema):
     dir_path: str = Field(min_length=1, description="已带 project.json 的项目目录")
-
-
-class ProjectSwitchIn(Schema):
-    code: str = Field(min_length=1)
 
 
 class ArtBibleOut(Schema):

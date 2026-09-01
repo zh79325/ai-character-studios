@@ -1,9 +1,8 @@
 /**
  * 项目接口的调用形状。
  *
- * 这些断言看着琐碎，但它们钉的是前后端之间几个容易走形的约定：切项目走 `PUT /current`
- * 且 code 在请求体里（路径上还有 `/current/config` 这些具名子资源，再来一个 `/current/{code}`
- * 会互相抢匹配）、`?project=` 只出现在读接口上、配置提交不能抹掉用户手写的键。
+ * 这些断言钉住无状态项目协议：项目内请求必须把 project code 放进资源路径，项目管理动作不依赖
+ * “当前项目”，配置提交也不能抹掉用户手写的键。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +16,6 @@ import {
   listProjects,
   readConfig,
   scanProject,
-  switchProject,
   writeArtBible,
 } from './projects'
 import type { ProjectConfig } from '@/types/api'
@@ -99,23 +97,12 @@ describe('立项', () => {
     expect(onlyCall().body).toEqual({ dir_path: '/tmp/赤瞳系列', overwrite: true })
   })
 
-  it('收口作用在当前项目上，所以路径是 /current/finalize', async () => {
-    await finalizeProject({ name: '赤瞳', code: 'chitong' })
+  it('收口作用在 URL 指定的 draft 项目上', async () => {
+    await finalizeProject('draft one', { name: '赤瞳', code: 'chitong' })
     expect(onlyCall()).toMatchObject({
-      url: 'http://127.0.0.1:62066/api/projects/current/finalize',
+      url: 'http://127.0.0.1:62066/api/projects/draft%20one/finalize',
       method: 'POST',
       body: { name: '赤瞳', code: 'chitong' },
-    })
-  })
-})
-
-describe('切换项目', () => {
-  it('code 走请求体，路径固定是 /current', async () => {
-    await switchProject('chitong')
-    expect(onlyCall()).toMatchObject({
-      url: 'http://127.0.0.1:62066/api/projects/current',
-      method: 'PUT',
-      body: { code: 'chitong' },
     })
   })
 })
@@ -131,28 +118,27 @@ describe('移出项目', () => {
 })
 
 describe('项目内的读写', () => {
-  it('读配置带 ?project= 就是「看一眼别的项目」，不会切过去', async () => {
-    await readConfig('other')
+  it('读取配置时项目代号位于路径中并经过编码', async () => {
+    await readConfig('other project')
     expect(onlyCall()).toMatchObject({
-      url: 'http://127.0.0.1:62066/api/projects/current/config?project=other',
+      url: 'http://127.0.0.1:62066/api/projects/other%20project/config',
       method: 'GET',
     })
   })
 
-  it('不指定项目时就作用于当前项目', async () => {
-    await readConfig()
-    expect(onlyCall().url).toBe('http://127.0.0.1:62066/api/projects/current/config')
-  })
-
-  it('art bible 整篇提交', async () => {
-    await writeArtBible('# 视觉规范\n')
-    expect(onlyCall()).toMatchObject({ method: 'PUT', body: { content: '# 视觉规范\n' } })
-  })
-
-  it('扫描是个动作，用 POST', async () => {
-    await scanProject()
+  it('art bible 整篇提交到指定项目', async () => {
+    await writeArtBible('other', '# 视觉规范\n')
     expect(onlyCall()).toMatchObject({
-      url: 'http://127.0.0.1:62066/api/projects/current/scan',
+      url: 'http://127.0.0.1:62066/api/projects/other/art-bible',
+      method: 'PUT',
+      body: { content: '# 视觉规范\n' },
+    })
+  })
+
+  it('扫描是指定项目上的动作，用 POST', async () => {
+    await scanProject('other')
+    expect(onlyCall()).toMatchObject({
+      url: 'http://127.0.0.1:62066/api/projects/other/scan',
       method: 'POST',
     })
   })

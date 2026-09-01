@@ -221,10 +221,6 @@ export interface Health {
   config_db: string
   runtime_db: string
   usage_server: string | null
-  /** 本次运行里打开的项目 code；后端只记在内存，重启就回到 null。 */
-  opened_project: string | null
-  /** 打开的项目自带的库文件，跟着项目目录走。 */
-  project_db: string | null
 }
 
 // --------------------------------------------------------------------------- //
@@ -243,14 +239,11 @@ export interface ProjectSummary {
   managed: boolean
   /** 目录当下不在（外置盘没挂、被搬走），列表里还留着但不能用。 */
   missing: boolean
-  last_opened_at: string | null
   stage: ProjectStage
 }
 
 export interface ProjectList {
   projects: ProjectSummary[]
-  /** 本次运行里打开的项目代号。只存内存，后端重启就回到 null。 */
-  opened: string | null
   /** 默认项目根，新建时拿它做目录预填。 */
   default_root: string
 }

@@ -8,6 +8,7 @@
  * 轮的结果。
  */
 import { baseUrl, request } from './client'
+import { projectApiPath } from '@/lib/projectRoute'
 import type {
   AssetSpec,
   Character,
@@ -19,24 +20,33 @@ import type {
   ViewSet,
 } from '@/types/api'
 
-export function createCharacter(name: string, group = '', overwrite = false): Promise<Character> {
-  return request<Character>('/api/characters', {
+function charactersPath(projectCode: string, suffix = ''): string {
+  return projectApiPath(projectCode, suffix ? `characters/${suffix}` : 'characters')
+}
+
+export function createCharacter(
+  projectCode: string,
+  name: string,
+  group = '',
+  overwrite = false,
+): Promise<Character> {
+  return request<Character>(charactersPath(projectCode), {
     method: 'POST',
     body: { name, group, overwrite },
   })
 }
 
-export function readCharacter(id: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}`)
+export function readCharacter(projectCode: string, id: string): Promise<Character> {
+  return request<Character>(charactersPath(projectCode, encodeURIComponent(id)))
 }
 
 /** 仅删除扫描确认已缺失的角色数据库记录；磁盘上仍有角色目录时后端会拒绝。 */
-export function deleteMissingCharacter(id: string): Promise<void> {
-  return request<void>(`/api/characters/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export function deleteMissingCharacter(projectCode: string, id: string): Promise<void> {
+  return request<void>(charactersPath(projectCode, encodeURIComponent(id)), { method: 'DELETE' })
 }
 
-export function listCharacterEvents(id: string): Promise<TaskEvent[]> {
-  return request<TaskEvent[]>(`/api/characters/${encodeURIComponent(id)}/events`)
+export function listCharacterEvents(projectCode: string, id: string): Promise<TaskEvent[]> {
+  return request<TaskEvent[]>(charactersPath(projectCode, `${encodeURIComponent(id)}/events`))
 }
 
 /**
@@ -45,32 +55,40 @@ export function listCharacterEvents(id: string): Promise<TaskEvent[]> {
  * 带上会话 id 才会在 `REJECT` 后自动把理由发回写手重生——重生得有个会话承载新的一轮，不然
  * 那几轮对话跟用户自己那场对不上号。
  */
-export function reviewSpec(id: string, conversationId?: string | null): Promise<SpecReview> {
-  return request<SpecReview>(`/api/characters/${encodeURIComponent(id)}/review`, {
+export function reviewSpec(
+  projectCode: string,
+  id: string,
+  conversationId?: string | null,
+): Promise<SpecReview> {
+  return request<SpecReview>(charactersPath(projectCode, `${encodeURIComponent(id)}/review`), {
     method: 'POST',
     body: { conversation_id: conversationId ?? null },
   })
 }
 
 /** 门禁 1：人工确认设定。确认的是磁盘上那一份，没沉淀过后端会 409。 */
-export function confirmSpec(id: string, note: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/spec/confirm`, {
+export function confirmSpec(projectCode: string, id: string, note: string): Promise<Character> {
+  return request<Character>(charactersPath(projectCode, `${encodeURIComponent(id)}/spec/confirm`), {
     method: 'POST',
     body: { note },
   })
 }
 
 /** 门禁 1 驳回：状态停在原地，理由记进时间线，下一轮设定会话能看见上次为什么没过。 */
-export function rejectSpec(id: string, note: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/spec/reject`, {
+export function rejectSpec(projectCode: string, id: string, note: string): Promise<Character> {
+  return request<Character>(charactersPath(projectCode, `${encodeURIComponent(id)}/spec/reject`), {
     method: 'POST',
     body: { note },
   })
 }
 
 /** 推进状态。只能往前且一步一步走，没过门禁会拿到 409。 */
-export function advanceCharacter(id: string, state: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/advance`, {
+export function advanceCharacter(
+  projectCode: string,
+  id: string,
+  state: string,
+): Promise<Character> {
+  return request<Character>(charactersPath(projectCode, `${encodeURIComponent(id)}/advance`), {
     method: 'POST',
     body: { state },
   })
@@ -82,8 +100,13 @@ export function advanceCharacter(id: string, state: string): Promise<Character> 
  * 卡片里的 prompt 就是这张图的全部依据，层序缺一截用户在图上只能看出「不对」而看不出「哪里
  * 不对」，所以先看一眼卡片比直接烧一次额度划得来。
  */
-export function draftAssetSpec(id: string, note = '', field = ''): Promise<AssetSpec> {
-  return request<AssetSpec>(`/api/characters/${encodeURIComponent(id)}/asset-spec`, {
+export function draftAssetSpec(
+  projectCode: string,
+  id: string,
+  note = '',
+  field = '',
+): Promise<AssetSpec> {
+  return request<AssetSpec>(charactersPath(projectCode, `${encodeURIComponent(id)}/asset-spec`), {
     method: 'POST',
     body: { note, field },
   })
@@ -95,16 +118,21 @@ export function draftAssetSpec(id: string, note = '', field = ''): Promise<Asset
  * `field` 给了就是「改某一项重生」，只把那一项发回给写手；只给 `note` 是换方向。生图几十秒是
  * 应该的，这里不设超时。
  */
-export function renderCharacter(id: string, note = '', field = ''): Promise<RenderResult> {
-  return request<RenderResult>(`/api/characters/${encodeURIComponent(id)}/render`, {
+export function renderCharacter(
+  projectCode: string,
+  id: string,
+  note = '',
+  field = '',
+): Promise<RenderResult> {
+  return request<RenderResult>(charactersPath(projectCode, `${encodeURIComponent(id)}/render`), {
     method: 'POST',
     body: { note, field },
   })
 }
 
 /** 渲染图的全部候选，新的在前。门禁上要在几张之间挑，就得能把过往那几张一并列出来。 */
-export function listRenders(id: string): Promise<Generation[]> {
-  return request<Generation[]>(`/api/characters/${encodeURIComponent(id)}/renders`)
+export function listRenders(projectCode: string, id: string): Promise<Generation[]> {
+  return request<Generation[]>(charactersPath(projectCode, `${encodeURIComponent(id)}/renders`))
 }
 
 /**
@@ -113,9 +141,16 @@ export function listRenders(id: string): Promise<Generation[]> {
  * 不把图转 base64 塞进 JSON：一张 2048 的 png 动辄几 MB，进 JSON 再膨 33%，而浏览器对
  * `<img src>` 本来就会缓存。
  */
-export async function renderImageUrl(id: string, generationId: string): Promise<string> {
+export async function renderImageUrl(
+  projectCode: string,
+  id: string,
+  generationId: string,
+): Promise<string> {
   const base = await baseUrl()
-  const path = `/api/characters/${encodeURIComponent(id)}/renders/${encodeURIComponent(generationId)}/image`
+  const path = charactersPath(
+    projectCode,
+    `${encodeURIComponent(id)}/renders/${encodeURIComponent(generationId)}/image`,
+  )
   return `${base}${path}`
 }
 
@@ -124,19 +159,30 @@ export async function renderImageUrl(id: string, generationId: string): Promise<
  *
  * 必需指名 `generationId`：默认采用「最新一张」在用户连生了几张之后就不是他指的那一张了。
  */
-export function confirmRender(id: string, generationId: string, note: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/render/confirm`, {
-    method: 'POST',
-    body: { generation_id: generationId, note },
-  })
+export function confirmRender(
+  projectCode: string,
+  id: string,
+  generationId: string,
+  note: string,
+): Promise<Character> {
+  return request<Character>(
+    charactersPath(projectCode, `${encodeURIComponent(id)}/render/confirm`),
+    {
+      method: 'POST',
+      body: { generation_id: generationId, note },
+    },
+  )
 }
 
 /** 门禁 2 驳回：状态停在「渲染图已生成」，理由进时间线给下一轮重生用。 */
-export function rejectRender(id: string, note: string): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/render/reject`, {
-    method: 'POST',
-    body: { note },
-  })
+export function rejectRender(projectCode: string, id: string, note: string): Promise<Character> {
+  return request<Character>(
+    charactersPath(projectCode, `${encodeURIComponent(id)}/render/reject`),
+    {
+      method: 'POST',
+      body: { note },
+    },
+  )
 }
 
 /**
@@ -146,19 +192,20 @@ export function rejectRender(id: string, note: string): Promise<Character> {
  * 张全重来会把用户已经认可的三张也换掉。四张 4K 图几十秒是应该的，这里不设超时。
  */
 export function generateViews(
+  projectCode: string,
   id: string,
   variants: string[] = [],
   seed: number | null = null,
 ): Promise<ViewSet> {
-  return request<ViewSet>(`/api/characters/${encodeURIComponent(id)}/views`, {
+  return request<ViewSet>(charactersPath(projectCode, `${encodeURIComponent(id)}/views`), {
     method: 'POST',
     body: { variants, seed },
   })
 }
 
 /** 四视图的全部候选，新的在前。`variant` 告诉前端这一张是哪个面。 */
-export function listViews(id: string): Promise<Generation[]> {
-  return request<Generation[]>(`/api/characters/${encodeURIComponent(id)}/views`)
+export function listViews(projectCode: string, id: string): Promise<Generation[]> {
+  return request<Generation[]>(charactersPath(projectCode, `${encodeURIComponent(id)}/views`))
 }
 
 /**
@@ -168,14 +215,18 @@ export function listViews(id: string): Promise<Generation[]> {
  * 所以前端不许拿 `approved` 自动去调定稿。
  */
 export function reviewViews(
+  projectCode: string,
   id: string,
   mode: string | null = null,
   regenerate = false,
 ): Promise<ViewReview> {
-  return request<ViewReview>(`/api/characters/${encodeURIComponent(id)}/views/review`, {
-    method: 'POST',
-    body: { mode, regenerate },
-  })
+  return request<ViewReview>(
+    charactersPath(projectCode, `${encodeURIComponent(id)}/views/review`),
+    {
+      method: 'POST',
+      body: { mode, regenerate },
+    },
+  )
 }
 
 /**
@@ -184,12 +235,16 @@ export function reviewViews(
  * 四个视角要逐个指名：建模吃的是一整组图，默认取「每个面最新那张」就不是他在界面上挑的那一组。
  */
 export function confirmViews(
+  projectCode: string,
   id: string,
   picks: Record<string, string>,
   note: string,
 ): Promise<Character> {
-  return request<Character>(`/api/characters/${encodeURIComponent(id)}/views/confirm`, {
-    method: 'POST',
-    body: { picks, note },
-  })
+  return request<Character>(
+    charactersPath(projectCode, `${encodeURIComponent(id)}/views/confirm`),
+    {
+      method: 'POST',
+      body: { picks, note },
+    },
+  )
 }

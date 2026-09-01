@@ -32,7 +32,8 @@ import ChatPanel, { Row, ROW_LABEL } from '@/components/chat'
 import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame, { useCurrentProject } from '@/components/ProjectFrame'
 import { DESIGN_ENTRIES, designPath } from '@/lib/design'
-import type { Draft, NamingOption, ProjectList } from '@/types/api'
+import { replaceWithProject, useProjectCode } from '@/lib/projectRoute'
+import type { Draft, NamingOption } from '@/types/api'
 
 /** 落盘完向设计师要命名建议的那句话：由界面替用户说，因为下一步的表单等着它的回话。 */
 const ASK_NAMING = '风格就按这版定了，已经落盘。给我几组项目名与代号，我选一组确认立项。'
@@ -45,6 +46,7 @@ const STARTER =
   '猪八戒，二郎神等，怪物是类似奥特曼电视剧中的怪兽，场景是在现代各个城市的地标建筑附近。'
 
 export default function ProjectPage() {
+  const projectCode = useProjectCode()
   const current = useCurrentProject()
   const [conversation, setConversation] = useState<string | null>(null)
   // 落盘完那一瞬草稿就没了，而详情还在路上：不记一笔这中间一段就既无风格也无立项
@@ -53,8 +55,8 @@ export default function ProjectPage() {
 
   // 与 ChatPanel 共用一个 key，看的就是它已经拉回来的那份详情
   const detail = useQuery({
-    queryKey: ['conversation', conversation],
-    queryFn: () => readConversation(conversation!),
+    queryKey: ['project', projectCode, 'conversation', conversation],
+    queryFn: () => readConversation(projectCode, conversation!),
     enabled: conversation !== null && drafting,
   })
 
@@ -77,11 +79,14 @@ export default function ProjectPage() {
   return (
     <ProjectFrame>
       <ChatPanel
+        projectCode={projectCode}
         agentCode="game_designer"
         targetKind="project"
         title="立项对焦"
         draftsAside
-        sidebar={<Sidebar settled={detail.data?.memory.decisions ?? []} />}
+        sidebar={
+          <Sidebar projectCode={projectCode} settled={detail.data?.memory.decisions ?? []} />
+        }
         starters={[STARTER]}
         finaleTitle={gate === 'style' ? '确认游戏风格' : '确认立项'}
         finaleKey={!drafting ? '' : finaleKey}
@@ -91,13 +96,14 @@ export default function ProjectPage() {
             : (say) =>
                 gate === 'style' ? (
                   <StyleGate
+                    projectCode={projectCode}
                     conversationId={conversation}
                     drafts={landing}
                     say={say}
                     onDone={() => setJustSettled(true)}
                   />
                 ) : (
-                  <LaunchGate naming={naming} say={say} />
+                  <LaunchGate projectCode={projectCode} naming={naming} say={say} />
                 )
         }
         onActiveChange={setConversation}
@@ -107,7 +113,7 @@ export default function ProjectPage() {
 }
 
 /** 边上那条窄栏：项目抬头 + 后续动作的入口 + 已经拍定的那几条。草稿的去处已经在抽屉里，这里不再摆一遍。 */
-function Sidebar({ settled }: { settled: string[] }) {
+function Sidebar({ projectCode, settled }: { projectCode: string; settled: string[] }) {
   const current = useCurrentProject()
   const project = current.data
   const navigate = useNavigate()
@@ -143,7 +149,7 @@ function Sidebar({ settled }: { settled: string[] }) {
               disabled={locked || !entry.ready}
               title={entry.hint}
               style={{ textAlign: 'left' }}
-              onClick={() => navigate(designPath(entry.slug))}
+              onClick={() => navigate(designPath(projectCode, entry.slug))}
             >
               <Space size={4}>
                 <RightOutlined style={{ fontSize: 10 }} />
@@ -192,11 +198,13 @@ function Settled({ items }: { items: string[] }) {
 
 /** 第一步：把设计师写的风格落盘。落完顺手替用户去要命名建议，不让他自己想起来该问。 */
 function StyleGate({
+  projectCode,
   conversationId,
   drafts,
   say,
   onDone,
 }: {
+  projectCode: string
   conversationId: string | null
   drafts: Draft[]
   say: (text: string) => void
@@ -208,13 +216,16 @@ function StyleGate({
   const commit = useMutation({
     mutationFn: () =>
       commitConversation(
+        projectCode,
         conversationId!,
         drafts.map((one) => one.id),
       ),
     onSuccess: async () => {
       message.success(`风格已落盘（${drafts.length} 份），接着定项目名与代号`)
       onDone()
-      await queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      await queryClient.invalidateQueries({
+        queryKey: ['project', projectCode, 'conversation', conversationId],
+      })
       say(ASK_NAMING)
     },
     onError: (err: Error) => message.error(err.message),
@@ -275,9 +286,18 @@ function Preview({ draft }: { draft: Draft }) {
 }
 
 /** 第二步：定名字与代号。一组建议一行，跟上面的题一个长相。 */
-function LaunchGate({ naming, say }: { naming: NamingOption[]; say: (text: string) => void }) {
+function LaunchGate({
+  projectCode,
+  naming,
+  say,
+}: {
+  projectCode: string
+  naming: NamingOption[]
+  say: (text: string) => void
+}) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [pick, setPick] = useState<string | null>(null)
   const [ownName, setOwnName] = useState('')
   const [ownCode, setOwnCode] = useState('')
@@ -291,12 +311,13 @@ function LaunchGate({ naming, say }: { naming: NamingOption[]; say: (text: strin
   const ok = name !== '' && CODE_RULE.test(code)
 
   const finalize = useMutation({
-    mutationFn: () => finalizeProject({ name, code }),
-    onSuccess: (fresh: ProjectList) => {
+    mutationFn: () => finalizeProject(projectCode, { name, code }),
+    onSuccess: (fresh) => {
       message.success('立项完成，目录骨架与 git 规则已经铺好')
-      queryClient.setQueryData(['projects'], fresh)
-      // 代号变了等于换了个项目身份，缓存里跟项目有关的东西一律重取
-      void queryClient.invalidateQueries()
+      queryClient.removeQueries({ queryKey: ['project', projectCode] })
+      queryClient.setQueryData(['project', fresh.code], fresh)
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      replaceWithProject(navigate, fresh.code)
     },
     onError: (err: Error) => message.error(err.message),
   })

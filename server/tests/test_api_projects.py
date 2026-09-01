@@ -1,7 +1,7 @@
 """项目管理接口。
 
-这层的看点不是 CRUD 而是三件事：项目目录可以在磁盘任意位置、`?project=` 只查不切、配置
-读写直通磁盘上的 `project.json`（库里没有副本，所以不存在对账）。
+这层的看点不是 CRUD 而是三件事：项目目录可以在磁盘任意位置、每个项目内请求都由路径中的
+`project_code` 定位、配置读写直通磁盘上的 `project.json`（库里没有副本，所以不存在对账）。
 """
 
 from __future__ import annotations
@@ -29,7 +29,10 @@ def create(client: TestClient, name: str, code: str, dir_path: Path | None = Non
     response = client.post("/api/projects/bootstrap", json={"dir_path": str(dir_path)})
     assert response.status_code == 201, response.text
 
-    response = client.post("/api/projects/current/finalize", json={"name": name, "code": code})
+    draft_code = response.json()["code"]
+    response = client.post(
+        f"/api/projects/{draft_code}/finalize", json={"name": name, "code": code}
+    )
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -39,7 +42,7 @@ def summary(body: dict, code: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 列表、新建、导入、切换
+# 列表、新建、导入
 # --------------------------------------------------------------------------- #
 
 
@@ -48,12 +51,10 @@ def test_empty_install_lists_nothing_but_tells_where_to_put_things(
 ) -> None:
     body = client.get("/api/projects").json()
 
-    assert body["projects"] == []
-    assert body["opened"] is None
-    assert body["default_root"] == str(projects_root)
+    assert body == {"projects": [], "default_root": str(projects_root)}
 
 
-def test_bootstrap_opens_a_drafting_project_without_the_skeleton(
+def test_bootstrap_returns_a_drafting_project_without_the_skeleton(
     client: TestClient, tmp_path: Path
 ) -> None:
     """选完目录就能开始对焦，但此时还不该铺一堆写着「待填」的模板。"""
@@ -62,8 +63,7 @@ def test_bootstrap_opens_a_drafting_project_without_the_skeleton(
     response = client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
 
     assert response.status_code == 201, response.text
-    body = response.json()
-    row = summary(body, body["opened"])
+    row = response.json()
     assert row["stage"] == "drafting"
     assert row["name"] == "待命名"  # 暂时借目录名
     assert layout.is_project_dir(target)
@@ -127,25 +127,21 @@ def test_bootstrap_overwrites_the_old_project_once_confirmed(
     )
 
     assert response.status_code == 201, response.text
-    body = response.json()
-    assert summary(body, body["opened"])["stage"] == "drafting"
-    assert [item["code"] for item in body["projects"]] == [body["opened"]]  # 旧那条索引退场
+    draft = response.json()
+    assert draft["stage"] == "drafting"
+    listed = client.get("/api/projects").json()["projects"]
+    assert [item["code"] for item in listed] == [draft["code"]]  # 旧那条索引退场
     assert (target / ".atelier" / "project.db").is_file()  # 库删干净了还得重新建出来
     assert (target / "characters" / "参考图.png").is_file()
 
 
-def test_finalize_lands_in_the_default_root_and_opens_it(
-    client: TestClient, projects_root: Path
-) -> None:
-    """刚立完项就是要用它，不必再点一次打开。"""
+def test_finalize_lands_in_the_default_root(client: TestClient, projects_root: Path) -> None:
     body = create(client, "赤瞳系列", "chitong")
 
-    assert body["opened"] == "chitong"
-    assert [item["code"] for item in body["projects"]] == ["chitong"]  # 临时代号那条已经退场
-    row = summary(body, "chitong")
-    assert row["dir_path"] == str(projects_root / "赤瞳系列")
-    assert row["managed"] is True
-    assert row["stage"] == "ready"
+    assert body["code"] == "chitong"
+    assert body["dir_path"] == str(projects_root / "赤瞳系列")
+    assert body["managed"] is True
+    assert body["stage"] == "ready"
     assert layout.is_project_dir(projects_root / "赤瞳系列")
 
 
@@ -157,9 +153,8 @@ def test_finalize_lays_out_the_skeleton_and_the_git_rules(
 
     body = create(client, "我的项目", "mine", target)
 
-    row = summary(body, "mine")
-    assert row["dir_path"] == str(target)
-    assert row["managed"] is False
+    assert body["dir_path"] == str(target)
+    assert body["managed"] is False
     assert (target / "characters").is_dir()
     assert (target / "art-bible.md").is_file()
     # 图片不走 LFS 会把用户的仓库撑爆
@@ -172,11 +167,12 @@ def test_finalize_keeps_what_the_focusing_already_settled(
 ) -> None:
     """对焦阶段沉淀下来的 art bible 不能被模板盖掉。"""
     target = tmp_path / "待命名"
-    client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
-    client.put("/api/projects/current/art-bible", json={"content": "# 聊出来的\n"})
+    bootstrap = client.post("/api/projects/bootstrap", json={"dir_path": str(target)})
+    draft_code = bootstrap.json()["code"]
+    client.put(f"/api/projects/{draft_code}/art-bible", json={"content": "# 聊出来的\n"})
 
     create_response = client.post(
-        "/api/projects/current/finalize", json={"name": "我的项目", "code": "mine"}
+        f"/api/projects/{draft_code}/finalize", json={"name": "我的项目", "code": "mine"}
     )
 
     assert create_response.status_code == 200, create_response.text
@@ -196,9 +192,12 @@ def test_a_project_json_without_stage_reads_as_ready(client: TestClient, tmp_pat
 
 def test_finalize_with_a_taken_code_is_409(client: TestClient, tmp_path: Path) -> None:
     create(client, "第一个", "dup", tmp_path / "a")
-    client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "b")})
+    bootstrap = client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "b")})
+    draft_code = bootstrap.json()["code"]
 
-    response = client.post("/api/projects/current/finalize", json={"name": "第二个", "code": "dup"})
+    response = client.post(
+        f"/api/projects/{draft_code}/finalize", json={"name": "第二个", "code": "dup"}
+    )
 
     assert response.status_code == 409
     assert "dup" in response.json()["detail"]
@@ -206,9 +205,12 @@ def test_finalize_with_a_taken_code_is_409(client: TestClient, tmp_path: Path) -
 
 def test_finalize_with_an_impossible_name_is_400(client: TestClient, tmp_path: Path) -> None:
     """名字要当目录名用，斜杠这类字符在布局层就被拦下，是入参问题。"""
-    client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "a")})
+    bootstrap = client.post("/api/projects/bootstrap", json={"dir_path": str(tmp_path / "a")})
+    draft_code = bootstrap.json()["code"]
 
-    response = client.post("/api/projects/current/finalize", json={"name": "a/b", "code": "slash"})
+    response = client.post(
+        f"/api/projects/{draft_code}/finalize", json={"name": "a/b", "code": "slash"}
+    )
 
     assert response.status_code == 400
 
@@ -223,8 +225,8 @@ def test_import_mounts_a_directory_from_anywhere(client: TestClient, tmp_path: P
 
     assert response.status_code == 200
     body = response.json()
-    assert body["opened"] == "p1"
-    assert summary(body, "p1")["dir_path"] == str(tmp_path / "src")
+    assert body["code"] == "p1"
+    assert body["dir_path"] == str(tmp_path / "src")
 
 
 def test_import_of_a_plain_directory_is_404(client: TestClient, tmp_path: Path) -> None:
@@ -234,28 +236,26 @@ def test_import_of_a_plain_directory_is_404(client: TestClient, tmp_path: Path) 
     assert client.post("/api/projects/import", json={"dir_path": str(plain)}).status_code == 404
 
 
-def test_opening_another_project_moves_over(client: TestClient) -> None:
+def test_project_details_are_addressed_independently(client: TestClient) -> None:
     create(client, "第一个", "p1")
     create(client, "第二个", "p2")
 
-    body = client.put("/api/projects/current", json={"code": "p1"}).json()
-
-    assert body["opened"] == "p1"
-    assert client.get("/api/projects/current").json()["code"] == "p1"
+    assert client.get("/api/projects/p1").json()["name"] == "第一个"
+    assert client.get("/api/projects/p2").json()["name"] == "第二个"
 
 
-def test_switching_to_an_unknown_project_is_404(client: TestClient) -> None:
-    assert client.put("/api/projects/current", json={"code": "nope"}).status_code == 404
+def test_unknown_project_is_404(client: TestClient) -> None:
+    assert client.get("/api/projects/nope").status_code == 404
 
 
 def test_delete_only_removes_the_index_entry(client: TestClient, tmp_path: Path) -> None:
     """项目目录是用户的资产，移出只动本机索引。"""
     create(client, "项目", "p1", tmp_path / "src")
 
-    body = client.delete("/api/projects/p1").json()
+    response = client.delete("/api/projects/p1")
 
-    assert body["projects"] == []
-    assert body["opened"] is None
+    assert response.status_code == 204
+    assert client.get("/api/projects").json()["projects"] == []
     assert layout.is_project_dir(tmp_path / "src")
 
 
@@ -275,27 +275,24 @@ def test_sync_claims_projects_dropped_into_the_default_root(
     assert summary(body, "outside")["dir_path"] == str(projects_root / "外面的")
 
 
-def test_health_reports_the_opened_project(client: TestClient) -> None:
-    """前端启动时靠它决定是进工作台还是引导去新建项目。"""
-    assert client.get("/api/health").json()["opened_project"] is None
-
-    create(client, "项目", "p1")
+def test_health_only_reports_system_state(client: TestClient) -> None:
     body = client.get("/api/health").json()
 
-    assert body["opened_project"] == "p1"
-    assert body["project_db"].endswith("/.atelier/project.db")
+    assert body["ok"] is True
+    assert "opened_project" not in body
+    assert "project_db" not in body
 
 
 # --------------------------------------------------------------------------- #
-# 没选项目时
+# 路径必须显式指定项目
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/projects/current", "/api/projects/current/config", "/api/projects/current/art-bible"],
+    ["/api/projects/nope", "/api/projects/nope/config", "/api/projects/nope/art-bible"],
 )
-def test_project_scoped_reads_need_a_project(client: TestClient, path: str) -> None:
+def test_project_scoped_reads_need_a_known_project(client: TestClient, path: str) -> None:
     response = client.get(path)
 
     assert response.status_code == 404
@@ -310,14 +307,14 @@ def test_project_scoped_reads_need_a_project(client: TestClient, path: str) -> N
 def test_config_patch_only_touches_what_the_form_sent(client: TestClient) -> None:
     """表单没提的字段（含用户手写的额外键）必须原样留着。"""
     create(client, "项目", "p1")
-    project_dir = Path(client.get("/api/projects/current").json()["dir_path"])
+    project_dir = Path(client.get("/api/projects/p1").json()["dir_path"])
     raw_path = layout.project_json_path(project_dir)
     raw = json.loads(raw_path.read_text(encoding="utf-8"))
     raw["我的备注"] = "下周交付"
     raw_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     body = client.put(
-        "/api/projects/current/config",
+        "/api/projects/p1/config",
         json={"name": "改了名", "style": {"art_style": "国风水墨"}},
     ).json()
 
@@ -328,67 +325,57 @@ def test_config_patch_only_touches_what_the_form_sent(client: TestClient) -> Non
     assert body["conversation_audit"] is False
     assert json.loads(raw_path.read_text(encoding="utf-8"))["我的备注"] == "下周交付"
     # 目录名不跟着改名走，否则所有已存的相对路径都得重算
-    assert Path(client.get("/api/projects/current").json()["dir_path"]) == project_dir
+    assert Path(client.get("/api/projects/p1").json()["dir_path"]) == project_dir
     assert summary(client.get("/api/projects").json(), "p1")["name"] == "改了名"
 
 
 def test_config_can_toggle_conversation_audit(client: TestClient) -> None:
     create(client, "项目", "p1")
 
-    enabled = client.put("/api/projects/current/config", json={"conversation_audit": True}).json()
+    enabled = client.put("/api/projects/p1/config", json={"conversation_audit": True}).json()
     assert enabled["conversation_audit"] is True
 
-    project_dir = Path(client.get("/api/projects/current").json()["dir_path"])
+    project_dir = Path(client.get("/api/projects/p1").json()["dir_path"])
     assert projects_mod.read_config(project_dir).conversation_audit is True
 
-    disabled = client.put("/api/projects/current/config", json={"conversation_audit": False}).json()
+    disabled = client.put("/api/projects/p1/config", json={"conversation_audit": False}).json()
     assert disabled["conversation_audit"] is False
 
 
 def test_config_is_read_from_disk_not_from_a_copy(client: TestClient) -> None:
     """`project.json` 是唯一真相：用户在编辑器里手改，接口下一次就该读到。"""
     create(client, "项目", "p1")
-    project_dir = Path(client.get("/api/projects/current").json()["dir_path"])
+    project_dir = Path(client.get("/api/projects/p1").json()["dir_path"])
     config = projects_mod.read_config(project_dir)
     config.defaults.image_size = 1024
     projects_mod.write_config(project_dir, config)
 
-    body = client.get("/api/projects/current/config").json()
+    body = client.get("/api/projects/p1/config").json()
 
     assert body["defaults"]["image_size"] == 1024
 
 
 def test_two_projects_keep_separate_configs(client: TestClient) -> None:
-    """A5 的验收点：两个项目各自独立配置。"""
+    """两个 URL 指定的项目各自读写自己的配置，不依赖请求顺序。"""
     create(client, "第一个", "p1")
-    client.put("/api/projects/current/config", json={"style": {"art_style": "国风水墨"}})
+    client.put("/api/projects/p1/config", json={"style": {"art_style": "国风水墨"}})
     create(client, "第二个", "p2")
-    client.put("/api/projects/current/config", json={"style": {"art_style": "蒸汽朋克"}})
+    client.put("/api/projects/p2/config", json={"style": {"art_style": "蒸汽朋克"}})
 
-    assert (
-        client.get("/api/projects/current/config", params={"project": "p1"}).json()["style"][
-            "art_style"
-        ]
-        == "国风水墨"
-    )
-    assert client.get("/api/projects/current/config").json()["style"]["art_style"] == "蒸汽朋克"
+    assert client.get("/api/projects/p1/config").json()["style"]["art_style"] == "国风水墨"
+    assert client.get("/api/projects/p2/config").json()["style"]["art_style"] == "蒸汽朋克"
 
 
-def test_the_project_query_param_looks_without_switching(client: TestClient) -> None:
-    """带 `?project=` 查一眼别的项目，不该把用户的当前项目换掉。"""
-    create(client, "第一个", "p1")
-    create(client, "第二个", "p2")
-
-    assert (
-        client.get("/api/projects/current/config", params={"project": "p1"}).json()["code"] == "p1"
-    )
-    assert client.get("/api/projects").json()["opened"] == "p2"
-
-
-def test_an_unknown_project_query_param_is_404(client: TestClient) -> None:
+def test_unknown_project_path_is_404(client: TestClient) -> None:
     create(client, "项目", "p1")
 
-    assert client.get("/api/projects/current/config", params={"project": "nope"}).status_code == 404
+    assert client.get("/api/projects/nope/config").status_code == 404
+
+
+def test_old_unscoped_project_apis_do_not_exist(client: TestClient) -> None:
+    assert client.get("/api/characters").status_code == 404
+    assert client.get("/api/conversations").status_code == 404
+    assert client.get("/api/memory").status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -399,7 +386,7 @@ def test_an_unknown_project_query_param_is_404(client: TestClient) -> None:
 def test_art_bible_starts_from_the_template(client: TestClient) -> None:
     create(client, "赤瞳系列", "chitong")
 
-    body = client.get("/api/projects/current/art-bible").json()
+    body = client.get("/api/projects/chitong/art-bible").json()
 
     assert body["content"].startswith("# 赤瞳系列 视觉规范")
     assert body["path"].endswith("art-bible.md")
@@ -411,10 +398,10 @@ def test_art_bible_save_exposes_the_forbidden_terms(client: TestClient) -> None:
     create(client, "项目", "p1")
     content = "# 项目 视觉规范\n\n## 6 风格禁止项\n\n- 赛博霓虹\n- 塑料光泽\n"
 
-    saved = client.put("/api/projects/current/art-bible", json={"content": content}).json()
+    saved = client.put("/api/projects/p1/art-bible", json={"content": content}).json()
 
     assert saved["forbidden"] == ["赛博霓虹", "塑料光泽"]
-    assert client.get("/api/projects/current/art-bible").json()["content"] == content
+    assert client.get("/api/projects/p1/art-bible").json()["content"] == content
     assert Path(saved["path"]).read_text(encoding="utf-8") == content
 
 
@@ -423,9 +410,8 @@ def test_art_bible_save_exposes_the_forbidden_terms(client: TestClient) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def make_character(client: TestClient, name: str, project: str | None = None) -> Path:
-    params = {"project": project} if project else None
-    project_dir = Path(client.get("/api/projects/current", params=params).json()["dir_path"])
+def make_character(client: TestClient, name: str, project: str = "p1") -> Path:
+    project_dir = Path(client.get(f"/api/projects/{project}").json()["dir_path"])
     target = project_dir / "characters" / name
     target.mkdir(parents=True)
     (target / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
@@ -437,27 +423,26 @@ def test_scan_claims_what_the_user_copied_in(client: TestClient) -> None:
     create(client, "项目", "p1")
     make_character(client, "chitong_beast")
 
-    result = client.post("/api/projects/current/scan").json()
+    result = client.post("/api/projects/p1/scan").json()
 
     assert result == {"added": ["chitong_beast"], "missing": [], "total": 1}
-    rows = client.get("/api/projects/current/characters").json()
+    rows = client.get("/api/projects/p1/characters").json()
     assert [row["name"] for row in rows] == ["chitong_beast"]
     assert rows[0]["dir_name"] == "characters/chitong_beast"
     assert rows[0]["state"]
 
 
 def test_characters_are_isolated_per_project(client: TestClient) -> None:
-    """A5 的验收点：切项目后素材列表隔离。"""
+    """两个项目的素材列表由各自 URL 定位，交错请求也不会串库。"""
     create(client, "第一个", "p1")
-    make_character(client, "chitong_beast")
-    client.post("/api/projects/current/scan")
+    make_character(client, "chitong_beast", "p1")
+    client.post("/api/projects/p1/scan")
 
     create(client, "第二个", "p2")
-    make_character(client, "steam_golem")
-    client.post("/api/projects/current/scan")
+    make_character(client, "steam_golem", "p2")
+    client.post("/api/projects/p2/scan")
 
-    assert [row["name"] for row in client.get("/api/projects/current/characters").json()] == [
-        "steam_golem"
-    ]
-    first = client.get("/api/projects/current/characters", params={"project": "p1"}).json()
+    first = client.get("/api/projects/p1/characters").json()
+    second = client.get("/api/projects/p2/characters").json()
     assert [row["name"] for row in first] == ["chitong_beast"]
+    assert [row["name"] for row in second] == ["steam_golem"]

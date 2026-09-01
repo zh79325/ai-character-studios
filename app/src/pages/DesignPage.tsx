@@ -9,13 +9,15 @@ import { Navigate, useParams } from 'react-router-dom'
 
 import CharacterTable from '@/components/CharacterTable'
 import ProjectFrame from '@/components/ProjectFrame'
-import { DESIGN_ENTRIES, designEntry } from '@/lib/design'
+import { DESIGN_ENTRIES, designEntry, designPath } from '@/lib/design'
+import { useProjectCode } from '@/lib/projectRoute'
 
 export default function DesignPage() {
+  const projectCode = useProjectCode()
   const { category = '' } = useParams()
   const entry = designEntry(category)
 
-  if (!entry) return <Navigate to={`/design/${DESIGN_ENTRIES[0]!.slug}`} replace />
+  if (!entry) return <Navigate to={designPath(projectCode, DESIGN_ENTRIES[0]!.slug)} replace />
 
   return (
     <ProjectFrame requireReady breadcrumb={[{ label: entry.label }]}>

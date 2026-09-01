@@ -277,8 +277,8 @@ const BUBBLE: Record<string, { background: string; align: string }> = {
  * 子 Agent 生的图跟着那条消息走，用户对着它说「腿再长一点」就是下一轮的入参。后端现在还不会
  * 往 `attachments` 里塞东西（见 `agents/orchestrator.py`），所以这一段暂时不会出现。
  *
- * 接线时给每个附件带上 `url`（复用 `/api/characters/{id}/renders/{gid}/image` 那类取图
- * 口子）：渲染进程读不到磁盘，光有相对路径显不出图，只能当文件名摆着。
+ * 接线时给每个附件带上 `url`（复用 `/api/projects/{projectCode}/characters/{id}/renders/{gid}/image`
+ * 这类取图口子）：渲染进程读不到磁盘，光有相对路径显不出图，只能当文件名摆着。
  */
 function Shots({ items }: { items: Message['attachments'] }) {
   const shots = items.filter((one) => one.kind === 'image')
