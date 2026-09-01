@@ -18,6 +18,7 @@ from atelier.agents.definitions import (
 from atelier.settings import get_settings
 
 EXPECTED_AGENTS = {
+    "studio_director",
     "game_designer",
     "image_i2i",
     "image_t2i",
@@ -45,6 +46,11 @@ GOOD_META = """---
 agent_code: {code}
 capability: text
 role: 测试
+role_type: specialist
+focusable: false
+aliases: [测试]
+target_kinds: [project]
+stages: []
 max_turns: 3
 conversational: false
 memory_scope: none

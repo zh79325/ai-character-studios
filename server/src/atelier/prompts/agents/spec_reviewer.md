@@ -2,6 +2,11 @@
 agent_code: spec_reviewer
 capability: text
 role: 角色设定审校
+role_type: specialist
+focusable: false
+aliases: [设定审校, 设定评审]
+target_kinds: [character]
+stages: [spec]
 max_turns: 1
 conversational: false
 memory_scope: character

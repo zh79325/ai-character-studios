@@ -168,7 +168,11 @@ class Conversation(ProjectBase):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     target_kind: Mapped[str] = mapped_column(String(32))
     target_ref: Mapped[str | None] = mapped_column(String(128), default=None)
-    agent_code: Mapped[str] = mapped_column(String(64))
+    agent_code: Mapped[str] = mapped_column(String(64), default="studio_director")
+    """该对象会话的总管 Agent。专业 Agent 通过 ``focus_agent_code`` 进入临时粘性焦点。"""
+    focus_agent_code: Mapped[str | None] = mapped_column(String(64), default=None)
+    focus_started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    focus_reason: Mapped[str | None] = mapped_column(String(255), default=None)
     title: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(16), default="active")
     """新会话只会是 `active`：沉淀与丢弃都只处理草稿，不冻结会话。
@@ -186,6 +190,44 @@ class Conversation(ProjectBase):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class ConversationAgentBinding(ProjectBase):
+    """同一会话内某个业务 Agent 的独立 Provider 粘性绑定。"""
+
+    __tablename__ = "conversation_agent_bindings"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "agent_code", name="uq_conversation_agent_binding"),
+        Index("ix_conversation_agent_bindings_conv", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(64))
+    agent_code: Mapped[str] = mapped_column(String(64))
+    bound_provider_model_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    bound_provider_label: Mapped[str] = mapped_column(String(255), default="")
+    bound_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    rebind_count: Mapped[int] = mapped_column(Integer, default=0)
+    rebind_reason: Mapped[str | None] = mapped_column(String(255), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class AgentHandoff(ProjectBase):
+    """业务 Agent 路由与焦点变化的审计真相。"""
+
+    __tablename__ = "agent_handoffs"
+    __table_args__ = (Index("ix_agent_handoffs_conv", "conversation_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(64))
+    turn_no: Mapped[int] = mapped_column(Integer)
+    from_agent_code: Mapped[str] = mapped_column(String(64), default="")
+    to_agent_code: Mapped[str] = mapped_column(String(64), default="")
+    source: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="delegated")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
 class Message(ProjectBase):
@@ -219,7 +261,9 @@ class Message(ProjectBase):
     只有 done 进上下文。
     """
     agent_code: Mapped[str] = mapped_column(String(64), default="")
-    """这句话是哪个 Agent 说的。空串=会话主 Agent，user 那条恒为空。"""
+    """这句话的发送方。新消息始终明确填写；空串仅用于兼容旧消息。"""
+    recipient_agent_code: Mapped[str] = mapped_column(String(64), default="")
+    """用户消息的实际投递对象；assistant 消息通常留空。"""
     attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     """这条消息带的非文字产物，元素形如 `{"kind": "image", "path": ..., "generation_id": ...}`。
 

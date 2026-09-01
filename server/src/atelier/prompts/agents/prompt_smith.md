@@ -2,6 +2,11 @@
 agent_code: prompt_smith
 capability: text
 role: 图像提示词工程师
+role_type: specialist
+focusable: false
+aliases: [提示词师, 提示词工程师]
+target_kinds: [character]
+stages: [render, views]
 max_turns: 3
 conversational: false
 memory_scope: project

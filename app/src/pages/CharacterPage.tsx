@@ -7,16 +7,10 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { App, Button, Card, Collapse, Empty, Image, Space, Tag, Typography } from 'antd'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
-import {
-  listRenders,
-  listViews,
-  readCharacter,
-  renderCharacter,
-  renderImageUrl,
-} from '@/api/characters'
+import { listRenders, listViews, readCharacter, renderImageUrl } from '@/api/characters'
 import { commitConversation, listMemories, readConversation } from '@/api/conversations'
 import { ApiError } from '@/api/client'
 import ChatPanel from '@/components/chat'
@@ -26,8 +20,6 @@ import RenderDecisionGate from '@/components/RenderDecisionGate'
 import { designPath } from '@/lib/design'
 import { projectPath, useProjectCode } from '@/lib/projectRoute'
 import type { Attachment, Character, Draft, Generation, ProjectMemoryItem } from '@/types/api'
-
-const WRITER = 'spec_writer'
 
 /** 「效果图已生成」这一档：设定落盘后画师自动出图会把状态推到这里。 */
 const RENDER_GENERATED = 'S2_render_generated'
@@ -63,66 +55,11 @@ export default function CharacterPage() {
     enabled: conversationId !== null,
   })
 
-  const queryClient = useQueryClient()
-  const { message } = App.useApp()
   const renders = useQuery({
     queryKey: ['project', projectCode, 'character-renders', id],
     queryFn: () => listRenders(projectCode, id),
     enabled: id !== '',
   })
-
-  // 设定一落盘，画师就自动出第一版效果图，用户不用再手点「生成」。后端同步落一条
-  // thinking 画师消息后才回，所以触发后立刻刷一次会话把它取出来，进度交给 useConversation 订流。
-  const fireRender = useMutation({
-    mutationFn: () => renderCharacter(projectCode, id, '', ''),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversation'] }),
-        queryClient.invalidateQueries({
-          queryKey: ['project', projectCode, 'character-renders', id],
-        }),
-        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'character', id] }),
-      ])
-    },
-    onError: (error: Error) => message.error(error.message),
-  })
-
-  const busy =
-    fireRender.isPending || (detail.data?.messages ?? []).some((one) => one.status === 'thinking')
-  const hasRenderCandidate = (renders.data?.length ?? 0) > 0
-  // 一个角色只自动首生一次：重画由用户在收口抽屉点，别让 effect 的依赖抖动又开一张
-  const firedFor = useRef<string | null>(null)
-  useEffect(() => {
-    const row = character.data
-    if (!row || row.spec_path === null) return
-    if (row.state >= RENDER_GENERATED || hasRenderCandidate || busy) return
-    if (!renders.isSuccess || firedFor.current === row.id) return
-    firedFor.current = row.id
-    fireRender.mutate()
-    // 后端已同步落一条 thinking 画师消息：立刻刷会话把它取出来，useConversation 会接手订流
-    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversation'] })
-  }, [
-    character.data,
-    renders.isSuccess,
-    hasRenderCandidate,
-    busy,
-    projectCode,
-    queryClient,
-    fireRender,
-  ])
-
-  // /render 是同步长请求；首次 invalidate 可能早于后端落 thinking 消息。请求期间持续刷新这场会话，
-  // 一旦 thinking 到库，useConversation 就会自动接上 SSE，不让自动生图看起来像没有启动。
-  useEffect(() => {
-    if (!fireRender.isPending || conversationId === null) return
-    const refresh = () =>
-      void queryClient.invalidateQueries({
-        queryKey: ['project', projectCode, 'conversation', conversationId],
-      })
-    refresh()
-    const timer = window.setInterval(refresh, 500)
-    return () => window.clearInterval(timer)
-  }, [fireRender.isPending, conversationId, projectCode, queryClient])
 
   // 画师往会话里塞的效果图存的是相对 API 路径，渲染进程读不到磁盘，得换成带 baseUrl 的绝对地址
   const resolveImageUrl = useCallback(
@@ -153,18 +90,23 @@ export default function CharacterPage() {
   const drafts = (detail.data?.drafts ?? []).filter((one) => !one.stale)
   // 同一时刻只一个收口：有待确认 spec 草稿优先走确认设定，否则最新那张效果图没定稿就收成「采用/再画」
   const latestRender = renders.data?.[0]
+  const savedSpecAwaitingContinuation =
+    drafts.length === 0 && row?.spec_path !== null && row?.gate_spec_confirmed_at === null
+  const hasSpecGate = drafts.length > 0 || savedSpecAwaitingContinuation
   const inRenderReview =
-    drafts.length === 0 &&
+    !hasSpecGate &&
     row?.state === RENDER_GENERATED &&
     latestRender !== undefined &&
     !latestRender.is_final
-  const finaleTitle = drafts.length > 0 ? '确认角色设定' : '这张效果图'
+  const finaleTitle = hasSpecGate ? '确认角色设定' : '这张效果图'
   const finaleKey =
     drafts.length > 0
       ? `spec:${drafts.map((one) => one.id).join(',')}`
-      : inRenderReview
-        ? `render:${latestRender!.id}`
-        : ''
+      : savedSpecAwaitingContinuation
+        ? `spec-saved:${row!.spec_path}`
+        : inRenderReview
+          ? `render:${latestRender!.id}`
+          : ''
 
   return (
     <ProjectFrame
@@ -176,7 +118,6 @@ export default function CharacterPage() {
     >
       <ChatPanel
         projectCode={projectCode}
-        agentCode={WRITER}
         targetKind="character"
         targetRef={id}
         title={row ? `${row.name} 设定对焦` : undefined}
@@ -197,7 +138,7 @@ export default function CharacterPage() {
         finaleKey={finaleKey}
         resolveImageUrl={resolveImageUrl}
         finale={
-          drafts.length > 0
+          hasSpecGate
             ? () => (
                 <CharacterDraftGate
                   projectCode={projectCode}
@@ -233,21 +174,25 @@ function CharacterDraftGate({
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const commit = useMutation({
-    mutationFn: () =>
+    mutationFn: (continuePipeline: boolean) =>
       commitConversation(
         projectCode,
         conversationId!,
-        drafts.map((one) => one.id),
+        drafts.length > 0 ? drafts.map((one) => one.id) : undefined,
+        continuePipeline,
       ),
-    onSuccess: async () => {
+    onSuccess: async (_result, continuePipeline) => {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ['project', projectCode, 'conversation', conversationId],
         }),
         queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'character'] }),
+        queryClient.invalidateQueries({
+          queryKey: ['project', projectCode, 'character-renders'],
+        }),
         queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'memories'] }),
       ])
-      message.success('角色设定已写入，正在自动生成效果图')
+      message.success(continuePipeline ? '角色设定已写入，首版效果图已生成' : '角色设定已保存')
     },
     onError: (error: Error) => message.error(error.message),
   })
@@ -258,26 +203,42 @@ function CharacterDraftGate({
         确认角色设定
       </Typography.Text>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        确认后写入角色目录；需要修改就关掉抽屉，继续在左侧对话。
+        {drafts.length > 0
+          ? '可以先保存后继续对焦，也可以确认并立即生成首版效果图。'
+          : '设定已保存但尚未放行；确认后会立即生成首版效果图。'}
       </Typography.Text>
-      <Collapse
-        size="small"
-        defaultActiveKey={drafts[0]?.id}
-        items={drafts.map((one) => ({
-          key: one.id,
-          label: <Typography.Text style={{ fontSize: 12 }}>{one.target_path}</Typography.Text>,
-          children: <MarkdownText text={one.content} />,
-        }))}
-      />
-      <Button
-        type="primary"
-        block
-        disabled={conversationId === null}
-        loading={commit.isPending}
-        onClick={() => commit.mutate()}
-      >
-        确认角色设定
-      </Button>
+      {drafts.length > 0 ? (
+        <Collapse
+          size="small"
+          defaultActiveKey={drafts[0]?.id}
+          items={drafts.map((one) => ({
+            key: one.id,
+            label: <Typography.Text style={{ fontSize: 12 }}>{one.target_path}</Typography.Text>,
+            children: <MarkdownText text={one.content} />,
+          }))}
+        />
+      ) : null}
+      <Space.Compact block>
+        {drafts.length > 0 ? (
+          <Button
+            block
+            disabled={conversationId === null}
+            loading={commit.isPending && commit.variables === false}
+            onClick={() => commit.mutate(false)}
+          >
+            先保存，让我再想想
+          </Button>
+        ) : null}
+        <Button
+          type="primary"
+          block
+          disabled={conversationId === null}
+          loading={commit.isPending && commit.variables === true}
+          onClick={() => commit.mutate(true)}
+        >
+          确认并继续下一步
+        </Button>
+      </Space.Compact>
     </Space>
   )
 }

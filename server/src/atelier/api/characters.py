@@ -17,9 +17,9 @@ from fastapi import APIRouter, status
 from fastapi.responses import FileResponse
 
 from atelier.agents import conversation as engine
+from atelier.agents import orchestrator, views, vision
 from atelier.agents import render as painter
 from atelier.agents import review as reviewer
-from atelier.agents import views, vision
 from atelier.agents.parsing import AssetSpec
 from atelier.api.deps import CurrentProject, ProjectDb, RuntimeDb
 from atelier.api.schemas import (
@@ -221,10 +221,19 @@ def render_character(
     """
     characters.get(project, character_id)
     conversation = engine.ensure(
-        project, agent_code="spec_writer", target_kind="character", target_ref=character_id
+        project,
+        agent_code=orchestrator.DIRECTOR,
+        target_kind="character",
+        target_ref=character_id,
     )
     engine.generate_render_turn(
-        project, runtime, ref, conversation, note=body.note, field=body.field
+        project,
+        runtime,
+        ref,
+        conversation,
+        note=body.note,
+        field=body.field,
+        record_start_handoff=True,
     )
     row = generations.latest(project, target_ref=character_id, stage=painter.STAGE)
     if row is None:

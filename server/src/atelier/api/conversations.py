@@ -21,10 +21,11 @@ from sqlalchemy.orm import Session
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from atelier.agents import conversation as engine
-from atelier.agents import parsing
+from atelier.agents import orchestrator, parsing
 from atelier.agents.stream_bus import BUS, COMMITTED, ERROR, TURN
 from atelier.api.deps import CurrentProject, ProjectDb, RuntimeDb
 from atelier.api.schemas import (
+    AgentOptionOut,
     ArchivedOut,
     ChoiceGroupOut,
     CommitIn,
@@ -36,6 +37,7 @@ from atelier.api.schemas import (
     DiffOut,
     DiscardOut,
     DraftOut,
+    HandoffOut,
     InterruptOut,
     MessageOut,
     NamingOptionOut,
@@ -48,7 +50,14 @@ from atelier.api.schemas import (
 from atelier.assets import archive, layout
 from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
-from atelier.db.project_models import ArtifactDraft, Character, Conversation, Message
+from atelier.db.project_models import (
+    AgentHandoff,
+    ArtifactDraft,
+    Character,
+    Conversation,
+    ConversationAgentBinding,
+    Message,
+)
 from atelier.errors import Conflict, NotFound
 
 router = APIRouter(prefix="/api/projects/{project_code}/conversations", tags=["conversations"])
@@ -83,6 +92,8 @@ def _counts(project: Session, conversation_id: str) -> tuple[int, int]:
 
 def _conversation_out(project: Session, row: Conversation) -> ConversationOut:
     messages, drafts = _counts(project, row.id)
+    actor = orchestrator.actor_for(row)
+    binding = project.get(ConversationAgentBinding, f"{row.id}:{actor}")
     return ConversationOut(
         id=row.id,
         target_kind=row.target_kind,
@@ -90,9 +101,11 @@ def _conversation_out(project: Session, row: Conversation) -> ConversationOut:
         agent_code=row.agent_code,
         title=row.title,
         status=row.status,
-        bound_provider_label=row.bound_provider_label,
-        rebind_count=row.rebind_count,
-        rebind_reason=row.rebind_reason,
+        bound_provider_label=(
+            binding.bound_provider_label if binding else row.bound_provider_label
+        ),
+        rebind_count=(binding.rebind_count if binding else row.rebind_count),
+        rebind_reason=(binding.rebind_reason if binding else row.rebind_reason),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
         message_count=messages,
@@ -109,7 +122,8 @@ def _message_out(row: Message) -> MessageOut:
         token_count=row.token_count,
         folded=row.folded,
         status=row.status,
-        agent_code=row.agent_code,
+        agent_code=("user" if row.role == "user" else row.agent_code or "studio_director"),
+        recipient_agent_code=row.recipient_agent_code,
         attachments=row.attachments,
         created_at=row.created_at.isoformat(),
     )
@@ -184,12 +198,45 @@ def _choices_out(groups: Sequence[parsing.ChoiceGroup]) -> list[ChoiceGroupOut]:
     ]
 
 
+def _agent_options(project: Session, row: Conversation) -> list[AgentOptionOut]:
+    stage_code = engine._stage_code(project, row)
+    return [
+        AgentOptionOut(
+            agent_code=agent.agent_code,
+            role=agent.role,
+            role_type=agent.role_type,
+            capability=agent.capability,
+            focusable=agent.focusable,
+            aliases=list(agent.aliases),
+        )
+        for agent in orchestrator.available_agents(row.target_kind, stage_code)
+    ]
+
+
+def _handoff_out(row: AgentHandoff | orchestrator.HandoffEvent) -> HandoffOut:
+    created_at = row.created_at.isoformat() if isinstance(row, AgentHandoff) else None
+    return HandoffOut(
+        turn_no=row.turn_no,
+        from_agent_code=row.from_agent_code,
+        to_agent_code=row.to_agent_code,
+        source=row.source,
+        reason=row.reason,
+        status=row.status,
+        created_at=created_at,
+    )
+
+
 def _detail(project: Session, ref: ProjectRef, row: Conversation) -> ConversationDetailOut:
     memory = engine.agent_memory_of(project, ref, row)
     artifact_path, _ = engine.artifact_of(project, ref, row)
     briefing = engine.briefing_of(project, ref, row)
     return ConversationDetailOut(
         conversation=_conversation_out(project, row),
+        director_agent_code=row.agent_code or orchestrator.DIRECTOR,
+        focus_agent_code=row.focus_agent_code,
+        focus_reason=row.focus_reason,
+        available_agents=_agent_options(project, row),
+        handoffs=[_handoff_out(item) for item in engine.handoffs_of(project, row.id)],
         messages=[_message_out(m) for m in engine.messages_of(project, row.id)],
         memory=ConversationMemoryOut(
             summary=memory.summary,
@@ -277,7 +324,15 @@ def send_message(
 ) -> TurnOut:
     """发一轮并等回答。慢是应该的——用户就在等这一轮的结果。"""
     row = engine.get(project, conversation_id)
-    result = engine.send(project, runtime, ref, row, payload.content, stream=payload.stream)
+    result = engine.send(
+        project,
+        runtime,
+        ref,
+        row,
+        payload.content,
+        recipient_agent_code=payload.recipient_agent_code,
+        stream=payload.stream,
+    )
     return TurnOut(
         conversation_id=result.conversation_id,
         turn_no=result.turn_no,
@@ -288,6 +343,9 @@ def send_message(
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         provider_label=result.provider_label,
+        agent_code=result.agent_code,
+        focus_agent_code=result.focus_agent_code,
+        handoffs=[_handoff_out(item) for item in result.handoffs],
         naming=_naming_out(result.naming),
         choices=_choices_out(result.choices),
     )
@@ -370,11 +428,19 @@ def commit_conversation(
     conversation_id: str,
     payload: CommitIn,
     project: ProjectDb,
+    runtime: RuntimeDb,
     ref: CurrentProject,
 ) -> CommitOut:
     """确认沉淀：这是整条链路里唯一会改工作区文件的接口。沉淀完会话继续开着，可以接着聊。"""
     row = engine.get(project, conversation_id)
-    result = engine.commit(project, ref, row, draft_ids=payload.draft_ids)
+    result = engine.commit(
+        project,
+        ref,
+        row,
+        draft_ids=payload.draft_ids,
+        runtime=runtime,
+        continue_pipeline=payload.continue_pipeline,
+    )
     return CommitOut(
         conversation_id=result.conversation_id,
         archived=[

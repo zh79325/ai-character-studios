@@ -10,16 +10,17 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from atelier.agents import context, dispatch, parsing, views
+from atelier.agents import audit, context, dispatch, parsing, views
 from atelier.agents import conversation as conv
 from atelier.agents.definitions import get_agent
 from atelier.agents.parsing import Verdict, VerdictError
-from atelier.assets import archive, characters, imaging, projects
+from atelier.assets import archive, characters, generations, imaging, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict
 from atelier.providers import text_chat
+from atelier.providers.base import Decision
 
 _log = structlog.get_logger(__name__)
 
@@ -55,6 +56,20 @@ REVIEW_REQUEST = """## 硬性约束清单（逐条比对，一条都不能跳）
 请只审这一张四宫格。逐格确认位置与视角正确、四个角色造型一致、硬性约束均满足，且每格只有
 一个完整角色。人物不得出现披风、斗篷、披肩、长袍、长外套、垂布、飘带或其他遮挡躯干和四肢
 轮廓的服装。任意一格不合格都应 REJECT，并在修正建议中点明格位。
+"""
+
+RENDER_REVIEW_REQUEST = """## 用户检查要求
+
+{note}
+
+## 硬性约束清单（逐条比对）
+
+{constraints}
+
+---
+
+请审查这张角色效果图。只检查角色特征、附属结构数量与分离度、服装是否遮挡身体轮廓，
+不要求纯色背景或标准视角。给出约定的 VIEW-CHECK 裁决；裁决只能提供建议，不能替用户定稿。
 """
 
 NO_CONSTRAINTS = "（这个角色还没有硬性约束清单，只按五项检查清单判）"
@@ -224,6 +239,53 @@ def _payload(
 # --------------------------------------------------------------------------- #
 
 
+def _call_reviewer(
+    runtime: Session,
+    ref: ProjectRef,
+    character: Character,
+    payload: list[dict[str, Any]],
+    *,
+    chat: dispatch.ChatFn | None,
+    decision: Decision | None,
+    reselect: dispatch.Reselect | None,
+    turn_audit: audit.TurnAudit | None,
+    purpose: str,
+) -> text_chat.ChatReply:
+    caller = chat or text_chat.complete
+    if decision is None:
+        return dispatch.run(
+            runtime,
+            REVIEWER,
+            payload,
+            caller,
+            project_code=ref.code,
+            task_id=character.id,
+        )
+    agent = get_agent(REVIEWER)
+    max_tokens = text_chat.output_budget(decision.candidate, agent.max_output_tokens)
+    if turn_audit is not None:
+        turn_audit.write_request(purpose, decision.candidate, payload, max_tokens=max_tokens)
+    try:
+        reply = dispatch.call(
+            runtime,
+            REVIEWER,
+            decision,
+            payload,
+            caller,
+            project_code=ref.code,
+            task_id=character.id,
+            reselect=reselect,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        if turn_audit is not None:
+            turn_audit.write_error(exc)
+        raise
+    if turn_audit is not None:
+        turn_audit.write_response(reply)
+    return reply
+
+
 def review_once(
     project: Session,
     runtime: Session,
@@ -233,19 +295,25 @@ def review_once(
     *,
     chat: dispatch.ChatFn | None = None,
     attempt: int = 1,
+    decision: Decision | None = None,
+    reselect: dispatch.Reselect | None = None,
+    turn_audit: audit.TurnAudit | None = None,
 ) -> Verdict:
     """调一次 `vision_reviewer`，裁决全文落 `task_events`。
 
     解析不出裁决时照旧不当成 REJECT：那是格式事故，默认拒收会变成一次没有理由的驳回，用户
     看不出该改 prompt 还是该重试。
     """
-    reply = dispatch.run(
+    reply = _call_reviewer(
         runtime,
-        REVIEWER,
+        ref,
+        character,
         _payload(project, ref, character, picked),
-        chat or text_chat.complete,
-        project_code=ref.code,
-        task_id=character.id,
+        chat=chat,
+        decision=decision,
+        reselect=reselect,
+        turn_audit=turn_audit,
+        purpose=f"评审四视图（第 {attempt} 次）",
     )
     text = reply.content.strip()
     covered = [one.variant for one in picked]
@@ -287,6 +355,79 @@ def review_once(
         variants=covered,
         attempt=attempt,
     )
+    return verdict
+
+
+def review_render(
+    project: Session,
+    runtime: Session,
+    ref: ProjectRef,
+    character: Character,
+    *,
+    note: str = "",
+    chat: dispatch.ChatFn | None = None,
+    decision: Decision | None = None,
+    reselect: dispatch.Reselect | None = None,
+    turn_audit: audit.TurnAudit | None = None,
+) -> Verdict:
+    """审查最新效果图，结论只供人工门禁参考，不推进角色状态。"""
+    row = generations.latest(project, target_ref=character.id, stage=generations.RENDER)
+    if row is None:
+        raise Conflict(f"{character.name} 还没有效果图，请先生成一张")
+    image_path = ref.absolute(row.file_path)
+    if not image_path.is_file():
+        raise Conflict(f"效果图 {row.file_path} 不在磁盘上了，请重新生成")
+    relative = characters.spec_target(character)
+    spec_path = ref.absolute(relative)
+    spec = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else None
+    request = RENDER_REVIEW_REQUEST.format(
+        note=note.strip() or "请按当前设定检查",
+        constraints=constraint_lines(character),
+    )
+    assembled = context.assemble(
+        get_agent(REVIEWER),
+        [context.Ask(content=request)],
+        addendum=conv.addendum(ref, REVIEWER),
+        artifact_path=relative if spec is not None else None,
+        artifact_text=spec,
+        project_memories=conv.enabled_memories(project, ref, character.id),
+    )
+    messages = assembled.payload()
+    last = messages[-1]
+    payload = [
+        *messages[:-1],
+        text_chat.vision_message(
+            str(last["content"]),
+            [image_path],
+            role=str(last.get("role", "user")),
+        ),
+    ]
+    reply = _call_reviewer(
+        runtime,
+        ref,
+        character,
+        payload,
+        chat=chat,
+        decision=decision,
+        reselect=reselect,
+        turn_audit=turn_audit,
+        purpose="评审效果图",
+    )
+    text = reply.content.strip()
+    verdict = parsing.parse_verdict(text, parsing.VIEW_CHECK)
+    record_event(
+        project,
+        character.id,
+        "render_reviewed",
+        text,
+        {
+            "decision": verdict.decision,
+            "generation_id": row.id,
+            "sections": {name: list(items) for name, items in verdict.sections.items()},
+        },
+        level="info" if verdict.approved else "warning",
+    )
+    project.commit()
     return verdict
 
 

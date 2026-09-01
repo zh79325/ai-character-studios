@@ -2,6 +2,11 @@
 agent_code: vision_reviewer
 capability: vision
 role: 图片质量审校
+role_type: specialist
+focusable: false
+aliases: [视觉审校, 视觉评审, 图片审校]
+target_kinds: [character]
+stages: [render, views]
 max_turns: 1
 conversational: false
 memory_scope: project

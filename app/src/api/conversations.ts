@@ -10,6 +10,7 @@
 import { baseUrl, request, withQuery } from './client'
 import { projectApiPath } from '@/lib/projectRoute'
 import type {
+  AgentHandoff,
   CommitResult,
   Conversation,
   ConversationDetail,
@@ -91,10 +92,11 @@ export function sendMessage(
   id: string,
   content: string,
   stream = true,
+  recipientAgentCode?: string,
 ): Promise<Turn> {
   return request<Turn>(conversationsPath(projectCode, `${encodeURIComponent(id)}/messages`), {
     method: 'POST',
-    body: { content, stream },
+    body: { content, stream, recipient_agent_code: recipientAgentCode },
   })
 }
 
@@ -106,15 +108,16 @@ export function readDiff(projectCode: string, id: string, draftId: string): Prom
   return request<Diff>(path)
 }
 
-/** 不传 draftIds 就是沉淀全部待确认草稿。基线过期时后端返回 409，磁盘一个字节不动。 */
+/** 不传 draftIds 就是沉淀全部待确认草稿；continuePipeline 控制是否立即生成首图。 */
 export function commitConversation(
   projectCode: string,
   id: string,
   draftIds?: string[],
+  continuePipeline = false,
 ): Promise<CommitResult> {
   return request<CommitResult>(conversationsPath(projectCode, `${encodeURIComponent(id)}/commit`), {
     method: 'POST',
-    body: { draft_ids: draftIds ?? null },
+    body: { draft_ids: draftIds ?? null, continue_pipeline: continuePipeline },
   })
 }
 
@@ -193,6 +196,9 @@ export interface ConversationSubscription {
    */
   fresh?: boolean
   onDelta: (piece: string) => void
+  onActor?: (agentCode: string) => void
+  onFocus?: (focus: { agent_code: string | null; reason: string | null }) => void
+  onHandoff?: (handoff: AgentHandoff) => void
   /** 一轮有了结果，后端推完这条就收流。 */
   onTurn?: (turn: { turn_no: number; drafts: string[] }) => void
   onError?: (reason: string) => void
@@ -220,6 +226,21 @@ export function subscribeConversation(sub: ConversationSubscription): () => void
     source = new EventSource(`${base}${path}`)
     source.addEventListener('delta', (event) => {
       sub.onDelta((event as MessageEvent<string>).data)
+    })
+    source.addEventListener('actor', (event) => {
+      const data = JSON.parse((event as MessageEvent<string>).data) as { agent_code: string }
+      sub.onActor?.(data.agent_code)
+    })
+    source.addEventListener('focus', (event) => {
+      sub.onFocus?.(
+        JSON.parse((event as MessageEvent<string>).data) as {
+          agent_code: string | null
+          reason: string | null
+        },
+      )
+    })
+    source.addEventListener('handoff', (event) => {
+      sub.onHandoff?.(JSON.parse((event as MessageEvent<string>).data) as AgentHandoff)
     })
     source.addEventListener('turn', (event) => {
       sub.onTurn?.(

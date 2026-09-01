@@ -2,6 +2,11 @@
 agent_code: game_designer
 capability: text
 role: 项目视觉规范设计师
+role_type: specialist
+focusable: true
+aliases: [项目设计师, 规范设计师, 游戏设计师]
+target_kinds: [project]
+stages: [project]
 max_turns: 30
 conversational: true
 memory_scope: project

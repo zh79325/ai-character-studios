@@ -11,7 +11,7 @@
  * 两条通道要分开看：字一个个出现靠 SSE，但这一轮真正的结果来自 `POST /messages` 的返回与
  * 随后刷新的详情。所以流断了不算出事——增量只是让等待不难受，落库的那份才是真相。
  */
-import { Alert, Card, Col, Row, Space, Spin, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Col, Row, Space, Spin, Tag, Typography } from 'antd'
 import type { ReactNode } from 'react'
 
 import ChoicePicker from '@/components/chat/ChoicePicker'
@@ -23,7 +23,7 @@ import type { Attachment, TargetKind } from '@/types/api'
 
 interface Props {
   projectCode: string
-  agentCode: string
+  agentCode?: string
   targetKind: TargetKind
   targetRef?: string | null
   /** 新会话的标题，留空让后端按 agent 取一个。 */
@@ -69,7 +69,7 @@ export type { Handoff }
 
 export default function ChatPanel({
   projectCode,
-  agentCode,
+  agentCode = 'studio_director',
   targetKind,
   targetRef = null,
   title,
@@ -96,6 +96,8 @@ export default function ChatPanel({
   })
   const detail = talk.detail
   const conversation = detail?.conversation
+  const focus = detail?.available_agents.find((agent) => agent.agent_code === talk.focusAgentCode)
+  const actor = detail?.available_agents.find((agent) => agent.agent_code === talk.activeAgent)
 
   // 只在用户还没开口时摆开场短语：聊起来之后它就是干扰
   const opening =
@@ -133,7 +135,21 @@ export default function ChatPanel({
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               {conversation && (
                 <Space size={6} wrap>
-                  <Tag color="blue">{conversation.bound_provider_label}</Tag>
+                  <Tag color={focus ? 'processing' : 'default'}>
+                    当前对焦：{focus?.role ?? '总管'}
+                  </Tag>
+                  {actor && talk.busy && <Tag color="blue">{actor.role}工作中</Tag>}
+                  <Button
+                    size="small"
+                    type="link"
+                    disabled={talk.busy}
+                    onClick={() => talk.setInput('@总管 ')}
+                  >
+                    @总管
+                  </Button>
+                  {conversation.bound_provider_label && (
+                    <Tag color="blue">{conversation.bound_provider_label}</Tag>
+                  )}
                   {conversation.rebind_count > 0 && (
                     <Tag color="orange" title={conversation.rebind_reason ?? undefined}>
                       换过 {conversation.rebind_count} 次服务商
@@ -157,6 +173,7 @@ export default function ChatPanel({
               )}
               <MessageList
                 messages={talk.messages}
+                handoffs={talk.handoffs}
                 pending={talk.pending}
                 streaming={talk.streaming}
                 interrupting={talk.interrupting}
@@ -191,6 +208,7 @@ export default function ChatPanel({
                 busy={talk.busy}
                 who={who}
                 starters={opening ? starters : []}
+                availableAgents={detail?.available_agents ?? []}
               />
             </Space>
           </div>

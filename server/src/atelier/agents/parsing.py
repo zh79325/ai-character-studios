@@ -16,6 +16,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from atelier.agents.orchestrator import (
+    HANDOFF_STATUSES,
+    ROUTE_ACTIONS,
+    HandoffResult,
+    RouteDecision,
+)
+
 MEMORY_KINDS = ("preference", "taboo", "fact")
 
 PROGRESS_MARKER = "[对焦进度]"
@@ -34,6 +41,10 @@ CHARACTER_MEMORY_MARKER = "[角色记忆]"
 这个角色成立的要求塞给了全项目，而这条会一路跟到别的角色的提示词里。
 """
 CHOICE_MARKER = "[待选项]"
+ROUTE_START = "[路由开始]"
+ROUTE_END = "[路由结束]"
+HANDOFF_START = "[交接开始]"
+HANDOFF_END = "[交接结束]"
 """还要用户拍板的那几处分歧。
 
 前端把它摆成选择组件，用户点完平台拼成一句话发回去。不让用户把选项文字手抄进输入框，
@@ -54,7 +65,22 @@ _DRAFT_RE = re.compile(
 
 # 一个块从它的标记行开始，到下一个标记行或文本结束为止
 _BLOCK_END_RE = re.compile(
-    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议|待选项)", re.MULTILINE
+    r"^[ \t>]*\[(?:草稿开始|草稿结束|对焦进度|项目记忆|角色记忆|项目命名建议|待选项"
+    r"|路由开始|路由结束|交接开始|交接结束)",
+    re.MULTILINE,
+)
+
+_ROUTE_RE = re.compile(
+    r"^[ \t>]*\[路由开始\]\s*$\n?(?P<body>.*?)^[ \t>]*\[路由结束\]\s*$",
+    re.DOTALL | re.MULTILINE,
+)
+_HANDOFF_RE = re.compile(
+    r"^[ \t>]*\[交接开始\]\s*$\n?(?P<body>.*?)^[ \t>]*\[交接结束\]\s*$",
+    re.DOTALL | re.MULTILINE,
+)
+_PROTOCOL_KEY_RE = re.compile(
+    r"^(?P<key>action|status|agent|reason|动作|状态|代理|原因)\s*[:：]\s*(?P<value>.*)$",
+    re.I,
 )
 
 _KEY_RE = re.compile(r"^(?P<key>已定|待定|下一步)\s*[:：]\s*(?P<value>.*)$")
@@ -197,6 +223,10 @@ class ChoiceGroup:
     multiple: bool = False
 
 
+class ProtocolError(ValueError):
+    """路由或交接结构块存在但不符合契约。"""
+
+
 @dataclass(frozen=True, slots=True)
 class TurnOutput:
     """一轮助手输出的解析结果，原文始终原样保留。"""
@@ -207,6 +237,8 @@ class TurnOutput:
     memories: tuple[MemoryItem, ...] = ()
     naming: tuple[NamingOption, ...] = ()
     choices: tuple[ChoiceGroup, ...] = ()
+    route: RouteDecision | None = None
+    handoff: HandoffResult | None = None
 
     @property
     def has_draft(self) -> bool:
@@ -501,8 +533,74 @@ def parse_choices(text: str) -> tuple[ChoiceGroup, ...]:
     return tuple(groups[:MAX_CHOICE_GROUPS])
 
 
+def _protocol_fields(body: str) -> dict[str, str]:
+    aliases = {
+        "动作": "action",
+        "状态": "status",
+        "代理": "agent",
+        "原因": "reason",
+    }
+    fields: dict[str, str] = {}
+    for line in body.splitlines():
+        match = _PROTOCOL_KEY_RE.match(_BULLET_RE.sub("", line).strip())
+        if match is None:
+            continue
+        key = aliases.get(match.group("key").lower(), match.group("key").lower())
+        fields[key] = match.group("value").strip().strip("`")
+    return fields
+
+
+def parse_route(text: str) -> RouteDecision | None:
+    """解析总管的唯一 ``[路由]`` 块；出现半截或非法动作时明确报错。"""
+    matches = list(_ROUTE_RE.finditer(text))
+    marked = ROUTE_START in text or ROUTE_END in text
+    if not matches:
+        if marked:
+            raise ProtocolError("路由块不完整")
+        return None
+    if len(matches) != 1:
+        raise ProtocolError("一轮只能输出一个路由块")
+    fields = _protocol_fields(matches[0].group("body"))
+    action = fields.get("action", "").lower()
+    agent_code = fields.get("agent", "")
+    if action not in ROUTE_ACTIONS:
+        raise ProtocolError(f"路由动作 {action!r} 非法")
+    if action == "delegate" and not agent_code:
+        raise ProtocolError("delegate 路由缺少 agent")
+    if action != "delegate":
+        agent_code = ""
+    return RouteDecision(action=action, agent_code=agent_code, reason=fields.get("reason", ""))
+
+
+def parse_handoff(text: str) -> HandoffResult | None:
+    """解析专业 Agent 的交接块；没有块代表仍在同一焦点继续对焦。"""
+    matches = list(_HANDOFF_RE.finditer(text))
+    marked = HANDOFF_START in text or HANDOFF_END in text
+    if not matches:
+        if marked:
+            raise ProtocolError("交接块不完整")
+        return None
+    if len(matches) != 1:
+        raise ProtocolError("一轮只能输出一个交接块")
+    fields = _protocol_fields(matches[0].group("body"))
+    status = fields.get("status", "").lower()
+    agent_code = fields.get("agent", "")
+    if status not in HANDOFF_STATUSES:
+        raise ProtocolError(f"交接状态 {status!r} 非法")
+    if status == "handoff" and not agent_code:
+        raise ProtocolError("handoff 交接缺少 agent")
+    if status != "handoff":
+        agent_code = ""
+    return HandoffResult(status=status, agent_code=agent_code, reason=fields.get("reason", ""))
+
+
+def strip_protocol_blocks(text: str) -> str:
+    """剥掉路由与交接机器块，保留用户可见说明。"""
+    return _HANDOFF_RE.sub("", _ROUTE_RE.sub("", text)).strip()
+
+
 def parse_turn(text: str) -> TurnOutput:
-    """解析一轮助手输出。原文原样带回，前端展示的仍是 Agent 说的话。"""
+    """解析一轮助手输出。原文原样带回，结构块另行返回。"""
     return TurnOutput(
         text=text,
         progress=parse_progress(text),
@@ -510,6 +608,8 @@ def parse_turn(text: str) -> TurnOutput:
         memories=parse_memories(text),
         naming=parse_naming(text),
         choices=parse_choices(text),
+        route=parse_route(text),
+        handoff=parse_handoff(text),
     )
 
 

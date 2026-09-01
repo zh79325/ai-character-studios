@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -33,6 +34,7 @@ from atelier.db.project_models import Character, Generation
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict
 from atelier.providers import image_gen, text_chat
+from atelier.providers.base import Decision
 
 _log = structlog.get_logger(__name__)
 
@@ -345,6 +347,10 @@ def render(
     generate: dispatch.ImageFn | None = None,
     note: str = "",
     field: str = "",
+    image_agent_code: str = PAINTER,
+    references: Sequence[str] = (),
+    image_decision: Decision | None = None,
+    image_reselect: dispatch.Reselect | None = None,
     turn_audit: audit.TurnAudit | None = None,
 ) -> RenderResult:
     """出一张渲染图：拿卡片、生图、落 `tmp/`、登台账，状态推到 S2。
@@ -371,14 +377,18 @@ def render(
 
     reply = dispatch.draw(
         runtime,
-        PAINTER,
+        image_agent_code,
         card.prompt,
         generate or image_gen.generate,
         negative_prompt=negative_prompt,
         width=width,
         height=height,
+        references=references,
         project_code=ref.code,
         task_id=character.id,
+        decision=image_decision,
+        reselect=image_reselect,
+        turn_audit=turn_audit,
     )
 
     if (reply.width, reply.height) != (width, height):

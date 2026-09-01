@@ -192,6 +192,11 @@ export interface AgentDef {
   agent_code: string
   capability: string
   role: string
+  role_type: 'director' | 'specialist' | 'executor'
+  focusable: boolean
+  aliases: string[]
+  target_kinds: string[]
+  stages: string[]
   max_turns: number
   conversational: boolean
   memory_scope: string
@@ -526,8 +531,10 @@ export interface Message {
   folded: boolean
   /** thinking=这一轮还在跑（内容是空的）、done、failed=炸了（内容是错因）、cancelled=被中断。 */
   status: MessageStatus
-  /** 这句话是哪个 Agent 说的。空串=这场会话的主 Agent，user 那条恒为空。 */
+  /** 这句话的实际发送方；用户消息固定为 user。 */
   agent_code: string
+  /** 用户消息在后端实际投递到的 Agent。 */
+  recipient_agent_code: string
   /** 这一轮带出来的东西（子 Agent 生的图）。后端暂时不塞，恒为空数组。 */
   attachments: Attachment[]
   created_at: string
@@ -581,8 +588,32 @@ export interface ChoiceGroup {
   multiple: boolean
 }
 
+export interface AvailableAgent {
+  agent_code: string
+  role: string
+  role_type: 'director' | 'specialist' | 'executor'
+  capability: string
+  focusable: boolean
+  aliases: string[]
+}
+
+export interface AgentHandoff {
+  turn_no: number
+  from_agent_code: string
+  to_agent_code: string
+  source: string
+  reason: string
+  status: string
+  created_at: string | null
+}
+
 export interface ConversationDetail {
   conversation: Conversation
+  director_agent_code: string
+  focus_agent_code: string | null
+  focus_reason: string | null
+  available_agents: AvailableAgent[]
+  handoffs: AgentHandoff[]
   messages: Message[]
   memory: ConversationMemory
   drafts: Draft[]
@@ -611,6 +642,10 @@ export interface Turn {
   prompt_tokens: number | null
   completion_tokens: number | null
   provider_label: string
+  /** 本轮最终实际处理的 Agent。 */
+  agent_code: string
+  focus_agent_code: string | null
+  handoffs: AgentHandoff[]
   naming: NamingOption[]
   choices: ChoiceGroup[]
 }

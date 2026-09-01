@@ -125,13 +125,21 @@ describe('草稿与沉淀', () => {
     expect(onlyCall()).toEqual({
       url: 'http://127.0.0.1:62066/api/projects/p%20one/conversations/c1/commit',
       method: 'POST',
-      body: { draft_ids: null },
+      body: { draft_ids: null, continue_pipeline: false },
     })
   })
 
   it('挑着沉淀就把选中的 id 原样送过去', async () => {
     await commitConversation(PROJECT, 'c1', ['d1', 'd2'])
-    expect(onlyCall().body).toEqual({ draft_ids: ['d1', 'd2'] })
+    expect(onlyCall().body).toEqual({
+      draft_ids: ['d1', 'd2'],
+      continue_pipeline: false,
+    })
+  })
+
+  it('确认继续时显式要求后端执行后续流水线', async () => {
+    await commitConversation(PROJECT, 'c1', ['d1'], true)
+    expect(onlyCall().body).toEqual({ draft_ids: ['d1'], continue_pipeline: true })
   })
 
   it('丢弃草稿是 POST，没有请求体', async () => {

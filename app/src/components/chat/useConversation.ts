@@ -25,7 +25,7 @@ import {
   sendMessage,
   subscribeConversation,
 } from '@/api/conversations'
-import type { ConversationDetail, TargetKind } from '@/types/api'
+import type { AgentHandoff, ConversationDetail, TargetKind } from '@/types/api'
 
 /**
  * 从外面递进来的一句话。
@@ -40,7 +40,7 @@ export interface Handoff {
 
 interface Options {
   projectCode: string
-  agentCode: string
+  agentCode?: string
   targetKind: TargetKind
   targetRef?: string | null
   /** 新会话的标题，留空让后端按 agent 取一个。 */
@@ -52,7 +52,7 @@ interface Options {
 
 export function useConversation({
   projectCode,
-  agentCode,
+  agentCode = 'studio_director',
   targetKind,
   targetRef = null,
   title,
@@ -65,6 +65,9 @@ export function useConversation({
   const [streaming, setStreaming] = useState<string | null>(null)
   /** 已经发出去、还没回到会话详情里的那句话。 */
   const [pending, setPending] = useState<string | null>(null)
+  const [activeAgent, setActiveAgent] = useState<string | null>(null)
+  const [liveFocus, setLiveFocus] = useState<string | null | undefined>(undefined)
+  const [liveHandoffs, setLiveHandoffs] = useState<AgentHandoff[]>([])
   const stop = useRef<(() => void) | null>(null)
   /** 这一轮是自己中断的：发消息那头随后会报 409，那不是意外，不弹错。 */
   const cut = useRef(false)
@@ -94,6 +97,12 @@ export function useConversation({
 
   const id = ensured.data?.conversation.id ?? null
 
+  useEffect(() => {
+    setLiveFocus(undefined)
+    setActiveAgent(null)
+    setLiveHandoffs([])
+  }, [id])
+
   const detail = useQuery({
     queryKey: ['project', projectCode, 'conversation', id],
     queryFn: () => readConversation(projectCode, id!),
@@ -108,17 +117,27 @@ export function useConversation({
   }, [id, onActiveChange])
 
   const send = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({
+      content,
+      recipientAgentCode,
+    }: {
+      content: string
+      recipientAgentCode?: string
+    }) => {
       if (id === null) throw new Error('还没有会话')
       setStreaming('')
+      setLiveHandoffs([])
       stop.current?.()
       // 先发出去（不等），后端清掉上一轮缓冲之后这条流才订得上本轮的字
-      const turn = sendMessage(projectCode, id, content)
+      const turn = sendMessage(projectCode, id, content, true, recipientAgentCode)
       stop.current = subscribeConversation({
         projectCode,
         conversationId: id,
         fresh: true,
         onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
+        onActor: setActiveAgent,
+        onFocus: (focus) => setLiveFocus(focus.agent_code),
+        onHandoff: (item) => setLiveHandoffs((current) => [...current, item]),
         // 这一轮出了结果就把攒下的字交给消息列表：POST 马上就回来，气泡先退回转圈
         onTurn: () => setStreaming(''),
         // 失败的措辞由发消息那头统一报，这里再弹一次就是同一件事说两遍
@@ -133,10 +152,13 @@ export function useConversation({
       }
     },
     onSuccess: async (turn) => {
+      setLiveFocus(turn.focus_agent_code)
+      setActiveAgent(turn.agent_code || null)
       // 等详情真拉回来再抖掉那句话，不然气泡会先消失一下再出现
       await queryClient.invalidateQueries({
         queryKey: ['project', projectCode, 'conversation', id],
       })
+      setLiveHandoffs([])
       setPending(null)
       void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversations'] })
       if (turn.folded_turns.length > 0) {
@@ -144,7 +166,7 @@ export function useConversation({
       }
     },
     // 后端是先落库再调模型，所以要先看这句话到底存下没：存下了就别再送回输入框，否则重发会冒出两条同样的话
-    onError: async (err: Error, content) => {
+    onError: async (err: Error, variables) => {
       await queryClient.invalidateQueries({
         queryKey: ['project', projectCode, 'conversation', id],
       })
@@ -154,9 +176,11 @@ export function useConversation({
         'conversation',
         id,
       ])
-      const landed = fresh?.messages.some((one) => one.role === 'user' && one.content === content)
+      const landed = fresh?.messages.some(
+        (one) => one.role === 'user' && one.content === variables.content,
+      )
       setPending(null)
-      if (landed !== true) setInput((prev) => (prev === '' ? content : prev))
+      if (landed !== true) setInput((prev) => (prev === '' ? variables.content : prev))
       // 自己掐的那一轮也会从这里回来：用户刚按的那下就是这个结果，再弹一句就是告诉他点错了
       if (cut.current) {
         cut.current = false
@@ -201,6 +225,9 @@ export function useConversation({
       projectCode,
       conversationId: id,
       onDelta: (piece) => setStreaming((prev) => (prev ?? '') + piece),
+      onActor: setActiveAgent,
+      onFocus: (focus) => setLiveFocus(focus.agent_code),
+      onHandoff: (item) => setLiveHandoffs((current) => [...current, item]),
       onTurn: settle,
       onError: settle,
     })
@@ -215,28 +242,42 @@ export function useConversation({
   }, [handoff])
 
   /** 发一句话出去。选择组件拼出来的那句也走这里，跟手打的一样进气泡。 */
-  const say = (content: string) => {
+  const say = (content: string, recipientAgentCode?: string) => {
     if (busy) return
     cut.current = false
     // 先清输入框、先把话摆上去：点完发送还看见自己那段字蹲在输入框里，像没发出去
     setInput('')
     setPending(content)
-    send.mutate(content)
+    send.mutate({ content, recipientAgentCode })
   }
 
-  const submit = () => {
+  const submit = (recipientAgentCode?: string) => {
     const content = input.trim()
-    if (content) say(content)
+    if (content) say(content, recipientAgentCode)
   }
+
+  const handoffs = [...(detail.data?.handoffs ?? []), ...liveHandoffs].filter(
+    (item, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.turn_no === item.turn_no &&
+          candidate.from_agent_code === item.from_agent_code &&
+          candidate.to_agent_code === item.to_agent_code &&
+          candidate.source === item.source,
+      ) === index,
+  )
 
   return {
     id,
     detail: detail.data ?? null,
     detailLoading: detail.isLoading,
     messages,
+    handoffs,
     pending,
     streaming,
     busy,
+    activeAgent,
+    focusAgentCode: liveFocus === undefined ? (detail.data?.focus_agent_code ?? null) : liveFocus,
     /** 会话还没接上来：这一刻页面上什么都做不了，摆个转圈就行。 */
     preparing: id === null && ensured.error === null,
     /** 会话接不上来时的错因。有它就别再摆转圈，否则用户会一直等一件不会来的事。 */

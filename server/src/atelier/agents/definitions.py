@@ -21,11 +21,18 @@ from atelier.settings import get_settings
 CAPABILITIES = {"text", "t2i", "i2i", "vision", "model3d", "t2v", "i2v"}
 MEMORY_SCOPES = {"project", "character", "none"}
 OUTPUT_CONTRACTS = {"markdown_spec", "asset_spec", "verdict", "image", "json"}
+ROLE_TYPES = {"director", "specialist", "executor"}
+TARGET_KINDS = {"project", "character"}
 
 REQUIRED_KEYS = (
     "agent_code",
     "capability",
     "role",
+    "role_type",
+    "focusable",
+    "aliases",
+    "target_kinds",
+    "stages",
     "max_turns",
     "conversational",
     "memory_scope",
@@ -56,6 +63,11 @@ class AgentDefinition:
     system_prompt: str
     source_file: str
     source_hash: str
+    role_type: str = "specialist"
+    focusable: bool = False
+    aliases: tuple[str, ...] = ()
+    target_kinds: tuple[str, ...] = ()
+    stages: tuple[str, ...] = ()
     max_output_tokens: int | None = None
     allow_tools: list[str] = field(default_factory=list)
 
@@ -80,6 +92,8 @@ def parse_agent_file(path: Path) -> AgentDefinition:
         raise AgentDefinitionError(f"{path.name}: agent_code={meta['agent_code']!r} 与文件名不一致")
     if meta["capability"] not in CAPABILITIES:
         raise AgentDefinitionError(f"{path.name}: capability={meta['capability']!r} 非法")
+    if meta["role_type"] not in ROLE_TYPES:
+        raise AgentDefinitionError(f"{path.name}: role_type={meta['role_type']!r} 非法")
     if meta["memory_scope"] not in MEMORY_SCOPES:
         raise AgentDefinitionError(f"{path.name}: memory_scope={meta['memory_scope']!r} 非法")
     if meta["output_contract"] not in OUTPUT_CONTRACTS:
@@ -95,8 +109,24 @@ def parse_agent_file(path: Path) -> AgentDefinition:
         raise AgentDefinitionError(f"{path.name}: 正文缺章节 {lacking}")
 
     allow_tools = meta.get("allow_tools") or []
-    if not isinstance(allow_tools, list):
-        raise AgentDefinitionError(f"{path.name}: allow_tools 必须是列表")
+    aliases = meta.get("aliases") or []
+    target_kinds = meta.get("target_kinds") or []
+    stages = meta.get("stages") or []
+    for key, value in (
+        ("allow_tools", allow_tools),
+        ("aliases", aliases),
+        ("target_kinds", target_kinds),
+        ("stages", stages),
+    ):
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise AgentDefinitionError(f"{path.name}: {key} 必须是字符串列表")
+    unknown_targets = set(target_kinds) - TARGET_KINDS
+    if unknown_targets:
+        raise AgentDefinitionError(
+            f"{path.name}: target_kinds 包含非法值 {sorted(unknown_targets)}"
+        )
+    if not aliases:
+        raise AgentDefinitionError(f"{path.name}: aliases 至少要有一个可显示名称")
 
     max_output_tokens = meta.get("max_output_tokens")
     if max_output_tokens is not None and (
@@ -110,6 +140,11 @@ def parse_agent_file(path: Path) -> AgentDefinition:
         agent_code=str(meta["agent_code"]),
         capability=str(meta["capability"]),
         role=str(meta["role"]),
+        role_type=str(meta["role_type"]),
+        focusable=bool(meta["focusable"]),
+        aliases=tuple(str(item).strip() for item in aliases if str(item).strip()),
+        target_kinds=tuple(str(item) for item in target_kinds),
+        stages=tuple(str(item) for item in stages),
         max_turns=int(meta["max_turns"]),
         conversational=bool(meta["conversational"]),
         memory_scope=str(meta["memory_scope"]),
@@ -145,3 +180,24 @@ def get_agent(agent_code: str) -> AgentDefinition:
         raise AgentDefinitionError(
             f"未定义的 agent_code={agent_code!r}，已知：{sorted(registry)}"
         ) from None
+
+
+def resolve_agent_alias(value: str) -> AgentDefinition | None:
+    """按标准 code 或展示别名解析 Agent；比较时忽略首尾空白与英文大小写。"""
+    wanted = value.strip().lstrip("@").casefold()
+    if not wanted:
+        return None
+    for agent in load_registry().values():
+        names = (agent.agent_code, agent.role, *agent.aliases)
+        if any(wanted == name.strip().casefold() for name in names):
+            return agent
+    return None
+
+
+def agents_for(target_kind: str, stage: str = "") -> tuple[AgentDefinition, ...]:
+    """返回目标与阶段允许的 Agent 目录，供后端白名单和前端候选共用。"""
+    return tuple(
+        agent
+        for agent in load_registry().values()
+        if target_kind in agent.target_kinds and (not agent.stages or stage in agent.stages)
+    )

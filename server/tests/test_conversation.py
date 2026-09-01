@@ -27,6 +27,7 @@ from atelier.db.project_models import (
     ArtifactDraft,
     Character,
     Conversation,
+    ConversationAgentBinding,
     Message,
     TaskEvent,
 )
@@ -362,7 +363,8 @@ def test_回答落库带上说话的agent(
     send(project_db, session, project, conversation, "开聊", ScriptedChat("好"))
 
     messages = engine.messages_of(project_db, conversation.id)
-    assert messages[0].agent_code == ""
+    assert messages[0].agent_code == "user"
+    assert messages[0].recipient_agent_code == DESIGNER
     assert messages[1].agent_code == DESIGNER
     assert messages[1].attachments == []
 
@@ -639,9 +641,11 @@ def test_绑定落进项目库(
     send(project_db, session, project, conversation, "开聊", ScriptedChat("好"))
 
     project_db.expire_all()
-    reloaded = engine.get(project_db, conversation.id)
-    assert reloaded.bound_provider_label == "bailian/qwen-plus"
-    assert reloaded.bound_at is not None
+    binding = project_db.get(ConversationAgentBinding, f"{conversation.id}:{DESIGNER}")
+    assert binding is not None
+    assert binding.bound_provider_label == "bailian/qwen-plus"
+    assert conversation.bound_provider_label == ""
+    assert binding.bound_at is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -1290,14 +1294,22 @@ def test_效果图评审阶段发言直接重画不走文本模型(
     # send() 的重画分支不转发假 generate，走的是真取图口子，这里替掉
     monkeypatch.setattr(image_gen, "generate", draw)
 
-    # chat 只喂给 prompt_smith 出卡片；会话型文本模型（WRITER）这一轮根本不该被调用
+    # 显式指派给 image_t2i 后直接重画；不再依赖阶段入口硬编码。
     result = engine.send(
-        project_db, session, project, conversation, "腿再长一点", chat=ScriptedChat(CARD)
+        project_db,
+        session,
+        project,
+        conversation,
+        "@文生图 腿再长一点",
+        recipient_agent_code=painter.PAINTER,
+        chat=ScriptedChat(CARD),
     )
 
     messages = engine.messages_of(project_db, conversation.id)
-    assert [one.role for one in messages] == ["user", "assistant"]
-    assert messages[0].content == "腿再长一点"
+    assert [one.role for one in messages] == ["user", "assistant", "assistant"]
+    assert messages[0].content == "@文生图 腿再长一点"
+    assert messages[0].recipient_agent_code == painter.PAINTER
+    assert messages[-2].agent_code == painter.SMITH
     assert messages[-1].agent_code == painter.PAINTER
     assert messages[-1].attachments[0]["kind"] == "image"
     assert result.turn_no == messages[-1].turn_no

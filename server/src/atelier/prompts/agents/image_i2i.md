@@ -2,6 +2,11 @@
 agent_code: image_i2i
 capability: i2i
 role: 图生图执行者
+role_type: executor
+focusable: false
+aliases: [图生图, 改图师]
+target_kinds: [character]
+stages: [render, views]
 max_turns: 1
 conversational: false
 memory_scope: none

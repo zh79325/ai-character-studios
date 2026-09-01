@@ -10,16 +10,17 @@
  * 一场会话里可以有多个 Agent 说话（主 Agent 指派子 Agent 生图、评审），所以称谓按每条消息
  * 自己的 `agent_code` 取，不按面板取；带出来的图挂在 `attachments` 上，跟着那条气泡走。
  */
-import { Button, Image, Space, Spin, Typography } from 'antd'
+import { Button, Image, Space, Spin, Tag, Typography } from 'antd'
 import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import MarkdownText from '@/components/MarkdownText'
 import { visibleText } from '@/lib/message'
-import type { Attachment, Message } from '@/types/api'
+import type { AgentHandoff, Attachment, Message } from '@/types/api'
 
 /** 各 Agent 在气泡上的称谓。表里没有的用面板给的 `who` 兜底。 */
 const WHO: Record<string, string> = {
+  studio_director: '总管',
   game_designer: '规范设计师',
   spec_writer: '角色设计师',
   spec_reviewer: '评审',
@@ -27,10 +28,13 @@ const WHO: Record<string, string> = {
   image_t2i: '画师',
   image_i2i: '改图师',
   vision_reviewer: '视觉评审',
+  model3d: '建模师',
+  video_gen: '视频生成师',
 }
 
 export default function MessageList({
   messages,
+  handoffs,
   pending,
   streaming,
   interrupting,
@@ -43,6 +47,7 @@ export default function MessageList({
   resolveImageUrl,
 }: {
   messages: Message[]
+  handoffs: AgentHandoff[]
   /** 本轮刚发出去的那句：先摆成气泡，不等落库后才看见。 */
   pending: string | null
   streaming: string | null
@@ -122,6 +127,12 @@ export default function MessageList({
             </div>
           </div>
         )}
+        {handoffs.map((item, index) => (
+          <HandoffCard
+            key={`${item.turn_no}:${item.from_agent_code}:${item.to_agent_code}:${item.source}:${index}`}
+            item={item}
+          />
+        ))}
         {messages.map((one) => {
           if (one.status === 'thinking') {
             // 库里说这一轮在跑：字有多少摆多少，一个字都还没有就摆转圈
@@ -191,6 +202,21 @@ export default function MessageList({
           />
         )}
       </Space>
+    </div>
+  )
+}
+
+function agentName(agentCode: string): string {
+  return WHO[agentCode] ?? agentCode
+}
+
+function HandoffCard({ item }: { item: AgentHandoff }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center' }}>
+      <Tag color={item.status === 'blocked' ? 'orange' : 'default'}>
+        {agentName(item.from_agent_code)} → {agentName(item.to_agent_code)}
+        {item.reason ? ` · ${item.reason}` : ''}
+      </Tag>
     </div>
   )
 }

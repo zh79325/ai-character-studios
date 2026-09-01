@@ -80,7 +80,6 @@ export default function ProjectPage() {
     <ProjectFrame>
       <ChatPanel
         projectCode={projectCode}
-        agentCode="game_designer"
         targetKind="project"
         title="立项对焦"
         draftsAside

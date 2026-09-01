@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from atelier.providers.base import Candidate
+    from atelier.providers.image_gen import ImageReply
     from atelier.providers.text_chat import ChatReply
 
 _SECRET_KEYS = frozenset({"api_key", "authorization", "access_token", "secret", "token"})
@@ -104,7 +105,9 @@ class TurnAudit:
     target: str
     agent_code: str
     started_at: datetime
+    route: Mapping[str, Any] = field(default_factory=dict)
     _calls: int = field(default=0, init=False)
+    _initialized: bool = field(default=False, init=False)
 
     @classmethod
     def create(
@@ -115,10 +118,11 @@ class TurnAudit:
         turn_no: int,
         target: str,
         agent_code: str,
+        route: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> TurnAudit:
         started = (now or datetime.now().astimezone()).astimezone()
-        name = f"{started:%Y%m%d-%H}-turn-{turn_no}.md"
+        name = f"{started:%Y%m%d-%H}-{agent_code}-turn-{turn_no}.md"
         return cls(
             path=target_dir / "tmp" / "conversation" / name,
             conversation_id=conversation_id,
@@ -126,6 +130,7 @@ class TurnAudit:
             target=target,
             agent_code=agent_code,
             started_at=started,
+            route=dict(route or {}),
         )
 
     def write_request(
@@ -148,18 +153,53 @@ class TurnAudit:
             f"- Max tokens：{max_tokens}\n\n"
             f"### Request\n{body}"
         )
-        if self._calls == 1:
-            header = (
-                "# LLM 对话审计\n\n"
-                f"- 会话：{self.conversation_id}\n"
-                f"- 轮次：{self.turn_no}\n"
-                f"- 时间：{self.started_at.isoformat()}\n"
-                f"- 目标：{self.target}\n"
-                f"- Agent：{self.agent_code}\n"
-            )
-            self._write(header + section, exclusive=True)
-        else:
-            self._write(section)
+        self._append(section)
+
+    def write_image_request(
+        self,
+        purpose: str,
+        candidate: Candidate,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        seed: int | None,
+        references: Sequence[str | Path],
+    ) -> None:
+        """记录生图请求；参考图只记路径，绝不把文件或 data URL 正文写入审计。"""
+        self._calls += 1
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": width,
+            "height": height,
+            "seed": seed,
+            "references": [str(item) for item in references],
+        }
+        body = _code_block(json.dumps(_safe_value(payload), ensure_ascii=False, indent=2), "json")
+        section = (
+            f"\n## 调用 {self._calls}：{purpose}\n\n"
+            f"- Provider：{candidate.label}\n"
+            f"- Model：{candidate.model_id}\n\n"
+            f"### Request\n{body}"
+        )
+        self._append(section)
+
+    def write_image_response(self, reply: ImageReply) -> None:
+        """记录生图事实与参数摘要，不把图片字节写入审计。"""
+        digest = hashlib.sha256(reply.data).hexdigest()[:16]
+        payload = {
+            "size": reply.size_text,
+            "suffix": reply.suffix,
+            "bytes": len(reply.data),
+            "sha256": digest,
+            "remaining": reply.remaining,
+            "latency_ms": reply.latency_ms,
+            "params": reply.params,
+        }
+        body = _code_block(json.dumps(_safe_value(payload), ensure_ascii=False, indent=2), "json")
+        self._write(f"\n### Response\n\n{body}")
 
     def _message_section(self, index: int, message: Mapping[str, Any]) -> str:
         """一条消息一节：小标题报 role，正文原样放，读的时候不用先在脑子里解 JSON。"""
@@ -192,6 +232,40 @@ class TurnAudit:
         if partial_response:
             content += "\n### Partial Response\n\n" + _code_block(partial_response, "markdown")
         self._write(content)
+
+    def _header(self) -> str:
+        lines = [
+            "# LLM 对话审计\n",
+            f"- 会话：{self.conversation_id}",
+            f"- 轮次：{self.turn_no}",
+            f"- 时间：{self.started_at.isoformat()}",
+            f"- 目标：{self.target}",
+            f"- Agent：{self.agent_code}",
+        ]
+        labels = {
+            "recipient_agent_code": "输入收件人",
+            "source": "决策来源",
+            "from_agent_code": "来源 Agent",
+            "allowed_agents": "候选白名单",
+            "reason": "交接原因",
+            "focus_change": "焦点变化",
+        }
+        for key, label in labels.items():
+            value = self.route.get(key)
+            if value in (None, "", [], ()):
+                continue
+            shown = (
+                "、".join(str(item) for item in value) if isinstance(value, list | tuple) else value
+            )
+            lines.append(f"- {label}：{shown}")
+        return "\n".join(lines) + "\n"
+
+    def _append(self, section: str) -> None:
+        if not self._initialized:
+            self._write(self._header() + section, exclusive=True)
+            self._initialized = True
+            return
+        self._write(section)
 
     def _write(self, content: str, *, exclusive: bool = False) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

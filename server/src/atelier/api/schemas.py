@@ -684,7 +684,9 @@ class MessageOut(Schema):
     status: str = "done"
     """thinking=正在等回答（前端摆转圈与中断按钮）、done、failed、cancelled。"""
     agent_code: str = ""
-    """这句话是哪个 Agent 说的，空串=会话主 Agent。前端按它给气泡取称谓。"""
+    """这句话的实际发送 Agent；用户消息固定为 user。"""
+    recipient_agent_code: str = ""
+    """用户消息的实际收件 Agent；assistant 消息通常为空。"""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     """这条消息带的非文字产物，元素形如 `{"kind": "image", "path": ..., "generation_id": ...}`。"""
     created_at: str
@@ -727,8 +729,32 @@ class ChoiceGroupOut(Schema):
     """真则这一项能同时拍好几个值，由 Agent 自己判断。"""
 
 
+class AgentOptionOut(Schema):
+    agent_code: str
+    role: str
+    role_type: str
+    capability: str
+    focusable: bool
+    aliases: list[str] = Field(default_factory=list)
+
+
+class HandoffOut(Schema):
+    turn_no: int
+    from_agent_code: str
+    to_agent_code: str
+    source: str
+    reason: str
+    status: str
+    created_at: str | None = None
+
+
 class ConversationDetailOut(Schema):
     conversation: ConversationOut
+    director_agent_code: str = "studio_director"
+    focus_agent_code: str | None = None
+    focus_reason: str | None = None
+    available_agents: list[AgentOptionOut] = Field(default_factory=list)
+    handoffs: list[HandoffOut] = Field(default_factory=list)
     messages: list[MessageOut] = Field(default_factory=list)
     memory: ConversationMemoryOut = Field(default_factory=ConversationMemoryOut)
     drafts: list[DraftOut] = Field(default_factory=list)
@@ -750,6 +776,9 @@ class ConversationDetailOut(Schema):
 class SendMessageIn(Schema):
     content: str = Field(min_length=1)
     stream: bool = Field(default=True, description="是否往 SSE 通道推增量")
+    recipient_agent_code: str | None = Field(
+        default=None, description="显式指定本轮收件 Agent；未填时按焦点和总管规则路由"
+    )
 
 
 class TurnOut(Schema):
@@ -762,12 +791,19 @@ class TurnOut(Schema):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     provider_label: str = ""
+    agent_code: str = ""
+    focus_agent_code: str | None = None
+    handoffs: list[HandoffOut] = Field(default_factory=list)
     naming: list[NamingOptionOut] = Field(default_factory=list)
     choices: list[ChoiceGroupOut] = Field(default_factory=list)
 
 
 class CommitIn(Schema):
     draft_ids: list[str] | None = Field(default=None, description="留空即沉淀全部待确认草稿")
+    continue_pipeline: bool = Field(
+        default=False,
+        description="角色设定沉淀后是否立即继续生成首版效果图",
+    )
 
 
 class ArchivedOut(Schema):

@@ -2,6 +2,11 @@
 agent_code: video_gen
 capability: t2v
 role: 视频生成执行者
+role_type: executor
+focusable: false
+aliases: [视频生成, 视频师]
+target_kinds: [project, character]
+stages: []
 max_turns: 1
 conversational: false
 memory_scope: none

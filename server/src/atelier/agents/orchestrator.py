@@ -1,65 +1,72 @@
-"""一场会话里的多 Agent 编排：阶段表与指派协议。
+"""一场会话里的多 Agent 编排：阶段白名单、显式收件人与交接协议。
 
-**本版只有骨架**：阶段表、判阶段、判这一轮谁说话，以及一段写清将来怎么接的协议说明。没有
-执行器，没有解析，谁都还没被指派过——真进角色设计阶段时按下面的接线图往里填。
-
-## 目标形态
-
-一个角色一场会话（`target_kind="character"` + `target_ref=角色 id`），会话行上的
-`agent_code` 是这场的**主 Agent**：它负责判断现在处在哪一阶段、这一阶段还差什么、什么
-时候该把活派给谁。用户始终只跟这一场会话说话，不用在页面之间跳。
-
-以角色为例，一场会话里跑完三段：
-
-1. 设定阶段：主 Agent 跟用户对话，把角色设定写成草稿，用户确认后落盘（`gate_spec`）。
-2. 渲染图阶段：主 Agent 读懂用户要什么，指派 `image_t2i` 生图；图回来后接着聊修改意见，
-   把已生成的那张当参考图指派 `image_i2i` 调效果，直到用户定稿（`gate_render`）。
-3. 四视图阶段：同理指派 `image_i2i` 出四张、`vision_reviewer` 审校。
-
-## 谁管阶段：状态机管，模型不管
-
-阶段跳转与人工门禁一律由 `Character.state` 与 `gate_*_confirmed_at` 把关（
-`assets/characters.py` 里那套 `advance` / `require_state` / `confirm_*`）。主 Agent
-只能在**当前阶段之内**指派子 Agent，不能自己宣布进了下一阶段——阶段是后续每一步的凭据，
-让模型改凭据等于没有凭据。
-
-## 指派协议怎么接（`DISPATCH_PROTOCOL`）
-
-主 Agent 在回答里输出一个动作块声明要调谁、拿什么入参。接线时按顺序补这四处：
-
-1. `prompts/agents/{主 Agent}.md`：把 `DISPATCH_PROTOCOL` 的格式写进提示词，并申明只准
-   指派 `Stage.crew` 里列的那几个。
-2. `agents/parsing.py`：仿 `parse_choices()` 加一个 `parse_dispatch()`，把动作块解析成
-   `(agent_code, params)`；同时把动作块的原文从展示文本里剔掉（前端 `visibleText`
-   已经按 `[标记]` 剥了一层，新标记要一起加进去）。
-3. 本文件加执行器 `run(project, runtime, ref, conversation, order)`：校验
-   `order.agent_code in stage.crew` → 调既有能力（生图走 `assets/render.py`、
-   `assets/views.py` 那两条现成链路，它们已经会把产物登记进 `generations`）→ 把结果写成
-   一条 assistant 消息：`agent_code=子 Agent`、`attachments=[{"kind": "image",
-   "path": 相对项目目录, "generation_id": ...}]`。
-4. `agents/conversation.py` 的 `send()`：解析出动作块就跑执行器，跑完把产物摘要接着喂回
-   主 Agent 再要一轮点评（同一场会话内的第二次模型调用，注意 `BUS` 的增量要按轮清，否则
-   新订上来的流会被上一轮的 `turn` 收掉）。
-
-前端不用改结构：消息已经带 `agent_code`（气泡按它取称谓）与 `attachments`（有图就在气泡
-下面铺缩略图），`components/chat/MessageList.tsx` 那两个分支现在就留着。
+业务 Agent 路由与 Provider 路由严格分层：本模块只决定由哪个 Agent 工作，不接触模型候选。
+角色阶段只由 ``Character`` 状态与人工门禁推导，模型输出不能修改状态机。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from atelier.agents.definitions import (
+    AgentDefinition,
+    agents_for,
+    get_agent,
+    load_registry,
+)
 from atelier.assets import characters as character_assets
 from atelier.db.project_models import Character, Conversation
+from atelier.errors import Conflict
 
-DISPATCH_PROTOCOL = """[指派开始]
-agent: image_t2i
-说明: 一句话讲清为什么现在派它
-参数:
-- prompt: 给子 Agent 的正向提示词
-- 参考图: 相对项目目录的路径，没有就省掉这一行
-[指派结束]"""
-"""主 Agent 声明指派的文本块。一轮最多一个块；解析与执行都还没接。"""
+DIRECTOR = "studio_director"
+MAX_HANDOFFS = 2
+ROUTE_ACTIONS = ("delegate", "status", "clarify")
+HANDOFF_STATUSES = ("continue", "complete", "blocked", "handoff")
+
+ROUTE_PROTOCOL = """[路由开始]
+action: delegate | status | clarify
+agent: <标准 Agent code；非 delegate 留空>
+reason: <一句话理由>
+[路由结束]"""
+
+HANDOFF_PROTOCOL = """[交接开始]
+status: continue | complete | blocked | handoff
+agent: <handoff 时填写标准 Agent code，其他状态留空>
+reason: <一句话说明>
+[交接结束]"""
+
+
+@dataclass(frozen=True, slots=True)
+class RouteDecision:
+    action: str
+    agent_code: str = ""
+    reason: str = ""
+    source: str = "director"
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffResult:
+    status: str
+    agent_code: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffEvent:
+    turn_no: int
+    from_agent_code: str
+    to_agent_code: str
+    source: str
+    reason: str
+    status: str = "delegated"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRecipient:
+    agent_code: str
+    source: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -69,8 +76,7 @@ class Stage:
     code: str
     label: str
     director: str
-    """这一阶段的主 Agent。现在三段都是 `spec_writer`——它是唯一的角色会话型 Agent；
-    将来会换成一个专职编排的 `character_director`，届时只改这张表。"""
+    """阶段总管。所有对象都使用 ``studio_director``，运行状态仍按 Conversation 隔离。"""
     crew: tuple[str, ...]
     """允许被指派的子 Agent。执行器要拿它当白名单，模型报了别的就拒掉。"""
     gate_field: str
@@ -81,21 +87,21 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         code="spec",
         label="设定对焦",
-        director="spec_writer",
-        crew=("spec_reviewer",),
+        director=DIRECTOR,
+        crew=("spec_writer", "spec_reviewer"),
         gate_field="gate_spec_confirmed_at",
     ),
     Stage(
         code="render",
         label="渲染图对焦",
-        director="spec_writer",
-        crew=("prompt_smith", "image_t2i", "image_i2i"),
+        director=DIRECTOR,
+        crew=("prompt_smith", "image_t2i", "image_i2i", "vision_reviewer"),
         gate_field="gate_render_confirmed_at",
     ),
     Stage(
         code="views",
         label="四视图对焦",
-        director="spec_writer",
+        director=DIRECTOR,
         crew=("prompt_smith", "image_i2i", "vision_reviewer"),
         gate_field="",
     ),
@@ -142,9 +148,85 @@ def in_render_review(character: Character) -> bool:
 
 
 def actor_for(conversation: Conversation) -> str:
-    """这一轮该由谁说话。
+    """当前实际收件 Agent；无专业焦点时回到该对象自己的总管。"""
+    return conversation.focus_agent_code or conversation.agent_code or DIRECTOR
 
-    现在恒是会话行上的主 Agent。将来主 Agent 指派了子 Agent，这一轮的发言人就是那个子
-    Agent，由执行器把它的 `agent_code` 写进消息行——`send()` 只管从这里取，不自己判断。
-    """
-    return conversation.agent_code
+
+def available_agents(target_kind: str, stage_code: str) -> tuple[AgentDefinition, ...]:
+    """当前目标和阶段可见、可指派的 Agent 目录。"""
+    return agents_for(target_kind, stage_code)
+
+
+def allowed_agent_codes(target_kind: str, stage_code: str) -> frozenset[str]:
+    return frozenset(agent.agent_code for agent in available_agents(target_kind, stage_code))
+
+
+def validate_recipient(agent_code: str, target_kind: str, stage_code: str) -> AgentDefinition:
+    """校验显式/模型指派的目标；总管不受阶段限制，其余必须在阶段白名单。"""
+    agent = get_agent(agent_code)
+    if agent.agent_code == DIRECTOR:
+        return agent
+    if agent.agent_code not in allowed_agent_codes(target_kind, stage_code):
+        raise Conflict(f"Agent {agent_code} 不能处理 {target_kind} 的 {stage_code} 阶段")
+    return agent
+
+
+def explicit_recipient(text: str) -> tuple[AgentDefinition | None, str]:
+    """解析自然语言里的 ``@别名`` 兼容路径，并从交给 Agent 的正文中剥掉该 mention。"""
+    for agent in load_registry().values():
+        names = sorted({agent.agent_code, agent.role, *agent.aliases}, key=len, reverse=True)
+        for name in names:
+            marker = f"@{name}"
+            index = text.casefold().find(marker.casefold())
+            if index < 0:
+                continue
+            before = text[:index]
+            after = text[index + len(marker) :]
+            if after and not (after[0].isspace() or after[0] in "，。！？,:："):
+                continue
+            return agent, f"{before}{after}".strip()
+    return None, text.strip()
+
+
+def resolve_recipient(
+    conversation: Conversation,
+    *,
+    target_kind: str,
+    stage_code: str,
+    text: str,
+    recipient_agent_code: str | None = None,
+) -> ResolvedRecipient:
+    """按 ``@指定 > 当前焦点 > 总管`` 的固定优先级决定本轮收件人。"""
+    mentioned, cleaned = explicit_recipient(text)
+    explicit = get_agent(recipient_agent_code) if recipient_agent_code else mentioned
+    if explicit is not None:
+        validate_recipient(explicit.agent_code, target_kind, stage_code)
+        return ResolvedRecipient(explicit.agent_code, "@", cleaned)
+    if conversation.focus_agent_code:
+        try:
+            validate_recipient(conversation.focus_agent_code, target_kind, stage_code)
+        except Conflict:
+            conversation.focus_agent_code = None
+            conversation.focus_started_at = None
+            conversation.focus_reason = None
+        else:
+            return ResolvedRecipient(conversation.focus_agent_code, "focus", text.strip())
+    return ResolvedRecipient(DIRECTOR, "director", text.strip())
+
+
+def set_focus(conversation: Conversation, agent_code: str | None, reason: str = "") -> None:
+    """设置或退出粘性焦点；只有声明可对焦的专业 Agent 可以进入。"""
+    if not agent_code or agent_code == DIRECTOR:
+        conversation.focus_agent_code = None
+        conversation.focus_started_at = None
+        conversation.focus_reason = None
+        return
+    agent = get_agent(agent_code)
+    if not agent.focusable:
+        conversation.focus_agent_code = None
+        conversation.focus_started_at = None
+        conversation.focus_reason = None
+        return
+    conversation.focus_agent_code = agent.agent_code
+    conversation.focus_started_at = datetime.now(UTC)
+    conversation.focus_reason = reason[:255] or None

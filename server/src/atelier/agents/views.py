@@ -11,7 +11,7 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from atelier.agents import dispatch, parsing
+from atelier.agents import audit, dispatch, parsing
 from atelier.assets import (
     archive,
     characters,
@@ -26,6 +26,7 @@ from atelier.db.project_models import Character, Generation
 from atelier.db.task_events import record as record_event
 from atelier.errors import Conflict
 from atelier.providers import image_gen
+from atelier.providers.base import Decision
 from atelier.settings import get_settings
 
 _log = structlog.get_logger(__name__)
@@ -260,6 +261,9 @@ def generate_views(
     variants: Sequence[Variant] = (),
     generate: dispatch.ImageFn | None = None,
     seed: int | None = None,
+    image_decision: Decision | None = None,
+    image_reselect: dispatch.Reselect | None = None,
+    turn_audit: audit.TurnAudit | None = None,
 ) -> ViewSet:
     """一次生成完整四宫格；不再支持单独重生某个视角。"""
     if variants:
@@ -295,6 +299,9 @@ def generate_views(
             references=list(references),
             project_code=ref.code,
             task_id=character.id,
+            decision=image_decision,
+            reselect=image_reselect,
+            turn_audit=turn_audit,
         )
     except Exception as exc:  # noqa: BLE001 - 保留失败原因供前端展示
         reason = str(exc)

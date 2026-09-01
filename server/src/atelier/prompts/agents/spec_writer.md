@@ -2,6 +2,11 @@
 agent_code: spec_writer
 capability: text
 role: 角色设计师
+role_type: specialist
+focusable: true
+aliases: [角色设计师, 设定师, 设定编写]
+target_kinds: [character]
+stages: [spec]
 max_turns: 20
 conversational: true
 memory_scope: character

@@ -113,12 +113,20 @@ def create(client: TestClient, name: str = "赤瞳") -> dict[str, object]:
     return dict(response.json())
 
 
-def settle_spec(client: TestClient, character_id: str, chat: ScriptedChat) -> None:
-    """走完设定会话那条路：聊出草稿、确认沉淀，让 `spec_path` 落到库行上。
+def settle_spec(
+    client: TestClient,
+    character_id: str,
+    chat: ScriptedChat,
+    *,
+    continue_pipeline: bool = False,
+) -> str:
+    """走完设定会话：聊出草稿并保存；需要时同一次确认自动接上首图。
 
     不直接改库：门禁确认的就是「用户按过确认沉淀」这件事，绕过它测出来的通过没有意义。
     """
     chat.replies.append(SPEC_REPLY)
+    if continue_pipeline:
+        chat.replies.append(CARD)
     opened = client.post(
         "/api/projects/demo/conversations",
         json={"agent_code": WRITER, "target_kind": "character", "target_ref": character_id},
@@ -129,8 +137,12 @@ def settle_spec(client: TestClient, character_id: str, chat: ScriptedChat) -> No
         f"/api/projects/demo/conversations/{cid}/messages", json={"content": "先出一版"}
     )
     assert turn.status_code == 200, turn.text
-    committed = client.post(f"/api/projects/demo/conversations/{cid}/commit", json={})
+    committed = client.post(
+        f"/api/projects/demo/conversations/{cid}/commit",
+        json={"continue_pipeline": continue_pipeline},
+    )
     assert committed.status_code == 200, committed.text
+    return str(cid)
 
 
 # --------------------------------------------------------------------------- #
@@ -525,10 +537,55 @@ def test_设定还没落盘就生不了图(
     assert draw.calls == []
 
 
-def test_设定一落盘就自动接上生图(
+def test_确认设定后自动接上首图(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
-    """设定落盘即视为确认：不用再单独按门禁 1，`/render` 自己把状态从 S0 推到 S1 再出图到 S2。"""
+    """一次人工确认同时落盘设定并执行 prompt_smith -> image_t2i。"""
+    character = create(client)
+    cid = settle_spec(client, str(character["id"]), chat, continue_pipeline=True)
+
+    listed = client.get(f"/api/projects/demo/characters/{character['id']}/renders").json()
+    assert len(listed) == 1
+    assert draw.calls != []
+    row = client.get(f"/api/projects/demo/characters/{character['id']}").json()
+    assert row["state"] == characters.RENDER_GENERATED
+    assert row["gate_spec_confirmed_at"] is not None
+    detail = client.get(f"/api/projects/demo/conversations/{cid}").json()
+    assert [message["agent_code"] for message in detail["messages"][-2:]] == [
+        render.SMITH,
+        render.PAINTER,
+    ]
+    assert [handoff["to_agent_code"] for handoff in detail["handoffs"][-2:]] == [
+        render.SMITH,
+        render.PAINTER,
+    ]
+
+
+def test_先保存后仍可确认继续(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    character = create(client)
+    cid = settle_spec(client, str(character["id"]), chat)
+    saved = client.get(f"/api/projects/demo/characters/{character['id']}").json()
+    assert saved["spec_path"] is not None
+    assert saved["gate_spec_confirmed_at"] is None
+    chat.replies.append(CARD)
+
+    continued = client.post(
+        f"/api/projects/demo/conversations/{cid}/commit",
+        json={"continue_pipeline": True},
+    )
+
+    assert continued.status_code == 200, continued.text
+    assert draw.calls != []
+    row = client.get(f"/api/projects/demo/characters/{character['id']}").json()
+    assert row["state"] == characters.RENDER_GENERATED
+
+
+def test_设定一落盘后兼容render入口仍可生图(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """保留 `/render` 兼容入口：已保存设定会在入口内补门禁并完成出图。"""
     character = create(client)
     settle_spec(client, str(character["id"]), chat)
     chat.replies.append(CARD)

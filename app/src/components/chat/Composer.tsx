@@ -14,6 +14,7 @@ import { transcribe } from '@/api/voice'
 import VoiceInputButton from '@/components/chat/VoiceInputButton'
 import WaveAnimation from '@/components/chat/WaveAnimation'
 import { useVoiceRecorder } from '@/hooks/useVoiceRecorder'
+import type { AvailableAgent } from '@/types/api'
 
 /** 出错时尽量给后端/浏览器的原话，拿不到才退到兜底句。 */
 function reason(error: unknown, fallback: string): string {
@@ -27,20 +28,23 @@ export default function Composer({
   busy,
   who,
   starters,
+  availableAgents = [],
 }: {
   value: string
   onChange: (text: string) => void
-  onSubmit: () => void
+  onSubmit: (recipientAgentCode?: string) => void
   busy: boolean
   /** 对面那位怎么称呼，只用在等待与占位文案里。 */
   who: string
   /** 摆在输入框上面的示例说辞。什么时候该摆由调用方判断，不摆就给空数组。 */
   starters: string[]
+  availableAgents?: AvailableAgent[]
 }) {
   const { message } = App.useApp()
   const recorder = useVoiceRecorder()
   const [voiceMode, setVoiceMode] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
+  const [recipientAgentCode, setRecipientAgentCode] = useState<string | undefined>()
   // 一次「按下-松开」算一段。ref 而非 state：键盘回调里要读当下值，不能等重渲染。
   const holdingRef = useRef(false)
 
@@ -79,6 +83,45 @@ export default function Composer({
   }, [voiceMode, busy, transcribing, recorder, onChange, value, message])
 
   const locked = busy || recorder.recording || transcribing
+  const mention = /(?:^|\s)@([^\s]*)$/.exec(value)
+  const query = (mention?.[1] ?? '').toLocaleLowerCase()
+  const suggestions =
+    mention === null
+      ? []
+      : availableAgents.filter((agent) =>
+          [agent.agent_code, agent.role, ...agent.aliases].some((name) =>
+            name.toLocaleLowerCase().includes(query),
+          ),
+        )
+
+  const changeText = (text: string) => {
+    onChange(text)
+    if (
+      recipientAgentCode !== undefined &&
+      !availableAgents.some(
+        (agent) =>
+          agent.agent_code === recipientAgentCode &&
+          [
+            `@${agent.role}`,
+            `@${agent.agent_code}`,
+            ...agent.aliases.map((name) => `@${name}`),
+          ].some((name) => text.includes(name)),
+      )
+    ) {
+      setRecipientAgentCode(undefined)
+    }
+  }
+
+  const pickAgent = (agent: AvailableAgent) => {
+    const next = value.replace(/@[^\s]*$/, `@${agent.role} `)
+    onChange(next)
+    setRecipientAgentCode(agent.agent_code)
+  }
+
+  const submit = () => {
+    onSubmit(recipientAgentCode)
+    setRecipientAgentCode(undefined)
+  }
 
   return (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -94,6 +137,24 @@ export default function Composer({
               : '语音模式 · 长按空格说话'}
         </Tag>
       )}
+      {suggestions.length > 0 && (
+        <div
+          style={{
+            border: '1px solid #d9d9d9',
+            borderRadius: 8,
+            padding: 6,
+            background: '#fff',
+          }}
+        >
+          <Space size={[6, 6]} wrap>
+            {suggestions.map((agent) => (
+              <Button key={agent.agent_code} size="small" onClick={() => pickAgent(agent)}>
+                @{agent.role} · {agent.capability}
+              </Button>
+            ))}
+          </Space>
+        </div>
+      )}
       <div style={{ position: 'relative' }}>
         <Input.TextArea
           value={value}
@@ -102,11 +163,11 @@ export default function Composer({
           placeholder={
             busy ? `等${who}回这一轮，回完再接着说` : '说清你要什么。Enter 发送，Shift+Enter 换行'
           }
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => changeText(event.target.value)}
           onPressEnter={(event) => {
             if (event.shiftKey) return
             event.preventDefault()
-            onSubmit()
+            submit()
           }}
         />
         {recorder.recording && (
@@ -132,13 +193,7 @@ export default function Composer({
           disabled={busy || transcribing}
           onToggle={() => setVoiceMode((on) => !on)}
         />
-        <Button
-          type="primary"
-          style={{ flex: 1 }}
-          loading={busy}
-          disabled={busy}
-          onClick={onSubmit}
-        >
+        <Button type="primary" style={{ flex: 1 }} loading={busy} disabled={busy} onClick={submit}>
           {busy ? '等回话' : '发送'}
         </Button>
       </div>

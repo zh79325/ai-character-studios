@@ -111,9 +111,9 @@ def test_项目会话写进项目目录的tmp_conversation(
 
     files = audit_files(project.dir)
     assert len(files) == 1
-    # 文件名带小时与轮次，便于按时间快速定位
-    assert files[0].name.endswith(f"-turn-{result.turn_no}.md")
-    stamp, _, _ = files[0].name.partition("-turn-")
+    # 文件名带小时、实际 Agent 与轮次，便于按时间和说话人快速定位
+    assert files[0].name.endswith(f"-{DESIGNER}-turn-{result.turn_no}.md")
+    stamp = files[0].name.removesuffix(f"-{DESIGNER}-turn-{result.turn_no}.md")
     day, hour = stamp.split("-")
     assert len(day) == 8 and day.isdigit()
     assert len(hour) == 2 and hour.isdigit()
@@ -161,17 +161,38 @@ def test_自动生图轮把prompt_smith请求响应写进角色审计(
         conversation,
         chat=ScriptedChat("先讨论一下？", CARD),
         generate=ScriptedDraw(),
+        route={
+            "recipient_agent_code": painter.PAINTER,
+            "source": "director",
+            "from_agent_code": "studio_director",
+            "allowed_agents": [painter.SMITH, painter.PAINTER],
+            "reason": "角色设定已确认",
+            "focus_change": "studio_director -> image_t2i",
+        },
     )
 
     files = audit_files(project.absolute(character.dir_name))
-    assert len(files) == 1
-    text = files[0].read_text(encoding="utf-8")
-    assert f"- 会话：{conversation.id}" in text
-    assert f"- Agent：{painter.SMITH}" in text
-    assert text.count("生成效果图卡片") == 2
-    assert "先讨论一下？" in text
-    assert "不要解释、讨论或征求确认" in text
-    assert "ASSET-DEMO-001" in text
+    assert len(files) == 2
+    smith_file = next(item for item in files if f"-{painter.SMITH}-turn-" in item.name)
+    image_file = next(item for item in files if f"-{painter.PAINTER}-turn-" in item.name)
+    smith_text = smith_file.read_text(encoding="utf-8")
+    image_text = image_file.read_text(encoding="utf-8")
+    assert f"- 会话：{conversation.id}" in smith_text
+    assert f"- Agent：{painter.SMITH}" in smith_text
+    assert smith_text.count("生成效果图卡片") == 2
+    assert "先讨论一下？" in smith_text
+    assert "不要解释、讨论或征求确认" in smith_text
+    assert "ASSET-DEMO-001" in smith_text
+    assert f"- Agent：{painter.PAINTER}" in image_text
+    assert "- 决策来源：director" in image_text
+    assert "- 来源 Agent：prompt_smith" in image_text
+    assert "- 交接原因：角色设定已确认" in image_text
+    assert "- 焦点变化：studio_director -> image_t2i" in image_text
+    assert "### Request" in image_text
+    assert "### Response" in image_text
+    assert '"bytes":' in image_text
+    assert '"sha256":' in image_text
+    assert "iVBOR" not in image_text
 
 
 def test_每一轮各自一份文件(
@@ -186,6 +207,7 @@ def test_每一轮各自一份文件(
 
     files = audit_files(project.dir)
     assert [one.name.split("-turn-")[1] for one in files] == ["2.md", "4.md"]
+    assert all(f"-{DESIGNER}-turn-" in one.name for one in files)
 
 
 # --------------------------------------------------------------------------- #

@@ -2,6 +2,11 @@
 agent_code: model3d
 capability: model3d
 role: 3D 资产执行者
+role_type: executor
+focusable: false
+aliases: [3D建模, 建模师]
+target_kinds: [character]
+stages: [model, rig, animation]
 max_turns: 1
 conversational: false
 memory_scope: none

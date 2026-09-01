@@ -23,6 +23,7 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
+from atelier.agents import audit as audit_mod
 from atelier.providers import image_gen, router, text_chat
 from atelier.providers.base import (
     CallOutcome,
@@ -274,13 +275,16 @@ def draw(
     references: Sequence[str | Path] = (),
     project_code: str | None = None,
     task_id: str | None = None,
+    decision: Decision | None = None,
+    reselect: Reselect | None = None,
+    turn_audit: audit_mod.TurnAudit | None = None,
 ) -> image_gen.ImageReply:
     """出一张图：选候选、调、失败换人再调。
 
     额度卡两种口径：`calls`（接口次数）跟 `images`（出图张数，一次一张），模型上配了哪种
     那种就生效。两者都在调用前就知道消耗，选中即预扣，不像 token 要事后读回来。
     """
-    picked = select(
+    picked = decision or select(
         runtime,
         agent_code,
         limit_kind="calls",
@@ -288,30 +292,56 @@ def draw(
         project_code=project_code,
         task_id=task_id,
     )
+
+    def invoke(candidate: Candidate) -> image_gen.ImageReply:
+        if turn_audit is not None:
+            turn_audit.write_image_request(
+                "生成图片",
+                candidate,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                seed=seed,
+                references=references,
+            )
+        try:
+            reply = generate(
+                candidate,
+                prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                seed=seed,
+                references=references,
+            )
+        except Exception as exc:
+            if turn_audit is not None:
+                turn_audit.write_error(exc)
+            raise
+        if turn_audit is not None:
+            turn_audit.write_image_response(reply)
+        return reply
+
     reply = _drive(
         runtime,
         agent_code,
         picked,
-        lambda candidate: generate(
-            candidate,
-            prompt,
-            negative_prompt=negative_prompt,
-            width=width,
-            height=height,
-            seed=seed,
-            references=references,
-        ),
+        invoke,
         outcome_of_image,
         limit_kind="calls",
         project_code=project_code,
         task_id=task_id,
-        reselect=lambda _: select(
-            runtime,
-            agent_code,
-            limit_kind="calls",
-            also_kinds=IMAGE_KINDS,
-            project_code=project_code,
-            task_id=task_id,
+        reselect=reselect
+        or (
+            lambda _: select(
+                runtime,
+                agent_code,
+                limit_kind="calls",
+                also_kinds=IMAGE_KINDS,
+                project_code=project_code,
+                task_id=task_id,
+            )
         ),
     )
     _log.info(

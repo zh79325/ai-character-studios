@@ -1,8 +1,4 @@
-"""编排骨架：阶段怎么判、这一轮谁说话。
-
-这一版还没有任何子 Agent 被真的指派，所以只钉住两件事：阶段表与角色状态的对应关系不许漂，
-`actor_for()` 现在恒等于会话主 Agent（将来改成按指派取，这几条会先红）。
-"""
+"""编排骨架：阶段、白名单、显式指派与粘性焦点。"""
 
 from __future__ import annotations
 
@@ -62,12 +58,53 @@ def test_四视图确认之后不再往会话外跑(project_db: Session) -> None
     assert orchestrator.stage_of(character) == "views"
 
 
-def test_这一轮说话的人现在恒是会话主agent() -> None:
+def test_当前说话人优先使用焦点agent() -> None:
     conversation = Conversation(
         id="conv-1",
         target_kind="character",
         target_ref="c-赤瞳",
-        agent_code="spec_writer",
+        agent_code=orchestrator.DIRECTOR,
+        focus_agent_code="spec_writer",
     )
 
     assert orchestrator.actor_for(conversation) == "spec_writer"
+
+
+def test_显式指派优先于当前焦点并剥离mention() -> None:
+    conversation = Conversation(
+        id="conv-1",
+        target_kind="character",
+        target_ref="c-赤瞳",
+        agent_code=orchestrator.DIRECTOR,
+        focus_agent_code="spec_writer",
+    )
+
+    recipient = orchestrator.resolve_recipient(
+        conversation,
+        target_kind="character",
+        stage_code="spec",
+        text="@设定审校 帮我检查",
+        recipient_agent_code="spec_reviewer",
+    )
+
+    assert recipient.agent_code == "spec_reviewer"
+    assert recipient.source == "@"
+    assert recipient.text == "帮我检查"
+
+
+def test_无焦点时由总管收件() -> None:
+    conversation = Conversation(
+        id="conv-1",
+        target_kind="project",
+        agent_code=orchestrator.DIRECTOR,
+    )
+
+    recipient = orchestrator.resolve_recipient(
+        conversation,
+        target_kind="project",
+        stage_code="project",
+        text="下一步做什么",
+    )
+
+    assert recipient.agent_code == orchestrator.DIRECTOR
+    assert recipient.source == "director"

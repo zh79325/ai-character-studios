@@ -29,6 +29,11 @@ class AgentOut(Schema):
     agent_code: str
     capability: str
     role: str
+    role_type: str
+    focusable: bool
+    aliases: list[str]
+    target_kinds: list[str]
+    stages: list[str]
     max_turns: int
     conversational: bool
     memory_scope: str
@@ -138,6 +143,11 @@ def _agent_out(row: AgentDefinition, include_prompt: bool) -> AgentOut:
         agent_code=row.agent_code,
         capability=row.capability,
         role=row.role,
+        role_type=row.role_type,
+        focusable=row.focusable,
+        aliases=list(row.aliases),
+        target_kinds=list(row.target_kinds),
+        stages=list(row.stages),
         max_turns=row.max_turns,
         conversational=row.conversational,
         memory_scope=row.memory_scope,

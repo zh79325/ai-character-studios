@@ -2,6 +2,11 @@
 agent_code: image_t2i
 capability: t2i
 role: 文生图执行者
+role_type: executor
+focusable: false
+aliases: [文生图, 画师]
+target_kinds: [character]
+stages: [render]
 max_turns: 1
 conversational: false
 memory_scope: none

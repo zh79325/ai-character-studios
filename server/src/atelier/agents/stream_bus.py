@@ -29,6 +29,9 @@ DELTA = "delta"
 TURN = "turn"
 ERROR = "error"
 COMMITTED = "committed"
+HANDOFF = "handoff"
+ACTOR = "actor"
+FOCUS = "focus"
 
 
 @dataclass(frozen=True, slots=True)
