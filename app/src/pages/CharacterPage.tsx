@@ -7,20 +7,30 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { App, Button, Card, Collapse, Empty, Image, Space, Tag, Typography } from 'antd'
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
-import { listRenders, listViews, readCharacter, renderImageUrl } from '@/api/characters'
+import {
+  listRenders,
+  listViews,
+  readCharacter,
+  renderCharacter,
+  renderImageUrl,
+} from '@/api/characters'
 import { commitConversation, listMemories, readConversation } from '@/api/conversations'
 import { ApiError } from '@/api/client'
 import ChatPanel from '@/components/chat'
 import MarkdownText from '@/components/MarkdownText'
 import ProjectFrame from '@/components/ProjectFrame'
+import RenderDecisionGate from '@/components/RenderDecisionGate'
 import { designPath } from '@/lib/design'
 import { projectPath, useProjectCode } from '@/lib/projectRoute'
-import type { Character, Draft, Generation, ProjectMemoryItem } from '@/types/api'
+import type { Attachment, Character, Draft, Generation, ProjectMemoryItem } from '@/types/api'
 
 const WRITER = 'spec_writer'
+
+/** 「效果图已生成」这一档：设定落盘后画师自动出图会把状态推到这里。 */
+const RENDER_GENERATED = 'S2_render_generated'
 
 const MEMORY_LABELS: Record<string, string> = {
   preference: '偏好',
@@ -53,6 +63,62 @@ export default function CharacterPage() {
     enabled: conversationId !== null,
   })
 
+  const queryClient = useQueryClient()
+  const { message } = App.useApp()
+  const renders = useQuery({
+    queryKey: ['project', projectCode, 'character-renders', id],
+    queryFn: () => listRenders(projectCode, id),
+    enabled: id !== '',
+  })
+
+  // 设定一落盘，画师就自动出第一版效果图，用户不用再手点「生成」。后端同步落一条
+  // thinking 画师消息后才回，所以触发后立刻刷一次会话把它取出来，进度交给 useConversation 订流。
+  const fireRender = useMutation({
+    mutationFn: () => renderCharacter(projectCode, id, '', ''),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversation'] }),
+        queryClient.invalidateQueries({
+          queryKey: ['project', projectCode, 'character-renders', id],
+        }),
+        queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'character', id] }),
+      ])
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const busy = (detail.data?.messages ?? []).some((one) => one.status === 'thinking')
+  const hasRenderCandidate = (renders.data?.length ?? 0) > 0
+  // 一个角色只自动首生一次：重画由用户在收口抽屉点，别让 effect 的依赖抖动又开一张
+  const firedFor = useRef<string | null>(null)
+  useEffect(() => {
+    const row = character.data
+    if (!row || row.spec_path === null) return
+    if (row.state >= RENDER_GENERATED || hasRenderCandidate || busy) return
+    if (!renders.isSuccess || firedFor.current === row.id) return
+    firedFor.current = row.id
+    fireRender.mutate()
+    // 后端已同步落一条 thinking 画师消息：立刻刷会话把它取出来，useConversation 会接手订流
+    void queryClient.invalidateQueries({ queryKey: ['project', projectCode, 'conversation'] })
+  }, [
+    character.data,
+    renders.isSuccess,
+    hasRenderCandidate,
+    busy,
+    projectCode,
+    queryClient,
+    fireRender,
+  ])
+
+  // 画师往会话里塞的效果图存的是相对 API 路径，渲染进程读不到磁盘，得换成带 baseUrl 的绝对地址
+  const resolveImageUrl = useCallback(
+    (att: Attachment) =>
+      att.generation_id !== undefined
+        ? renderImageUrl(projectCode, id, att.generation_id)
+        : Promise.resolve(att.url ?? ''),
+    [projectCode, id],
+  )
+
   if (character.error instanceof ApiError && character.error.status === 404) {
     return (
       <ProjectFrame
@@ -71,7 +137,20 @@ export default function CharacterPage() {
 
   const row = character.data
   const drafts = (detail.data?.drafts ?? []).filter((one) => !one.stale)
-  const finaleKey = drafts.length > 0 ? `spec:${drafts.map((one) => one.id).join(',')}` : ''
+  // 同一时刻只一个收口：有待确认 spec 草稿优先走确认设定，否则最新那张效果图没定稿就收成「采用/再画」
+  const latestRender = renders.data?.[0]
+  const inRenderReview =
+    drafts.length === 0 &&
+    row?.state === RENDER_GENERATED &&
+    latestRender !== undefined &&
+    !latestRender.is_final
+  const finaleTitle = drafts.length > 0 ? '确认角色设定' : '这张效果图'
+  const finaleKey =
+    drafts.length > 0
+      ? `spec:${drafts.map((one) => one.id).join(',')}`
+      : inRenderReview
+        ? `render:${latestRender!.id}`
+        : ''
 
   return (
     <ProjectFrame
@@ -100,18 +179,27 @@ export default function CharacterPage() {
             />
           ) : null
         }
-        finaleTitle="确认角色设定"
+        finaleTitle={finaleTitle}
         finaleKey={finaleKey}
+        resolveImageUrl={resolveImageUrl}
         finale={
-          drafts.length === 0
-            ? null
-            : () => (
+          drafts.length > 0
+            ? () => (
                 <CharacterDraftGate
                   projectCode={projectCode}
                   conversationId={conversationId}
                   drafts={drafts}
                 />
               )
+            : inRenderReview
+              ? () => (
+                  <RenderDecisionGate
+                    projectCode={projectCode}
+                    characterId={id}
+                    generationId={latestRender!.id}
+                  />
+                )
+              : null
         }
         starters={row ? [`帮我设计一个符合当前项目要求的角色，名字叫${row.name}`] : []}
       />

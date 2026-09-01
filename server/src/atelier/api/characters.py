@@ -210,23 +210,34 @@ def render_character(
     runtime: RuntimeDb,
     ref: CurrentProject,
 ) -> RenderOut:
-    """出一张渲染图：先拿卡片再生图，产物落 `tmp/`，状态推到 S2。
+    """出一张渲染图，并把这一轮落进该角色的会话：先拿卡片再生图，产物落 `tmp/`，状态推到 S2。
 
-    同步阻塞（`def` 而非 `async def`，FastAPI 放线程池跑）：用户按了就在等这张图，拆成提交
-    任务 + 轮询只是把复杂度转给前端。
+    走会话而不是直接调 render：「初次自动生成」与「再画一张」都会在会话里留下一条带图的画师
+    消息，用户对着它说改哪里就是下一轮重画。设定还没确认（`spec_path` 空）就 409。
+
+    同步阻塞（`def` 而非 `async def`，FastAPI 放线程池跑）：用户按了就在等这张图。
 
     `field` 给了就是「改某一项重生」：只把那一项发回给写手，其余字段与 prompt 的其他层原样留着。
     """
-    character = characters.get(project, character_id)
-    result = painter.render(project, runtime, ref, character, note=body.note, field=body.field)
+    characters.get(project, character_id)
+    conversation = engine.ensure(
+        project, agent_code="spec_writer", target_kind="character", target_ref=character_id
+    )
+    engine.generate_render_turn(
+        project, runtime, ref, conversation, note=body.note, field=body.field
+    )
+    row = generations.latest(project, target_ref=character_id, stage=painter.STAGE)
+    if row is None:
+        raise Conflict("生图完成但没找到产物台账，重试一次")
+    spec_dict = {key: value for key, value in (row.asset_spec or {}).items() if key != "params"}
     return RenderOut(
-        character_id=result.character_id,
-        generation_id=result.generation_id,
-        file_path=result.file_path,
-        width=result.width,
-        height=result.height,
-        spec=_spec_out(result.spec),
-        params=result.params,
+        character_id=character_id,
+        generation_id=row.id,
+        file_path=row.file_path,
+        width=painter.CHARACTER_IMAGE_SIZE,
+        height=painter.CHARACTER_IMAGE_SIZE,
+        spec=AssetSpecOut.model_validate(spec_dict),
+        params=(row.asset_spec or {}).get("params", {}),
     )
 
 

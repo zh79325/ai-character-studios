@@ -31,6 +31,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from atelier.agents import audit, context, dispatch, orchestrator, parsing, tokens
+from atelier.agents import render as painter
 from atelier.agents.definitions import AgentDefinition, get_agent
 from atelier.agents.stream_bus import BUS, COMMITTED, DELTA, ERROR, TURN
 from atelier.assets import archive, characters, layout, projects
@@ -747,6 +748,7 @@ def _add_message(
     token_count: int,
     *,
     status: str = DONE,
+    agent_code: str | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation.id,
@@ -755,9 +757,15 @@ def _add_message(
         content=content,
         token_count=token_count,
         status=status,
-        # 谁说的话记在谁名下。现在恒是会话主 Agent，将来主 Agent 派了子 Agent，执行器写
-        # 子 Agent 的 code，见 agents/orchestrator.py
-        agent_code="" if role == "user" else orchestrator.actor_for(conversation),
+        # 谁说的话记在谁名下。主 Agent 派了子 Agent 生图/评审时，调用方传 `agent_code`
+        # 把那条消息记在子 Agent 名下（如生图那一轮）；不传就是会话主 Agent。
+        agent_code=(
+            ""
+            if role == "user"
+            else agent_code
+            if agent_code is not None
+            else orchestrator.actor_for(conversation)
+        ),
     )
     project.add(message)
     project.flush()
@@ -783,6 +791,15 @@ def send(
     agent = get_agent(orchestrator.actor_for(conversation))
     if not agent.conversational:
         raise Conflict(f"{agent.agent_code} 不是会话型 Agent")
+
+    # 效果图评审阶段：用户此刻说的话是「这张图要改哪里」，直接驱动一轮重画，不走文本模型。
+    # 设定已拍板，此时再跟 spec_writer 逐字讨论改的是错的东西（见 orchestrator.in_render_review）。
+    if conversation.target_kind == "character":
+        character = _character(project, conversation.target_ref)
+        if orchestrator.in_render_review(character):
+            _add_message(project, conversation, "user", body, tokens.estimate_text(body))
+            project.commit()
+            return generate_render_turn(project, runtime, ref, conversation, note=body, chat=chat)
 
     # 上一轮的增量与它末尾那条 turn 得先清掉：留着会把这一轮新订上来的流当场收掉
     BUS.reset(conversation.id)
@@ -858,6 +875,110 @@ def send(
     )
     BUS.publish(conversation.id, TURN, {"turn_no": assistant.turn_no, "drafts": list(draft_ids)})
     return result
+
+
+RENDER_STREAM_NOTE = "画师正在按设定生成效果图……"
+"""生图那一轮先发这一句当增量：图要几十秒才回来，空着个圈转跟卡死没区别。"""
+
+RENDER_TURN_REPLY = "这是按当前设定生成的效果图。满意就采用它，或者告诉我要改哪里。"
+"""生图这一轮落库后那条画师消息的正文。定稿是人的动作，所以正文只招呼一声，不替人拍板。"""
+
+
+def render_image_url(project_code: str, character_id: str, generation_id: str) -> str:
+    """会话里那张效果图的取图口子，相对 API 路径。
+
+    存相对路径而不是绝对地址：渲染进程的 baseUrl 只有前端知道，后端写死了换个部署
+    环境就失效。前端拿到后补 baseUrl 当 `<img src>`（见 MessageList.Shots）。
+    """
+    return f"/api/projects/{project_code}/characters/{character_id}/renders/{generation_id}/image"
+
+
+def generate_render_turn(
+    project: Session,
+    runtime: Session,
+    ref: ProjectRef,
+    conversation: Conversation,
+    *,
+    note: str = "",
+    field: str = "",
+    chat: ChatFn | None = None,
+    generate: dispatch.ImageFn | None = None,
+) -> TurnResult:
+    """会话内的一轮「生成效果图」：画师按设定出图，把图作为附件落进这场会话。
+
+    跟 `send()` 的文本轮共用同一套流式骨架，只是这一轮的产物是图不是字：先落一条 thinking 的
+    画师消息（切页面、重启都还认得出在跑），再走 render 那条现成链路生图，回填成一条带图
+    附件的消息。定稿仍是人的动作——这一轮只到「出图给你看」，采用与否由用户拍板。
+
+    门禁 1（确认设定）折进这里：设定已落盘（`spec_path` 有值）就视为可进效果图，state 还没
+    到 S1 时先把它推到 S1，用户不用再单独按一次「确认设定」。
+    """
+    if conversation.target_kind != "character":
+        raise Conflict("只有角色会话能生成效果图")
+    character = _character(project, conversation.target_ref)
+    if character.spec_path is None:
+        raise Conflict("先确认角色设定，再生成效果图")
+    if not characters.at_least(character, characters.SPEC_CONFIRMED):
+        characters.confirm_spec(project, ref, character)
+
+    # 上一轮的增量与中断标记先清掉，同 send()。
+    BUS.reset(conversation.id)
+    BUS.clear_cancel(conversation.id)
+    # 先落一条空的画师消息：「正在生图」得能活过切页面与重启，只活在流里的状态一离开就没了
+    assistant = _add_message(
+        project,
+        conversation,
+        "assistant",
+        "",
+        0,
+        status=THINKING,
+        agent_code=painter.PAINTER,
+    )
+    project.commit()
+    BUS.publish(conversation.id, DELTA, RENDER_STREAM_NOTE)
+
+    try:
+        result = painter.render(
+            project,
+            runtime,
+            ref,
+            character,
+            note=note,
+            field=field,
+            chat=chat,
+            generate=generate,
+        )
+    except Exception as exc:
+        # 炸了也要说一声：订流那头只认这条广播，不发它前端就一直等着图出现
+        if isinstance(exc, Interrupted) or BUS.cancel_requested(conversation.id):
+            BUS.clear_cancel(conversation.id)
+            raise Interrupted(INTERRUPTED_REASON) from exc
+        assistant.content = str(exc)[:500]
+        assistant.status = FAILED
+        project.commit()
+        BUS.publish(conversation.id, ERROR, str(exc))
+        raise
+
+    assistant.content = RENDER_TURN_REPLY
+    assistant.token_count = 0
+    assistant.status = DONE
+    assistant.attachments = [
+        {
+            "kind": "image",
+            "generation_id": result.generation_id,
+            "path": result.file_path,
+            "url": render_image_url(ref.code, character.id, result.generation_id),
+        }
+    ]
+    conversation.updated_at = assistant.created_at
+    project.commit()
+
+    BUS.publish(conversation.id, TURN, {"turn_no": assistant.turn_no, "drafts": []})
+    return TurnResult(
+        conversation_id=conversation.id,
+        turn_no=assistant.turn_no,
+        content=RENDER_TURN_REPLY,
+    )
 
 
 def _turn_audit(

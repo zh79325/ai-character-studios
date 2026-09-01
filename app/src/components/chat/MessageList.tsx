@@ -12,10 +12,11 @@
  */
 import { Button, Image, Space, Spin, Typography } from 'antd'
 import { useEffect, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 
 import MarkdownText from '@/components/MarkdownText'
 import { visibleText } from '@/lib/message'
-import type { Message } from '@/types/api'
+import type { Attachment, Message } from '@/types/api'
 
 /** 各 Agent 在气泡上的称谓。表里没有的用面板给的 `who` 兜底。 */
 const WHO: Record<string, string> = {
@@ -39,6 +40,7 @@ export default function MessageList({
   briefingBlank,
   height,
   who,
+  resolveImageUrl,
 }: {
   messages: Message[]
   /** 本轮刚发出去的那句：先摆成气泡，不等落库后才看见。 */
@@ -55,6 +57,8 @@ export default function MessageList({
   height: number
   /** 这一页对面那位怎么称呼，`WHO` 里查不到时用它。 */
   who: string
+  /** 把带出来的图的相对路径换成渲染进程能读的绝对地址；没给就回落 `att.url` 直用。 */
+  resolveImageUrl?: (att: Attachment) => Promise<string>
 }) {
   const box = useRef<HTMLDivElement>(null)
   /** 看的是不是最新那几条。用户往上翻着历史时不能再把他拽回底部。 */
@@ -156,7 +160,7 @@ export default function MessageList({
                   </Typography.Text>
                 )}
                 {one.role === 'user' ? one.content : <Body text={one.content} />}
-                <Shots items={one.attachments} />
+                <Shots items={one.attachments} resolveImageUrl={resolveImageUrl} />
               </div>
             </div>
           )
@@ -274,33 +278,64 @@ const BUBBLE: Record<string, { background: string; align: string }> = {
 /**
  * 这条消息带出来的图。
  *
- * 子 Agent 生的图跟着那条消息走，用户对着它说「腿再长一点」就是下一轮的入参。后端现在还不会
- * 往 `attachments` 里塞东西（见 `agents/orchestrator.py`），所以这一段暂时不会出现。
+ * 子 Agent 生的图跟着那条消息走，用户对着它说「腿再长一点」就是下一轮的入参。画师自动生成
+ * 的效果图就落在这里（见 `agents/conversation.py::generate_render_turn`）。
  *
- * 接线时给每个附件带上 `url`（复用 `/api/projects/{projectCode}/characters/{id}/renders/{gid}/image`
- * 这类取图口子）：渲染进程读不到磁盘，光有相对路径显不出图，只能当文件名摆着。
+ * 每个附件带的是相对 API 路径（`/api/projects/{code}/characters/{id}/renders/{gid}/image`）：
+ * 渲染进程读不到磁盘，得靠 `resolveImageUrl` 补上 baseUrl 才显得出图。
  */
-function Shots({ items }: { items: Message['attachments'] }) {
+function Shots({
+  items,
+  resolveImageUrl,
+}: {
+  items: Message['attachments']
+  resolveImageUrl?: (att: Attachment) => Promise<string>
+}) {
   const shots = items.filter((one) => one.kind === 'image')
   if (shots.length === 0) return null
   return (
     <Space size={6} wrap style={{ marginTop: 6 }}>
-      {shots.map((one, index) =>
-        typeof one.url === 'string' ? (
-          <Image
-            key={one.url}
-            src={one.url}
-            width={96}
-            height={96}
-            style={{ objectFit: 'cover' }}
-          />
-        ) : (
-          <Typography.Text key={index} type="secondary" style={{ fontSize: 12 }}>
-            {String(one.path ?? '一张图')}
-          </Typography.Text>
-        ),
-      )}
+      {shots.map((one, index) => (
+        <Shot
+          key={one.generation_id ?? one.url ?? index}
+          att={one}
+          resolveImageUrl={resolveImageUrl}
+        />
+      ))}
     </Space>
+  )
+}
+
+/**
+ * 一张附件图。
+ *
+ * 有解析器就拿它把相对路径换成渲染进程能读的绝对地址（仿 `CharacterPage.PreviewImage`）；没有
+ * 就回落 `att.url` 直用——项目会话不带图，这条不受影响。相对路径直接当 `<img src>` 只会是裂图。
+ */
+function Shot({
+  att,
+  resolveImageUrl,
+}: {
+  att: Attachment
+  resolveImageUrl?: (att: Attachment) => Promise<string>
+}) {
+  const resolvable = att.generation_id !== undefined || att.url !== undefined
+  const resolved = useQuery({
+    queryKey: ['attachment-image', att.generation_id, att.url],
+    queryFn: () => resolveImageUrl!(att),
+    enabled: resolveImageUrl !== undefined && resolvable,
+  })
+  const src = resolveImageUrl !== undefined ? resolved.data : att.url
+  if (typeof src === 'string' && src !== '') {
+    return <Image src={src} width={96} height={96} style={{ objectFit: 'cover' }} />
+  }
+  if (resolveImageUrl !== undefined && resolvable && resolved.isLoading) {
+    return <div style={{ width: 96, height: 96, borderRadius: 4, background: '#f5f5f5' }} />
+  }
+  return (
+    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      {String(att.path ?? '一张图')}
+    </Typography.Text>
   )
 }
 

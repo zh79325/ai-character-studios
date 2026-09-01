@@ -129,6 +129,18 @@ def stage_of(character: Character) -> str:
     return "spec"
 
 
+def in_render_review(character: Character) -> bool:
+    """这个角色现在处在效果图评审阶段：设定已确认、效果图还没定稿（S1/S2）。
+
+    这一段里用户在会话里说的话就是「对这张图的修改要求」，`send()` 据此把它转成一轮重画而
+    不是文本对话——设定已经拍板，此时再跟 `spec_writer` 逐字讨论改的是错的东西。
+    """
+    return (
+        character_assets.at_least(character, character_assets.SPEC_CONFIRMED)
+        and character.gate_render_confirmed_at is None
+    )
+
+
 def actor_for(conversation: Conversation) -> str:
     """这一轮该由谁说话。
 

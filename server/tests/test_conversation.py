@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from atelier.agents import conversation as engine
-from atelier.assets import archive, layout
+from atelier.agents import render as painter
+from atelier.assets import archive, characters, layout
 from atelier.assets import memory as memory_files
 from atelier.assets.layout import LayoutError
 from atelier.assets.projects import ProjectRef
@@ -31,9 +32,13 @@ from atelier.db.project_models import (
 )
 from atelier.db.runtime_models import RouteLog
 from atelier.errors import Conflict, Interrupted, NotFound
+from atelier.providers import image_gen
 from atelier.providers.base import NoCandidateError, ProviderError
 from atelier.providers.text_chat import ChatReply
-from tests.conftest import ScriptedChat, bind_text_model
+from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.test_characters import make as make_real_character
+from tests.test_characters import spec_on_disk
+from tests.test_render import CARD, ScriptedDraw
 
 DESIGNER = "game_designer"
 WRITER = "spec_writer"
@@ -1178,3 +1183,123 @@ def test_停用的记忆不再注入(project_db: Session, project: ProjectRef) -
     )
 
     assert engine.enabled_memories(project_db, project) == []
+
+
+# --------------------------------------------------------------------------- #
+# 会话内生成效果图（设定 → 效果图 自动衔接）
+# --------------------------------------------------------------------------- #
+
+
+def _spec_落盘的角色(project_db: Session, project: ProjectRef, session: Session) -> Character:
+    """spec 已落盘但还没人工确认（停在 S0）的角色，且生图两条链路的模型都绑好了。"""
+    bind_text_model(session, painter.SMITH, code="smith")
+    bind_image_model(session, painter.PAINTER, code="ark-image")
+    character = make_real_character(project_db, project)
+    spec_on_disk(project, character)
+    project_db.commit()
+    return character
+
+
+def test_生成效果图那一轮把图落进会话(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    """画师把图作为附件落进会话：一条画师署名、DONE、带 image 附件的消息。"""
+    character = _spec_落盘的角色(project_db, project, session)
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+    draw = ScriptedDraw()
+
+    result = engine.generate_render_turn(
+        project_db, session, project, conversation, chat=ScriptedChat(CARD), generate=draw
+    )
+
+    messages = engine.messages_of(project_db, conversation.id)
+    last = messages[-1]
+    assert last.role == "assistant"
+    assert last.turn_no == result.turn_no
+    assert last.agent_code == painter.PAINTER
+    assert last.status == engine.DONE
+    assert last.token_count == 0
+    shot = last.attachments[0]
+    assert shot["kind"] == "image"
+    assert shot["generation_id"]
+    assert f"/characters/{character.id}/renders/{shot['generation_id']}/image" in shot["url"]
+    assert draw.calls != []
+
+
+def test_生成效果图把状态从S0一路推到S2(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    """门禁 1 折进自动衔接：spec 落盘即视为确认，S0 先推到 S1 再出图到 S2。"""
+    character = _spec_落盘的角色(project_db, project, session)
+    assert character.state == characters.SPEC_DRAFTING
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    engine.generate_render_turn(
+        project_db, session, project, conversation, chat=ScriptedChat(CARD), generate=ScriptedDraw()
+    )
+
+    assert character.state == characters.RENDER_GENERATED
+    assert character.gate_spec_confirmed_at is not None
+
+
+def test_设定还没落盘就生不了效果图(
+    project_db: Session, project: ProjectRef, session: Session
+) -> None:
+    """spec_path 为空 = 连草稿都没沉淀：没有可翻译的底本，直接拦下。"""
+    bind_text_model(session, painter.SMITH, code="smith")
+    bind_image_model(session, painter.PAINTER, code="ark-image")
+    character = make_real_character(project_db, project)
+    project_db.commit()
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+
+    with pytest.raises(Conflict, match="先确认角色设定"):
+        engine.generate_render_turn(
+            project_db,
+            session,
+            project,
+            conversation,
+            chat=ScriptedChat(CARD),
+            generate=ScriptedDraw(),
+        )
+
+
+def test_效果图评审阶段发言直接重画不走文本模型(
+    project_db: Session,
+    project: ProjectRef,
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """设定已定稿、效果图还没定稿时，用户说的话是「这张图要改哪里」，直接驱动一轮重画。"""
+    bind_text_model(session, WRITER)
+    bind_text_model(session, painter.SMITH, code="smith")
+    bind_image_model(session, painter.PAINTER, code="ark-image")
+    character = make_real_character(project_db, project)
+    spec_on_disk(project, character)
+    characters.confirm_spec(project_db, project, character)  # → S1，进入效果图评审阶段
+    project_db.commit()
+    conversation = engine.ensure(
+        project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
+    )
+    draw = ScriptedDraw()
+    # send() 的重画分支不转发假 generate，走的是真取图口子，这里替掉
+    monkeypatch.setattr(image_gen, "generate", draw)
+
+    # chat 只喂给 prompt_smith 出卡片；会话型文本模型（WRITER）这一轮根本不该被调用
+    result = engine.send(
+        project_db, session, project, conversation, "腿再长一点", chat=ScriptedChat(CARD)
+    )
+
+    messages = engine.messages_of(project_db, conversation.id)
+    assert [one.role for one in messages] == ["user", "assistant"]
+    assert messages[0].content == "腿再长一点"
+    assert messages[-1].agent_code == painter.PAINTER
+    assert messages[-1].attachments[0]["kind"] == "image"
+    assert result.turn_no == messages[-1].turn_no
+    assert draw.calls != []
+    assert character.state == characters.RENDER_GENERATED

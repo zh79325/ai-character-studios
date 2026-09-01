@@ -19,7 +19,7 @@ import Composer from '@/components/chat/Composer'
 import DraftDiffPanel from '@/components/chat/DraftDiffPanel'
 import MessageList from '@/components/chat/MessageList'
 import { useConversation, type Handoff } from '@/components/chat/useConversation'
-import type { TargetKind } from '@/types/api'
+import type { Attachment, TargetKind } from '@/types/api'
 
 interface Props {
   projectCode: string
@@ -57,6 +57,12 @@ interface Props {
   finaleKey?: string
   /** 用户还没开口时摆在输入框上面的示例说辞，点一下填进输入框。 */
   starters?: string[]
+  /**
+   * 把附件里的相对图片路径换成渲染进程能读的绝对地址。
+   *
+   * 角色会话里画师塞的效果图存的是相对 API 路径，得补 baseUrl；项目会话不带图，留空即回落直用。
+   */
+  resolveImageUrl?: (att: Attachment) => Promise<string>
 }
 
 export type { Handoff }
@@ -77,6 +83,7 @@ export default function ChatPanel({
   finaleTitle = '收口',
   finaleKey = '',
   starters = [],
+  resolveImageUrl,
 }: Props) {
   const talk = useConversation({
     projectCode,
@@ -159,6 +166,7 @@ export default function ChatPanel({
                 briefingBlank={detail?.briefing_blank ?? false}
                 height={draftsAside ? 560 : 420}
                 who={who}
+                resolveImageUrl={resolveImageUrl}
               />
               <ChoicePicker
                 groups={detail?.choices ?? []}

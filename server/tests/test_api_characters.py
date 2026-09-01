@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from atelier.agents import conversation as engine
 from atelier.agents import render, review, views, vision
 from atelier.assets import characters, projects
 from atelier.assets.projects import ProjectRef
@@ -511,18 +512,35 @@ def confirmed(client: TestClient, chat: ScriptedChat) -> dict[str, object]:
     return character
 
 
-def test_设定没确认就生不了图(
+def test_设定还没落盘就生不了图(
     client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
 ) -> None:
-    """这是门禁 1 在 HTTP 层的另一个出口：不能绕过 advance 直接生图。"""
+    """门禁 1 折进自动衔接后，「确认设定」= spec 落盘：连草稿都还没沉淀就生图得 409。"""
     character = create(client)
-    settle_spec(client, str(character["id"]), chat)
 
     response = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
 
     assert response.status_code == 409
-    assert "才能生成渲染图" in response.json()["detail"]
+    assert "先确认角色设定" in response.json()["detail"]
     assert draw.calls == []
+
+
+def test_设定一落盘就自动接上生图(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """设定落盘即视为确认：不用再单独按门禁 1，`/render` 自己把状态从 S0 推到 S1 再出图到 S2。"""
+    character = create(client)
+    settle_spec(client, str(character["id"]), chat)
+    chat.replies.append(CARD)
+
+    response = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["generation_id"]
+    assert draw.calls != []
+    row = client.get(f"/api/projects/demo/characters/{character['id']}").json()
+    assert row["state"] == characters.RENDER_GENERATED
+    assert row["gate_spec_confirmed_at"] is not None
 
 
 def test_卡片可以先看不生图(
@@ -559,6 +577,25 @@ def test_生图后候选里列得出来(
     listed = client.get(f"/api/projects/demo/characters/{character['id']}/renders").json()
     assert [one["id"] for one in listed] == [body["generation_id"]]
     assert listed[0]["is_final"] is False
+
+
+def test_生图那一轮在会话里留下带图的画师消息(
+    client: TestClient, ready: ProjectRef, candidates: None, chat: ScriptedChat, draw: ScriptedDraw
+) -> None:
+    """走会话而不是直调 render：用户对着那条带图的画师消息说改哪里就是下一轮重画。"""
+    character = confirmed(client, chat)
+    chat.replies.append(CARD)
+    body = client.post(f"/api/projects/demo/characters/{character['id']}/render", json={}).json()
+
+    cid = engine.conversation_id_for_character(str(character["id"]))
+    detail = client.get(f"/api/projects/demo/conversations/{cid}").json()
+    last = detail["messages"][-1]
+    assert last["agent_code"] == render.PAINTER
+    assert last["status"] == "done"
+    shot = last["attachments"][0]
+    assert shot["kind"] == "image"
+    assert shot["generation_id"] == body["generation_id"]
+    assert f"/renders/{body['generation_id']}/image" in shot["url"]
 
 
 def test_图本体按原格式发出去(
