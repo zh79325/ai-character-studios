@@ -31,22 +31,30 @@ allow_tools: []
 
 ### 输出格式
 
-按此 JSON 回报，不要包裹在解释性文字里：
+执行完成后，末尾严格输出平台注入的统一 Action JSON 块。成功使用 `done`，失败使用 `blocked`；结果只放在 `payload.result`：
 
 ```json
 {
-  "stage": "S6_model | S7_rig | S8_animation",
-  "status": "OK | FAILED",
-  "external_task_id": "…",
-  "consumed_credits": 0,
-  "artifacts": [
-    { "path": "models/base.glb", "kind": "base", "bytes": 0 }
-  ],
-  "params_snapshot": {},
-  "thumbnail_urls": [],
-  "error": null
+  "result": {
+    "status": "success",
+    "artifacts": [
+      {
+        "path": "models/base.glb",
+        "kind": "base",
+        "bytes": 0,
+        "stage": "S6_model",
+        "external_task_id": "…",
+        "consumed_credits": 0,
+        "params_snapshot": {},
+        "thumbnail_urls": []
+      }
+    ],
+    "error": null
+  }
 }
 ```
+
+失败时 `status` 写 `failed`、`artifacts` 写已有产物或 `[]`、`error` 写明原因。
 
 ### 绝不可做
 
@@ -55,4 +63,4 @@ allow_tools: []
 - 不得让 `text-to-motion` 的源资产过期后才落盘。
 - 不得直接写定稿位之外的路径，也不得覆盖已有定稿而不回退旧版进 `tmp/`。
 - 不得替人工选择输入图与参数，3D 各步的输入由人工指定。
-- 不得输出 JSON 之外的内容。
+- 不得在 Action 块之外输出机器可读 JSON。

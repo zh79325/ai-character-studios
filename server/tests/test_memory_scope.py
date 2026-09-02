@@ -1,8 +1,8 @@
 """记忆的作用域：项目级注入所有人，角色级只跟着自己那个角色。
 
-要钉的是**不串味**：在「赤瞳」设定里聊出的偏好，不能跟着进下一个角色的提示词——它不仅无用，
-还会被模型当成本项目的通例写进新设定，用户得花一轮把它推翻。作用域由会话的对焦对象定，不由
-模型选的标记决定。
+要钉的是**不串味**：在「赤瞳」设定里聊出的角色级偏好，不能跟着进下一个角色的提示词——它不仅无用，
+还会被模型当成本项目的通例写进新设定，用户得花一轮把它推翻。作用域由 Action payload 的
+`scope` 明确声明，项目会话不能写角色级记忆。
 """
 
 from __future__ import annotations
@@ -16,34 +16,48 @@ from atelier.assets import characters
 from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Conversation
-from tests.conftest import ScriptedChat, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_text_model
 from tests.test_characters import ready
 
 WRITER = "spec_writer"
 DESIGNER = "game_designer"
 
-CHARACTER_REPLY = """给你一版。
+CHARACTER_REPLY = action_reply(
+    "给你一版。",
+    action="ask_user",
+    reason="草稿需要用户确认",
+    payload={
+        "drafts": [
+            {
+                "target_path": "赤瞳角色设定.md",
+                "content": "# 赤瞳\n双尾、红瞳。\n",
+            }
+        ],
+        "memories": [
+            {
+                "scope": "character",
+                "kind": "preference",
+                "content": "尾巴要 2 条且彼此分离",
+            },
+            {"scope": "character", "kind": "taboo", "content": "不要机械义肢"},
+        ],
+    },
+)
 
-[草稿开始: 赤瞳角色设定.md]
-# 赤瞳
-双尾、红瞳。
-[草稿结束]
-
-[角色记忆]
-preference: 尾巴要 2 条且彼此分离
-taboo: 不要机械义肢
-"""
-
-PROJECT_REPLY = """拟一版规范。
-
-[草稿开始: art-bible.md]
-# 视觉规范
-冷光下的湿滑金属。
-[草稿结束]
-
-[项目记忆]
-preference: 喜欢冷色调
-"""
+PROJECT_REPLY = action_reply(
+    "拟一版规范。",
+    action="ask_user",
+    reason="草稿需要用户确认",
+    payload={
+        "drafts": [
+            {
+                "target_path": "art-bible.md",
+                "content": "# 视觉规范\n冷光下的湿滑金属。\n",
+            }
+        ],
+        "memories": [{"scope": "project", "kind": "preference", "content": "喜欢冷色调"}],
+    },
+)
 
 
 @pytest.fixture
@@ -97,8 +111,8 @@ def settle(
 # --------------------------------------------------------------------------- #
 
 
-def test_角色记忆块也认() -> None:
-    """`spec_writer` 的输出契约写的是 `[角色记忆]`，不认就等于这些条目全丢了。"""
+def test_角色作用域记忆可以解析() -> None:
+    """`spec_writer` 通过统一 payload 声明角色级记忆。"""
     items = parsing.parse_memories(CHARACTER_REPLY)
 
     assert [(one.kind, one.content) for one in items] == [
@@ -107,8 +121,18 @@ def test_角色记忆块也认() -> None:
     ]
 
 
-def test_两个记忆块都写了就都收() -> None:
-    text = f"{PROJECT_REPLY}\n[角色记忆]\ntaboo: 不要机械义肢\n"
+def test_同一Action中的不同作用域记忆都能解析() -> None:
+    text = action_reply(
+        "记忆已整理。",
+        action="ask_user",
+        reason="等待用户继续输入",
+        payload={
+            "memories": [
+                {"scope": "project", "kind": "preference", "content": "喜欢冷色调"},
+                {"scope": "character", "kind": "taboo", "content": "不要机械义肢"},
+            ]
+        },
+    )
 
     contents = [one.content for one in parsing.parse_memories(text)]
 
@@ -189,18 +213,33 @@ def test_项目级记忆两个角色都看得见(
     assert seen == ["喜欢冷色调"]
 
 
-def test_模型指错标记也按会话归属(
+def test_payload声明项目作用域就写入项目记忆(
     project_db: Session, project: ProjectRef, session: Session, candidates: None
 ) -> None:
-    """让模型自己挑作用域的话，它在角色会话里写一句 `[项目记忆]` 就污染了全项目。"""
     character = make(project_db, project, "赤瞳")
     conversation = talk(project_db, character)
-    mislabeled = CHARACTER_REPLY.replace(parsing.CHARACTER_MEMORY_MARKER, parsing.MEMORY_MARKER)
+    project_scoped = action_reply(
+        "记忆已整理。",
+        action="ask_user",
+        reason="草稿需要用户确认",
+        payload={
+            "drafts": [
+                {
+                    "target_path": "赤瞳角色设定.md",
+                    "content": "# 赤瞳\n双尾、红瞳。\n",
+                }
+            ],
+            "memories": [
+                {"scope": "project", "kind": "preference", "content": "尾巴要 2 条且彼此分离"},
+                {"scope": "project", "kind": "taboo", "content": "不要机械义肢"},
+            ],
+        },
+    )
 
-    settle(project_db, project, session, conversation, mislabeled)
+    settle(project_db, project, session, conversation, project_scoped)
 
-    assert engine.enabled_memories(project_db, project) == []
-    assert len(engine.enabled_memories(project_db, project, character.id)) == 2
+    assert prefs(project) == ["尾巴要 2 条且彼此分离", "不要机械义肢"]
+    assert prefs(project, character) == []
 
 
 # --------------------------------------------------------------------------- #

@@ -41,23 +41,30 @@ allow_tools: [read_art_bible, read_project_memory, read_spec, read_prompt_templa
 
 ### 输出格式
 
-每张图一张卡片，严格按此模板，多张卡片之间空一行：
+正文可简要说明生成方向；完整素材规格只放在统一 Action 的 `payload.asset_specs`。每项字段固定为：`code`、`name`、`category`、`size`、`format`、`file_name`、`description`、`anchors`、`constraints`、`view_background_color`、`prompt`、`negative_prompt`。
 
-```
-ASSET-{项目缩写}-{NNN} — {素材名}
-类别：{character/equipment/map/scene}
-尺寸：{宽}x{高}
-格式：{png}
-文件名：{类别}_{角色}_{变体}.{ext}
-视觉描述：{2-3 句}
-art bible 锚点：§{节号} {引用的具体规则}
-硬性约束：{从设定抽出的可数项，逗号分隔}
-四视图背景色：{#RRGGBB（颜色名）}
-prompt：{可直接调用的正向提示词，按上面的层序}
-negative_prompt：{全局预设 + art bible 第 6 节，逗号分隔}
+```json
+{
+  "asset_specs": [
+    {
+      "code": "ASSET-DEMO-001",
+      "name": "角色渲染图",
+      "category": "character",
+      "size": "2048x2048",
+      "format": "png",
+      "file_name": "character_demo_v1.png",
+      "description": "具体视觉描述",
+      "anchors": "§1、§2、§3、§4、§6",
+      "constraints": ["尾巴为 2 条且彼此分离"],
+      "view_background_color": "#808080",
+      "prompt": "可直接调用的完整正向提示词",
+      "negative_prompt": "完整负向提示词"
+    }
+  ]
+}
 ```
 
-字段名与顺序不得改动，后端按行解析成 `asset_spec` 存进 `meta.json`。
+卡片完成后使用 `handoff`：渲染图阶段交给 `image_t2i`，四视图阶段交给 `image_i2i`；目标必须属于平台本轮给出的枚举。
 
 ### 绝不可做
 
@@ -68,4 +75,4 @@ negative_prompt：{全局预设 + art bible 第 6 节，逗号分隔}
 - 不得在渲染图或四视图中保留披风、斗篷、披肩、长袍、长外套、垂布、飘带或宽大衣袖。
 - 不得省略附属结构的数量。
 - 不得调用生图接口，你只产出卡片。
-- 不得输出卡片模板之外的解释性文字（需要提示问题时，另起一段写在全部卡片之后）。
+- 不得在 Action 块之外输出素材规格 JSON。

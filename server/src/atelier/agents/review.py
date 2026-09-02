@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from atelier.agents import context, dispatch, parsing
 from atelier.agents import conversation as conv
 from atelier.agents.definitions import get_agent
-from atelier.agents.parsing import Verdict, VerdictError
+from atelier.agents.parsing import Verdict
 from atelier.assets import characters, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import ArtifactDraft, Character, Conversation
@@ -41,7 +41,7 @@ REVIEWER = "spec_reviewer"
 MAX_AUTO_REGENERATIONS = 3
 """REJECT 后最多自动重生几次。到顶就转人工，不再无声地烧 token。"""
 
-CONSTRAINTS_SKIPPED = (parsing.CONSTRAINTS_SECTION,)
+CONSTRAINTS_SKIPPED = ("硬性约束清单",)
 """重生时不回传的节：约束清单是给后续生图用的产出，不是要 `spec_writer` 改的问题。"""
 
 REVIEW_REQUEST = """## 项目视觉规范（art-bible.md）
@@ -50,8 +50,8 @@ REVIEW_REQUEST = """## 项目视觉规范（art-bible.md）
 
 ---
 
-请审校上面「当前定稿全文」里的设定（角色：{name}），按你的输出格式回答：首行裁决 token，
-其下按节写缺失维度、模糊表述、art bible 冲突与硬性约束清单。
+请审校上面「当前定稿全文」里的设定（角色：{name}），在正文中按节写缺失维度、模糊表述、
+art bible 冲突与硬性约束清单，并把裁决放入末尾 Action 的 `payload.verdict`。
 """
 
 RETRY_REQUEST = """审校没通过（第 {attempt} 次），问题如下：
@@ -114,7 +114,7 @@ def _payload(
     assembled = context.assemble(
         agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(ref, REVIEWER),
+        addendum=conv.action_addendum(ref, agent, "character", "spec"),
         artifact_path=relative,
         artifact_text=spec,
         project_memories=conv.enabled_memories(project, ref, character.id),
@@ -137,11 +137,12 @@ def review_once(
     用户看不出该改设定还是该重试。事故照样记一条事件，抛给上层去决定重试。
     """
     payload, relative = _payload(project, ref, character)
+    caller = chat or text_chat.complete
     reply = dispatch.run(
         runtime,
         REVIEWER,
         payload,
-        chat or text_chat.complete,
+        caller,
         project_code=ref.code,
         task_id=character.id,
     )
@@ -149,17 +150,34 @@ def review_once(
 
     try:
         verdict = parsing.parse_verdict(text, parsing.SPEC_CHECK)
-    except VerdictError as exc:
-        record_event(
-            project,
-            character.id,
-            "spec_review_unparsable",
-            str(exc),
-            {"attempt": attempt, "reply": text[:2000]},
-            level="error",
+    except parsing.ProtocolError:
+        retry_payload = [
+            *payload,
+            {"role": "assistant", "content": text},
+            {"role": "user", "content": conv.PROTOCOL_RETRY_PROMPT},
+        ]
+        reply = dispatch.run(
+            runtime,
+            REVIEWER,
+            retry_payload,
+            caller,
+            project_code=ref.code,
+            task_id=character.id,
         )
-        project.commit()
-        raise
+        text = reply.content.strip()
+        try:
+            verdict = parsing.parse_verdict(text, parsing.SPEC_CHECK)
+        except parsing.ProtocolError as exc:
+            record_event(
+                project,
+                character.id,
+                "spec_review_unparsable",
+                str(exc),
+                {"attempt": attempt, "reply": text[:2000]},
+                level="error",
+            )
+            project.commit()
+            raise
 
     record_event(
         project,

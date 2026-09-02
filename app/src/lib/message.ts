@@ -1,8 +1,7 @@
 /**
  * 助手消息的可读正文。
  *
- * Agent 每轮的输出里夹着几个结构块（`[草稿开始: 路径]…[草稿结束]`、`[待选项]`、
- * `[项目命名建议]`、`[对焦进度]`、`[项目记忆]`/`[角色记忆]`、路由与交接协议块），
+ * Agent 每轮的输出末尾带统一 Action JSON 块；历史消息还可能包含旧结构块。
  * 它们各自已经在界面上有位置：草稿在草稿区、待选项在抽屉、命名建议在立项收口、进度与记忆落库。把原文整段摆进气泡，
  * 用户会在同一屏上把同一件事看两遍——第二遍还是模型内部那套写法。
  *
@@ -19,8 +18,19 @@ const END_MARKERS = new Set(['草稿结束', '路由结束', '交接结束'])
 /** ``` 围栏行。模型爱把整个块包在代码围栏里，剥了块只留围栏会在气泡里渲染成一条空代码块。 */
 const FENCE = /^[ \t>]*```/
 
-/** 剥掉结构块，只留下给人看的那几段话。 */
+const ACTION_START = '<-------- ACTION-START------->'
+
+/** 剥掉统一 Action（含流式半截）和历史结构块，只留下给人看的正文。 */
 export function visibleText(text: string): string {
+  const actionStart = text.indexOf(ACTION_START)
+  if (actionStart >= 0) text = text.slice(0, actionStart)
+  else {
+    const lines = text.split('\n')
+    const tail = lines.at(-1)?.trim() ?? ''
+    if (tail.startsWith('<') && ACTION_START.startsWith(tail)) lines.pop()
+    text = lines.join('\n')
+  }
+
   const kept: string[] = []
   let dropping = false
   /** 这个块是包在围栏里的：它的收尾围栏也得跟着走。 */

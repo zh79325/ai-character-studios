@@ -127,6 +127,9 @@ class TurnResult:
     """这轮给的项目命名建议，只在立项对焦里会有。"""
     choices: tuple[parsing.ChoiceGroup, ...] = ()
     """这轮要用户拍板的那几组选项，前端摆成选择组件。"""
+    action: str = ""
+    target_agent: str | None = None
+    action_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,7 +404,10 @@ def choices_of(project: Session, conversation_id: str) -> tuple[parsing.ChoiceGr
     ).first()
     if row is None or row.role != "assistant":
         return ()
-    return parsing.parse_choices(row.content)
+    try:
+        return parsing.parse_choices(row.content)
+    except parsing.ProtocolError:
+        return ()
 
 
 def naming_of(project: Session, conversation_id: str) -> tuple[parsing.NamingOption, ...]:
@@ -421,10 +427,29 @@ def naming_of(project: Session, conversation_id: str) -> tuple[parsing.NamingOpt
         .order_by(Message.turn_no.desc())
     )
     for row in rows:
-        options = parsing.parse_naming(row.content)
+        try:
+            options = parsing.parse_naming(row.content)
+        except parsing.ProtocolError:
+            continue
         if options:
             return options
     return ()
+
+
+def action_of(project: Session, conversation_id: str) -> parsing.ActionEnvelope | None:
+    """读取最近一条助手消息的 Action；旧协议历史消息不恢复结构化状态。"""
+    row = project.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+        .order_by(Message.turn_no.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    try:
+        return parsing.parse_action(row.content)
+    except parsing.ProtocolError:
+        return None
 
 
 def drafts_of(
@@ -776,18 +801,25 @@ def _director_addendum(project: Session, conversation: Conversation) -> str:
         f"- 当前人工门禁：{gate}\n"
         f"- 当前焦点：{conversation.focus_agent_code or '无'}\n"
         f"- 待确认草稿数：{len(drafts_of(project, conversation.id))}\n"
-        f"- 当前可用 Agent：\n{catalog or '- 无'}"
+        f"- 当前可用 Agent：\n{catalog or '- 无'}\n\n"
+        + orchestrator.action_protocol(
+            orchestrator.allowed_handoff_codes(
+                orchestrator.DIRECTOR, conversation.target_kind, stage_code
+            )
+        )
     )
 
 
-def _specialist_addendum(ref: ProjectRef, agent: AgentDefinition) -> str:
-    """专业 Agent 的项目指令与统一交接协议。"""
+def action_addendum(
+    ref: ProjectRef,
+    agent: AgentDefinition,
+    target_kind: str,
+    stage_code: str,
+) -> str:
+    """项目指令与当前阶段的动态 Action 交接枚举。"""
     project_prompt = addendum(ref, agent.agent_code)
-    protocol = (
-        "## 本轮交接协议（平台要求）\n\n"
-        "每轮末尾附且只附一个交接块。仍需继续对焦用 continue；工作完成用 complete；"
-        "缺前置条件或需要人工处理用 blocked；确需换人用 handoff。\n\n"
-        f"```\n{orchestrator.HANDOFF_PROTOCOL}\n```"
+    protocol = orchestrator.action_protocol(
+        orchestrator.allowed_handoff_codes(agent.agent_code, target_kind, stage_code)
     )
     return "\n\n".join(item for item in (project_prompt, protocol) if item)
 
@@ -822,7 +854,9 @@ def _inputs(
     is_project = conversation.target_kind == "project"
     return ContextInputs(
         agent=agent,
-        addendum=_specialist_addendum(ref, agent),
+        addendum=action_addendum(
+            ref, agent, conversation.target_kind, _stage_code(project, conversation)
+        ),
         artifact_path=artifact_path,
         artifact_text=artifact_text,
         art_bible_path=art_bible_path,
@@ -902,8 +936,9 @@ def _add_message(
 
 
 PROTOCOL_RETRY_PROMPT = (
-    "你的上一条回答没有给出可解析的协议块。请保留原意并重新输出完整回答，"
-    "严格使用系统提示词规定的字段和值；这是唯一一次自动纠正机会。"
+    "你的上一条回答不符合 Action JSON 契约。请保留原意并重新输出完整回答，"
+    "末尾严格使用系统提示词规定的 Action 边界、字段、枚举和 payload；"
+    "不要输出任何旧标记协议。这是唯一一次自动纠正机会。"
 )
 
 
@@ -987,10 +1022,8 @@ def _protocol_retry(
 
 
 def _parse_agent_turn(agent: AgentDefinition, content: str) -> parsing.TurnOutput:
-    parsed = parsing.parse_turn(content)
-    if agent.agent_code == orchestrator.DIRECTOR and parsed.route is None:
-        raise parsing.ProtocolError("总管回答缺少路由块")
-    return parsed
+    del agent
+    return parsing.parse_turn(content)
 
 
 def _run_text_agent(
@@ -1108,6 +1141,11 @@ def _run_text_agent(
             focus_agent_code=conversation.focus_agent_code,
             naming=parsed.naming if is_settled(project, conversation.id) else (),
             choices=parsed.choices,
+            action=parsed.action.action.value,
+            target_agent=(
+                parsed.action.target_agent.value if parsed.action.target_agent is not None else None
+            ),
+            action_reason=parsed.action.reason,
         ),
         parsed,
     )
@@ -1160,7 +1198,7 @@ def _execute_agent(
                 image_agent_code=agent.agent_code,
                 route=route,
             )
-        return result, parsing.TurnOutput(text=result.content)
+        return result, parsing.parse_turn(result.content)
     if agent.agent_code == vision.REVIEWER:
         result = review_visual_turn(
             project,
@@ -1171,7 +1209,7 @@ def _execute_agent(
             chat=chat,
             route=route,
         )
-        return result, parsing.TurnOutput(text=result.content)
+        return result, parsing.parse_turn(result.content)
     raise Conflict(f"Agent {agent.agent_code} 暂不支持从会话直接执行")
 
 
@@ -1274,101 +1312,52 @@ def send(
             if event not in handoffs:
                 handoffs.append(event)
 
-        if actor == orchestrator.DIRECTOR:
-            route_decision = parsed.route
-            if route_decision is None or route_decision.action != "delegate":
-                break
-            target = orchestrator.validate_recipient(
-                route_decision.agent_code, conversation.target_kind, stage_code
-            )
-            if len(handoffs) >= orchestrator.MAX_HANDOFFS:
-                break
-            user.recipient_agent_code = target.agent_code
-            orchestrator.set_focus(conversation, target.agent_code, route_decision.reason)
-            handoffs.append(
-                _record_handoff(
-                    project,
-                    conversation,
-                    turn_no=user.turn_no,
-                    from_agent=actor,
-                    to_agent=target.agent_code,
-                    source="director",
-                    reason=route_decision.reason,
-                )
-            )
-            project.commit()
-            route_context = {
-                "recipient_agent_code": target.agent_code,
-                "source": "director",
-                "from_agent_code": actor,
-                "allowed_agents": allowed_agents,
-                "reason": route_decision.reason,
-                "focus_change": f"{orchestrator.DIRECTOR} -> {target.agent_code}",
-            }
-            actor = target.agent_code
-            continue
-
-        handoff = parsed.handoff
-        if handoff is None or handoff.status == "continue":
-            if get_agent(actor).role_type == "executor":
-                orchestrator.set_focus(conversation, None)
+        action = parsed.action
+        if action.action == parsing.ActionType.DONE:
+            orchestrator.set_focus(conversation, None)
             break
-
-        target_code = orchestrator.DIRECTOR
-        if handoff.status == "handoff":
-            target_code = orchestrator.validate_recipient(
-                handoff.agent_code, conversation.target_kind, stage_code
-            ).agent_code
-        orchestrator.set_focus(
-            conversation,
-            None if target_code == orchestrator.DIRECTOR else target_code,
-            handoff.reason,
-        )
+        if action.action in {parsing.ActionType.ASK_USER, parsing.ActionType.BLOCKED}:
+            break
+        if action.target_agent is None:
+            raise parsing.ProtocolError("handoff 缺少 target_agent")
         if len(handoffs) >= orchestrator.MAX_HANDOFFS:
             break
+
+        target = orchestrator.validate_action_target(
+            actor,
+            action.target_agent.value,
+            conversation.target_kind,
+            stage_code,
+        )
+        if actor == orchestrator.DIRECTOR:
+            user.recipient_agent_code = target.agent_code
+        orchestrator.set_focus(
+            conversation,
+            None if target.agent_code == orchestrator.DIRECTOR else target.agent_code,
+            action.reason,
+        )
         handoffs.append(
             _record_handoff(
                 project,
                 conversation,
                 turn_no=result.turn_no,
                 from_agent=actor,
-                to_agent=target_code,
-                source="system",
-                reason=handoff.reason or handoff.status,
-                status=handoff.status,
+                to_agent=target.agent_code,
+                source="director" if actor == orchestrator.DIRECTOR else "system",
+                reason=action.reason,
+                status="delegated",
             )
         )
         project.commit()
         route_context = {
-            "recipient_agent_code": target_code,
-            "source": "system",
+            "recipient_agent_code": target.agent_code,
+            "source": "director" if actor == orchestrator.DIRECTOR else "system",
             "from_agent_code": actor,
             "allowed_agents": allowed_agents,
-            "reason": handoff.reason or handoff.status,
-            "focus_change": (
-                f"{actor} -> {conversation.focus_agent_code or orchestrator.DIRECTOR}"
-            ),
+            "reason": action.reason,
+            "focus_change": f"{actor} -> {target.agent_code}",
         }
-        if handoff.status in {"complete", "blocked"}:
-            break
-        actor = target_code
-        if len(handoffs) >= orchestrator.MAX_HANDOFFS:
-            # 第二次交接已经成立，允许接收方执行一次，但不再接受后续转派。
-            result, _ = _execute_agent(
-                project,
-                runtime,
-                ref,
-                conversation,
-                actor,
-                text=routed_text,
-                chat=chat,
-                stream=stream,
-                route=route_context,
-            )
-            final_result = result
-            if get_agent(actor).role_type == "executor":
-                orchestrator.set_focus(conversation, None)
-            break
+        actor = target.agent_code
 
     if final_result is None:
         raise AssertionError("路由循环没有执行 Agent")
@@ -1391,6 +1380,9 @@ def send(
             "agent_code": final.agent_code,
             "focus_agent_code": final.focus_agent_code,
             "drafts": list(final.draft_ids),
+            "action": final.action,
+            "target_agent": final.target_agent,
+            "reason": final.action_reason,
             "handoffs": [
                 {
                     "turn_no": item.turn_no,
@@ -1492,10 +1484,24 @@ def generate_views_turn(
         BUS.publish(conversation.id, ERROR, assistant.content)
         raise
     if result.failures:
-        assistant.content = "四视图生成失败：" + "；".join(item.reason for item in result.failures)
+        reason = "四视图生成失败：" + "；".join(item.reason for item in result.failures)
+        assistant.content = parsing.with_action(
+            reason,
+            parsing.ActionType.BLOCKED,
+            reason=reason,
+            payload={"result": {"status": "failed", "artifacts": [], "error": reason}},
+        )
         assistant.status = FAILED
     else:
-        assistant.content = VIEWS_TURN_REPLY
+        artifacts = [
+            {"generation_id": item.generation_id, "path": item.file_path} for item in result.images
+        ]
+        assistant.content = parsing.with_action(
+            VIEWS_TURN_REPLY,
+            parsing.ActionType.DONE,
+            reason="四视图已生成",
+            payload={"result": {"status": "success", "artifacts": artifacts, "error": None}},
+        )
         assistant.status = DONE
         assistant.attachments = [
             {
@@ -1508,12 +1514,16 @@ def generate_views_turn(
         ]
     conversation.updated_at = assistant.created_at
     project.commit()
+    action = parsing.parse_action(assistant.content)
     return TurnResult(
         conversation_id=conversation.id,
         turn_no=assistant.turn_no,
         content=assistant.content,
         agent_code=view_maker.PAINTER,
         focus_agent_code=conversation.focus_agent_code,
+        action=action.action.value,
+        target_agent=action.target_agent.value if action.target_agent is not None else None,
+        action_reason=action.reason,
     )
 
 
@@ -1602,12 +1612,16 @@ def review_visual_turn(
     assistant.status = DONE
     conversation.updated_at = assistant.created_at
     project.commit()
+    action = parsing.parse_action(verdict.text)
     return TurnResult(
         conversation_id=conversation.id,
         turn_no=assistant.turn_no,
         content=verdict.text,
         agent_code=vision.REVIEWER,
         focus_agent_code=conversation.focus_agent_code,
+        action=action.action.value,
+        target_agent=action.target_agent.value if action.target_agent is not None else None,
+        action_reason=action.reason,
     )
 
 
@@ -1830,7 +1844,18 @@ def generate_render_turn(
         BUS.publish(conversation.id, ERROR, str(exc))
         raise
 
-    assistant.content = RENDER_TURN_REPLY
+    assistant.content = parsing.with_action(
+        RENDER_TURN_REPLY,
+        parsing.ActionType.DONE,
+        reason="效果图已生成",
+        payload={
+            "result": {
+                "status": "success",
+                "artifacts": [{"generation_id": result.generation_id, "path": result.file_path}],
+                "error": None,
+            }
+        },
+    )
     assistant.token_count = 0
     assistant.status = DONE
     assistant.attachments = [
@@ -1866,13 +1891,17 @@ def generate_render_turn(
                 ],
             },
         )
+    action = parsing.parse_action(assistant.content)
     return TurnResult(
         conversation_id=conversation.id,
         turn_no=assistant.turn_no,
-        content=RENDER_TURN_REPLY,
+        content=assistant.content,
         agent_code=image_agent_code,
         focus_agent_code=conversation.focus_agent_code,
         handoffs=tuple(handoffs),
+        action=action.action.value,
+        target_agent=action.target_agent.value if action.target_agent is not None else None,
+        action_reason=action.reason,
     )
 
 
@@ -2297,18 +2326,22 @@ def memory_hash(kind: str, content: str) -> str:
 
 
 def harvest_memories(project: Session, conversation_id: str) -> tuple[parsing.MemoryItem, ...]:
-    """从会话的助手消息里收集 `[项目记忆]` 条目，新的在前。
+    """从会话的助手消息里收集 Action payload 中的记忆条目，新的在前。
 
     在沉淀时才收而不是每轮就写：聊到一半的偏好可能下一轮就被用户否掉，提前写进长期记忆
-    会让后续所有 Agent 都带着一条用户已经反悔的要求。
+    会让后续所有 Agent 都带着一条用户已经反悔的要求。旧协议历史消息不再恢复结构化数据。
     """
     items: list[parsing.MemoryItem] = []
     seen: set[str] = set()
     for message in reversed(messages_of(project, conversation_id)):
         if message.role != "assistant":
             continue
-        for item in parsing.parse_memories(message.content):
-            key = memory_hash(item.kind, item.content)
+        try:
+            parsed = parsing.parse_memories(message.content)
+        except parsing.ProtocolError:
+            continue
+        for item in parsed:
+            key = f"{item.scope}:{memory_hash(item.kind, item.content)}"
             if key not in seen:
                 seen.add(key)
                 items.append(item)
@@ -2347,11 +2380,22 @@ def _write_memories(
     conversation: Conversation,
     items: Sequence[parsing.MemoryItem],
 ) -> tuple[str, ...]:
-    """去重后追写对象目录里的偏好文件，返回真正新增的内容。作用域跟会话的对焦对象一致。"""
-    scope = memory_scope(conversation)
+    """按 Action 声明的作用域去重并追写对象目录里的偏好文件。"""
     added: list[str] = []
     for item in items:
-        entry = write_memory(project, ref, item.kind, item.content, character_ref=scope)
+        if item.scope == "character":
+            if conversation.target_kind != "character" or not conversation.target_ref:
+                raise Conflict("项目会话不能写入角色级记忆")
+            character_ref = conversation.target_ref
+        else:
+            character_ref = PROJECT_SCOPE
+        entry = write_memory(
+            project,
+            ref,
+            item.kind,
+            item.content,
+            character_ref=character_ref,
+        )
         if entry is not None:
             added.append(entry.content)
     return tuple(added)

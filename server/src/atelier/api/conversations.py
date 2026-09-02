@@ -230,6 +230,7 @@ def _detail(project: Session, ref: ProjectRef, row: Conversation) -> Conversatio
     memory = engine.agent_memory_of(project, ref, row)
     artifact_path, _ = engine.artifact_of(project, ref, row)
     briefing = engine.briefing_of(project, ref, row)
+    action = engine.action_of(project, row.id)
     return ConversationDetailOut(
         conversation=_conversation_out(project, row),
         director_agent_code=row.agent_code or orchestrator.DIRECTOR,
@@ -249,6 +250,13 @@ def _detail(project: Session, ref: ProjectRef, row: Conversation) -> Conversatio
         naming=_naming_out(engine.naming_of(project, row.id)),
         settled=engine.is_settled(project, row.id),
         choices=_choices_out(engine.choices_of(project, row.id)),
+        action=action.action.value if action is not None else "",
+        target_agent=(
+            action.target_agent.value
+            if action is not None and action.target_agent is not None
+            else None
+        ),
+        reason=action.reason if action is not None else "",
         briefing=briefing.text,
         briefing_blank=briefing.blank,
     )
@@ -348,6 +356,9 @@ def send_message(
         handoffs=[_handoff_out(item) for item in result.handoffs],
         naming=_naming_out(result.naming),
         choices=_choices_out(result.choices),
+        action=result.action,
+        target_agent=result.target_agent,
+        reason=result.action_reason,
     )
 
 

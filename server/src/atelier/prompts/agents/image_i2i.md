@@ -32,17 +32,27 @@ allow_tools: []
 
 ### 输出格式
 
-单张四宫格按此结构回报：
+执行完成后，末尾严格输出平台注入的统一 Action JSON 块。成功使用 `done`，失败使用 `blocked`；结果只放在 `payload.result`：
 
+```json
+{
+  "result": {
+    "status": "success",
+    "artifacts": [
+      {
+        "path": "tmp/角色名_四视图_v1_时间戳.png",
+        "layout": "2×2（左上正面 / 右上右侧 30° / 左下背面 / 右下左侧 30°）",
+        "size": "2048x2048",
+        "references": ["人物姿势模版.jpg", "角色名_最终渲染图.png"],
+        "params_snapshot": {}
+      }
+    ],
+    "error": null
+  }
+}
 ```
-IMAGE-RESULT: OK | FAILED
-布局：2×2（左上正面 / 右上右侧 30° / 左下背面 / 右下左侧 30°）
-尺寸：2048x2048
-文件：<tmp/ 下的相对路径>
-参考图：<姿势模版路径> + <最终渲染图路径>
-参数快照：<模型 / strength / seed / 其他>
-失败原因：<仅 FAILED 时填>
-```
+
+失败时 `status` 写 `failed`、`artifacts` 写 `[]`、`error` 写明原因。
 
 ### 绝不可做
 

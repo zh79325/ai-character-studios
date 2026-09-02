@@ -96,13 +96,6 @@ RETRY_REQUEST = """这张卡片还不能用，问题如下：
 请只改这几处，其余保持原样，改完仍按原格式整张输出。
 """
 
-FORMAT_RETRY_REQUEST = """上一版没有按模板输出可解析的素材规格卡片，原文如下：
-
-{previous}
-
-不要解释、讨论或征求确认。请严格按系统约定的完整卡片模板重新输出，字段名与顺序不得改动。
-"""
-
 FIELD_REQUEST = """上一版渲染图在「{field}」这一项上不合要求：
 
 {note}
@@ -152,12 +145,12 @@ def _negative_prompt(spec: AssetSpec) -> str:
     return ", ".join([written, *missing])
 
 
-REPORT = """IMAGE-RESULT: {status}
+REPORT = """图片生成{status}
 文件：{path}
 尺寸：{size}
 参数快照：{params}
 """
-"""`image_t2i` 提示词里约定的回报格式。它是执行者不是对话模型，这段由平台代码填。"""
+"""执行结果的审计摘要；对话消息由 `parsing.with_action` 生成统一 Action。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +203,7 @@ def _spec_payload(
     assembled = context.assemble(
         agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(ref, SMITH),
+        addendum=conv.action_addendum(ref, agent, "character", "render"),
         artifact_path=relative,
         artifact_text=spec_path.read_text(encoding="utf-8"),
         project_memories=conv.enabled_memories(project, ref, character.id),
@@ -282,22 +275,39 @@ def make_spec(
             project_code=ref.code,
             task_id=character.id,
         )
-        cards = parsing.parse_asset_specs(reply.content)
-        if not cards:
-            record_event(
-                project,
-                character.id,
-                "asset_spec_unparseable",
-                reply.content.strip(),
-                {"attempt": attempt},
-                level="warning",
+        try:
+            cards = parsing.parse_asset_specs(reply.content)
+            if not cards:
+                raise parsing.ProtocolError("payload.asset_specs 至少要有一项")
+        except parsing.ProtocolError:
+            retry_payload = [
+                *payload,
+                {"role": "assistant", "content": reply.content.strip()},
+                {"role": "user", "content": conv.PROTOCOL_RETRY_PROMPT},
+            ]
+            reply = dispatch.run(
+                runtime,
+                SMITH,
+                retry_payload,
+                audited_chat,
+                project_code=ref.code,
+                task_id=character.id,
             )
-            project.commit()
-            if attempt > MAX_SPEC_RETRIES:
-                raise Conflict(f"prompt_smith 连续 {attempt} 次没输出可解析的卡片，请检查审计记录")
-            request = FORMAT_RETRY_REQUEST.format(previous=reply.content.strip()[:6000])
-            attempt += 1
-            continue
+            try:
+                cards = parsing.parse_asset_specs(reply.content)
+                if not cards:
+                    raise parsing.ProtocolError("payload.asset_specs 至少要有一项")
+            except parsing.ProtocolError as exc:
+                record_event(
+                    project,
+                    character.id,
+                    "asset_spec_unparseable",
+                    str(exc),
+                    {"attempt": attempt, "reply": reply.content.strip()[:2000]},
+                    level="error",
+                )
+                project.commit()
+                raise Conflict("prompt_smith 的输出协议格式错误，已自动纠正一次仍无法解析") from exc
 
         spec = cards[0]
         gaps = _spec_gaps(spec)

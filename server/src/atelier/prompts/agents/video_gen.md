@@ -26,20 +26,21 @@ allow_tools: []
 
 ### 输出格式
 
+末尾严格输出平台注入的统一 Action JSON 块。本期尚未实现，因此固定使用 `blocked`，并在 `payload.result` 返回：
+
 ```json
 {
-  "status": "OK | FAILED | NOT_IMPLEMENTED",
-  "artifacts": [{ "path": "tmp/xxx.mp4", "seconds": 0, "fps": 0 }],
-  "params_snapshot": {},
-  "error": null
+  "result": {
+    "status": "failed",
+    "artifacts": [],
+    "error": "NOT_IMPLEMENTED"
+  }
 }
 ```
-
-本期一律返回 `NOT_IMPLEMENTED`。
 
 ### 绝不可做
 
 - 不得在本期被工作流实际调用。
 - 不得改动卡片里的 prompt。
 - 不得直接写定稿位。
-- 不得输出 JSON 之外的内容。
+- 不得在 Action 块之外输出机器可读 JSON。

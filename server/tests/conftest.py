@@ -10,6 +10,7 @@ API 测试用 `client` 夹具：把全局两库的依赖换成临时库的 Sessi
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -183,6 +184,37 @@ def quiet_bus() -> Iterator[None]:
     BUS.clear()
 
 
+ACTION_START = "<-------- ACTION-START------->"
+ACTION_END = "<-------- ACTION-END------->"
+
+
+def action_reply(
+    text: str = "好的。",
+    *,
+    action: str = "done",
+    target_agent: str | None = None,
+    reason: str = "本轮处理完成",
+    payload: dict[str, object] | None = None,
+) -> str:
+    """生成符合统一 Action 契约的假模型回复。"""
+    block = json.dumps(
+        {
+            "action": action,
+            "target_agent": target_agent,
+            "reason": reason,
+            "payload": payload or {},
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    body = text.rstrip()
+    return (
+        f"{body}\n\n{ACTION_START}\n{block}\n{ACTION_END}"
+        if body
+        else (f"{ACTION_START}\n{block}\n{ACTION_END}")
+    )
+
+
 class ScriptedChat:
     """按脚本回答的假模型，签名与 `text_chat.complete` 一致。
 
@@ -206,6 +238,16 @@ class ScriptedChat:
     ) -> ChatReply:
         self.calls.append([dict(m) for m in messages])
         content = self.replies.pop(0) if self.replies else self.default
+        if (
+            content.strip()
+            and ACTION_START not in content
+            and not self.calls[-1][0]["content"].startswith("你在为「")
+        ):
+            content = action_reply(
+                content,
+                action="ask_user",
+                reason="等待用户继续输入",
+            )
         if on_delta is not None:
             for piece in content.splitlines(keepends=True):
                 self.deltas.append(piece)

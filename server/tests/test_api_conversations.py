@@ -25,31 +25,44 @@ from atelier.assets import memory as memory_files
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Message
 from atelier.providers import text_chat
-from tests.conftest import ScriptedChat, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_text_model
 
 DESIGNER = "game_designer"
 
-DRAFT_REPLY = """给你一版。
+DRAFT_REPLY = action_reply(
+    "给你一版。",
+    action="ask_user",
+    reason="草稿需要用户确认",
+    payload={
+        "progress": {
+            "decisions": ["题材是赛博朋克"],
+            "open_questions": ["面数预算"],
+            "next_step": "确认平台",
+        },
+        "drafts": [
+            {
+                "target_path": "art-bible.md",
+                "content": "# 视觉规范\n冷光下的湿滑金属。\n",
+            }
+        ],
+        "memories": [{"scope": "project", "kind": "preference", "content": "喜欢冷色调"}],
+    },
+)
 
-[对焦进度]
-已定：题材是赛博朋克
-待定：面数预算
-下一步：确认平台
-
-[草稿开始: art-bible.md]
-# 视觉规范
-冷光下的湿滑金属。
-[草稿结束]
-
-[项目记忆]
-preference: 喜欢冷色调
-"""
-
-NAMING_REPLY = """名字报几组。
-
-[项目命名建议]
-- 名称: 都市神怪录 / 代号: urban_monkey_king / 理由: 识别度高
-"""
+NAMING_REPLY = action_reply(
+    "名字报几组。",
+    action="ask_user",
+    reason="需要用户确认项目名称",
+    payload={
+        "naming": [
+            {
+                "name": "都市神怪录",
+                "code": "urban_monkey_king",
+                "reason": "识别度高",
+            }
+        ]
+    },
+)
 
 
 @pytest.fixture(autouse=True)
@@ -259,12 +272,27 @@ def test_发一轮拿到回答与草稿(client: TestClient, talk: str) -> None:
     assert detail["drafts"][0]["stale"] is False
 
 
-CHOICE_REPLY = """还有几处等你拍。
-
-[待选项]
-- 项: 参考作品锚点 / 选项: 银翼杀手 | 攻壳机动队 / 多选: 是 / 推荐: 银翼杀手 | 攻壳机动队
-- 项: 面数预算 / 选项: 8k | 15k / 多选: 否 / 推荐: 15k
-"""
+CHOICE_REPLY = action_reply(
+    "还有几处等你拍。",
+    action="ask_user",
+    reason="需要确认参考作品与面数预算",
+    payload={
+        "choices": [
+            {
+                "item": "参考作品锚点",
+                "options": ["银翼杀手", "攻壳机动队"],
+                "recommended": ["银翼杀手", "攻壳机动队"],
+                "multiple": True,
+            },
+            {
+                "item": "面数预算",
+                "options": ["8k", "15k"],
+                "recommended": ["15k"],
+                "multiple": False,
+            },
+        ]
+    },
+)
 
 
 def test_待选项带着单选多选与推荐出去(client: TestClient, talk: str, chat: ScriptedChat) -> None:

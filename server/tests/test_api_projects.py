@@ -322,7 +322,7 @@ def test_config_patch_only_touches_what_the_form_sent(client: TestClient) -> Non
     assert body["style"]["art_style"] == "国风水墨"
     assert body["defaults"]["image_size"] == 2048  # 没提到，保持缺省
     assert body["review_mode"] == "lean"
-    assert body["conversation_audit"] is False
+    assert body["conversation_audit"] is True
     assert json.loads(raw_path.read_text(encoding="utf-8"))["我的备注"] == "下周交付"
     # 目录名不跟着改名走，否则所有已存的相对路径都得重算
     assert Path(client.get("/api/projects/p1").json()["dir_path"]) == project_dir

@@ -1,9 +1,7 @@
-"""裁决型 Agent 的输出解析。
+"""裁决型 Agent 的统一 Action payload 解析。
 
-后端只读首行判定，理由在下面分节写。这条约定的代价在于：首行读错一次，整份设定的去向就
-错一次，所以这里宁可报错也不猜。
-
-硬性约束清单要拆成「项 = 值」——它进 `meta.json` 后是后续每张图的比对依据，比对按项对号。
+裁决必须来自严格 JSON 中的 `payload.verdict`，正文只用于向用户解释结论。
+硬性约束清单以结构化的「item/value」保存，供后续每张图逐项比对。
 """
 
 from __future__ import annotations
@@ -11,27 +9,32 @@ from __future__ import annotations
 import pytest
 
 from atelier.agents import parsing
-from atelier.agents.parsing import VerdictError, parse_verdict
+from atelier.agents.parsing import ProtocolError, VerdictError, parse_verdict
+from tests.conftest import action_reply
 
-FULL = """SPEC-CHECK: CONCERNS
+FULL = action_reply(
+    "设定存在两处需要关注。",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "CONCERNS",
+            "sections": {
+                "缺失维度": [],
+                "模糊表述": ["原文「深色鳞片」→ 应写明：深灰黑色（dark charcoal）"],
+                "art bible 冲突": ["§4 主色仅限冷色 ←→ 设定「橙红腹部」"],
+            },
+            "constraints": [
+                {"item": "尾巴", "value": "2 条，彼此分离"},
+                {"item": "眼睛", "value": "红色发光"},
+                {"item": "手", "value": "三指利爪"},
+            ],
+        }
+    },
+)
 
-### 缺失维度
-无
 
-### 模糊表述
-- 原文「深色鳞片」→ 应写明：深灰黑色（dark charcoal）
-
-### art bible 冲突
-- §4 主色仅限冷色 ←→ 设定「橙红腹部」
-
-### 硬性约束清单
-- 尾巴 = 2 条，彼此分离
-- 眼睛 = 红色发光
-- 手 = 三指利爪
-"""
-
-
-def test_首行裁决与分节理由一起拿到() -> None:
+def test_Action裁决与结构化分节一起拿到() -> None:
     verdict = parse_verdict(FULL)
 
     assert verdict.decision == "CONCERNS"
@@ -55,61 +58,129 @@ def test_约束清单拆成项与值() -> None:
 
 def test_三个裁决都认() -> None:
     for decision in parsing.VERDICTS:
-        assert parse_verdict(f"SPEC-CHECK: {decision}\n").decision == decision
+        text = action_reply(
+            payload={
+                "verdict": {
+                    "token": "SPEC-CHECK",
+                    "decision": decision,
+                    "sections": {},
+                    "constraints": [],
+                }
+            }
+        )
+        assert parse_verdict(text).decision == decision
 
 
-def test_前面的空行与围栏不算首行() -> None:
-    """模型爱把裁决包进 ``` 里好让 Markdown 显示得规整。"""
-    verdict = parse_verdict("\n\n```\nSPEC-CHECK: APPROVE\n```\n\n### 缺失维度\n无\n")
+def test_Action块前的可读正文不影响裁决() -> None:
+    verdict = parse_verdict(
+        action_reply(
+            "正文可以解释结论。",
+            payload={
+                "verdict": {
+                    "token": "SPEC-CHECK",
+                    "decision": "APPROVE",
+                    "sections": {"缺失维度": []},
+                    "constraints": [],
+                }
+            },
+        )
+    )
 
     assert verdict.approved is True
 
 
-def test_加粗与全角冒号照样认() -> None:
-    assert parse_verdict("**SPEC-CHECK：REJECT**\n").decision == "REJECT"
-    assert parse_verdict("spec-check: approve\n").decision == "APPROVE"
+def test_裁决枚举大小写严格() -> None:
+    text = action_reply(
+        payload={
+            "verdict": {
+                "token": "SPEC-CHECK",
+                "decision": "approve",
+                "sections": {},
+                "constraints": [],
+            }
+        }
+    )
+    with pytest.raises(VerdictError, match="decision 非法"):
+        parse_verdict(text)
 
 
-def test_藏在正文里的裁决不算() -> None:
-    """「若把颜色改掉则 APPROVE」是条件句，当结论读就等于替人工放行。"""
-    with pytest.raises(VerdictError, match="首行不是"):
-        parse_verdict("我看了一遍设定。\n\nSPEC-CHECK: APPROVE\n")
+def test_正文里的旧裁决文本不算结构化结果() -> None:
+    """正文即使提到旧 token，也必须以 payload.verdict 为准。"""
+    text = action_reply("我看了一遍设定。\nSPEC-CHECK: APPROVE")
+    with pytest.raises(VerdictError, match="缺少 SPEC-CHECK"):
+        parse_verdict(text)
 
 
-def test_没按契约说话是报错而不是当成拒收() -> None:
-    """看不出裁决是模型的格式事故，默认成 REJECT 会变成一次没有理由的驳回。"""
-    with pytest.raises(VerdictError, match="不在 APPROVE/CONCERNS/REJECT"):
+def test_没按契约说话会报协议错误() -> None:
+    """看不出裁决是模型的格式事故，不能默认成 REJECT。"""
+    with pytest.raises(ProtocolError, match="Action"):
         parse_verdict("SPEC-CHECK: MAYBE\n")
-    with pytest.raises(VerdictError, match="是空的"):
+    with pytest.raises(ProtocolError, match="Action"):
         parse_verdict("   \n\n")
 
 
 def test_换成四视图的token也走同一套() -> None:
-    verdict = parse_verdict("VIEW-CHECK: APPROVE\n", parsing.VIEW_CHECK)
+    text = action_reply(
+        payload={
+            "verdict": {
+                "token": "VIEW-CHECK",
+                "decision": "APPROVE",
+                "sections": {},
+                "constraints": [],
+            }
+        }
+    )
+    verdict = parse_verdict(text, parsing.VIEW_CHECK)
 
     assert verdict.token == "VIEW-CHECK"
     with pytest.raises(VerdictError):
-        parse_verdict("VIEW-CHECK: APPROVE\n", parsing.SPEC_CHECK)
+        parse_verdict(text, parsing.SPEC_CHECK)
 
 
 def test_没有约束清单就是空的() -> None:
-    """REJECT 的时候本来就抽不出清单，别硬凑。"""
-    verdict = parse_verdict("SPEC-CHECK: REJECT\n\n### 缺失维度\n- 环境设定\n")
+    """REJECT 的时候允许没有可抽取的硬性约束。"""
+    text = action_reply(
+        payload={
+            "verdict": {
+                "token": "SPEC-CHECK",
+                "decision": "REJECT",
+                "sections": {"缺失维度": ["环境设定"]},
+                "constraints": [],
+            }
+        }
+    )
+    verdict = parse_verdict(text)
 
     assert verdict.constraints == ()
     assert verdict.sections["缺失维度"] == ("环境设定",)
 
 
-def test_拆不出项名的行丢掉() -> None:
-    """「整体看着不错」这种不可逐条判定的话留在清单里，后续校验会拿它去问一张图。"""
-    verdict = parse_verdict(
-        "SPEC-CHECK: APPROVE\n\n### 硬性约束清单\n- 整体看着不错\n- 尾巴 = 2 条\n"
+def test_约束缺少项名会报错() -> None:
+    text = action_reply(
+        payload={
+            "verdict": {
+                "token": "SPEC-CHECK",
+                "decision": "APPROVE",
+                "sections": {},
+                "constraints": [{"item": "", "value": "整体看着不错"}],
+            }
+        }
     )
+    with pytest.raises(VerdictError, match="非空字符串"):
+        parse_verdict(text)
 
-    assert [(c.item, c.value) for c in verdict.constraints] == [("尾巴", "2 条")]
 
+def test_分节内容按字符串数组原样保留() -> None:
+    text = action_reply(
+        payload={
+            "verdict": {
+                "token": "SPEC-CHECK",
+                "decision": "APPROVE",
+                "sections": {"缺失维度": ["无"]},
+                "constraints": [],
+            }
+        }
+    )
+    verdict = parse_verdict(text)
 
-def test_占位符不当条目() -> None:
-    verdict = parse_verdict("SPEC-CHECK: APPROVE\n\n### 缺失维度\n<一行一条，或「无」>\n")
-
-    assert verdict.sections["缺失维度"] == ()
+    assert verdict.sections["缺失维度"] == ("无",)

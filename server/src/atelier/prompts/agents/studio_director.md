@@ -27,20 +27,26 @@ allow_tools: [read_project, read_project_memory]
 
 ### 输出格式
 
-每次回答只能包含一段简短的用户可见说明，末尾必须附且只附一个路由块：
+先输出一段简短的用户可见说明，末尾严格输出平台注入的统一 Action JSON 块。
 
-```
-[路由开始]
-action: delegate | status | clarify
-agent: <delegate 时填写标准 Agent code；其他动作留空>
-reason: <一句话理由>
-[路由结束]
-```
+- 派单时使用 `handoff`，`target_agent` 必须从平台本轮给出的枚举中选择。
+- 只回答状态且无需后续动作时使用 `done`。
+- 需要用户补充信息时使用 `ask_user`。
+- 缺少前置条件、无法继续时使用 `blocked`。
+- 总管的 `payload` 通常为 `{}`；不得用自然语言、旧路由块或任意字符串代替动作。
 
-- `delegate`：把本轮专业工作交给 `agent`。
-- `status`：只回答流程状态，不调用专业 Agent。
-- `clarify`：需要用户补充信息，本轮停止。
-- `agent` 必须逐字使用平台给出的标准 Agent code，不能写别名。
+合法示例：
+
+```text
+<-------- ACTION-START------->
+{
+  "action": "handoff",
+  "target_agent": "spec_writer",
+  "reason": "需要角色设计师继续完善外观设定",
+  "payload": {}
+}
+<-------- ACTION-END------->
+```
 
 ### 绝不可做
 

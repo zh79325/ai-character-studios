@@ -19,21 +19,34 @@ from atelier.db.project_models import Generation
 from atelier.errors import Conflict
 from atelier.providers import image_gen
 from atelier.providers.base import Candidate
-from tests.conftest import bind_image_model
+from tests.conftest import action_reply, bind_image_model
 from tests.test_characters import make, spec_on_disk
 
-CARD = """ASSET-DEMO-001 — 赤瞳 渲染图
-类别：character
-尺寸：2048x2048
-格式：png
-文件名：character_赤瞳_渲染图.png
-视觉描述：一只双尾兽站立展示完整轮廓。
-art bible 锚点：§1 冷光金属
-硬性约束：双尾数量=2
-四视图背景色：#FFFFFF（白色）
-prompt：standing pose, red eyes, TWO distinct tails, fitted clothing, cinematic light, 8k
-negative_prompt：background clutter, watermark, cape, cloak
-"""
+CARD = action_reply(
+    "素材规格已生成。",
+    reason="素材规格已完成",
+    payload={
+        "asset_specs": [
+            {
+                "code": "ASSET-DEMO-001",
+                "name": "赤瞳 渲染图",
+                "category": "character",
+                "size": "2048x2048",
+                "format": "png",
+                "file_name": "character_赤瞳_渲染图.png",
+                "description": "一只双尾兽站立展示完整轮廓。",
+                "anchors": "§1 冷光金属",
+                "constraints": ["双尾数量=2"],
+                "view_background_color": "#FFFFFF（白色）",
+                "prompt": (
+                    "standing pose, red eyes, TWO distinct tails, fitted clothing, "
+                    "cinematic light, 8k"
+                ),
+                "negative_prompt": "background clutter, watermark, cape, cloak",
+            }
+        ]
+    },
+)
 
 
 def solid_png(

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from atelier.agents import audit, context, dispatch, parsing, views
 from atelier.agents import conversation as conv
 from atelier.agents.definitions import get_agent
-from atelier.agents.parsing import Verdict, VerdictError
+from atelier.agents.parsing import Verdict
 from atelier.assets import archive, characters, generations, imaging, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character
@@ -69,7 +69,8 @@ RENDER_REVIEW_REQUEST = """## 用户检查要求
 ---
 
 请审查这张角色效果图。只检查角色特征、附属结构数量与分离度、服装是否遮挡身体轮廓，
-不要求纯色背景或标准视角。给出约定的 VIEW-CHECK 裁决；裁决只能提供建议，不能替用户定稿。
+不要求纯色背景或标准视角。把 VIEW-CHECK 裁决写入末尾 Action 的 `payload.verdict`；
+裁决只能提供建议，不能替用户定稿。
 """
 
 NO_CONSTRAINTS = "（这个角色还没有硬性约束清单，只按五项检查清单判）"
@@ -217,7 +218,7 @@ def _payload(
     assembled = context.assemble(
         agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(ref, REVIEWER),
+        addendum=conv.action_addendum(ref, agent, "character", "views"),
         artifact_path=relative if spec is not None else None,
         artifact_text=spec,
         project_memories=conv.enabled_memories(project, ref, character.id),
@@ -286,6 +287,52 @@ def _call_reviewer(
     return reply
 
 
+def _call_and_parse_reviewer(
+    runtime: Session,
+    ref: ProjectRef,
+    character: Character,
+    payload: list[dict[str, Any]],
+    *,
+    chat: dispatch.ChatFn | None,
+    decision: Decision | None,
+    reselect: dispatch.Reselect | None,
+    turn_audit: audit.TurnAudit | None,
+    purpose: str,
+) -> tuple[text_chat.ChatReply, Verdict]:
+    """调用视觉评审；Action 协议错误时带原回答自动纠正一次。"""
+    reply = _call_reviewer(
+        runtime,
+        ref,
+        character,
+        payload,
+        chat=chat,
+        decision=decision,
+        reselect=reselect,
+        turn_audit=turn_audit,
+        purpose=purpose,
+    )
+    try:
+        return reply, parsing.parse_verdict(reply.content.strip(), parsing.VIEW_CHECK)
+    except parsing.ProtocolError:
+        retried = [
+            *payload,
+            {"role": "assistant", "content": reply.content.strip()},
+            {"role": "user", "content": conv.PROTOCOL_RETRY_PROMPT},
+        ]
+        reply = _call_reviewer(
+            runtime,
+            ref,
+            character,
+            retried,
+            chat=chat,
+            decision=decision,
+            reselect=reselect,
+            turn_audit=turn_audit,
+            purpose=f"{purpose}（协议纠正）",
+        )
+        return reply, parsing.parse_verdict(reply.content.strip(), parsing.VIEW_CHECK)
+
+
 def review_once(
     project: Session,
     runtime: Session,
@@ -304,33 +351,34 @@ def review_once(
     解析不出裁决时照旧不当成 REJECT：那是格式事故，默认拒收会变成一次没有理由的驳回，用户
     看不出该改 prompt 还是该重试。
     """
-    reply = _call_reviewer(
-        runtime,
-        ref,
-        character,
-        _payload(project, ref, character, picked),
-        chat=chat,
-        decision=decision,
-        reselect=reselect,
-        turn_audit=turn_audit,
-        purpose=f"评审四视图（第 {attempt} 次）",
-    )
-    text = reply.content.strip()
-    covered = [one.variant for one in picked]
-
+    payload = _payload(project, ref, character, picked)
     try:
-        verdict = parsing.parse_verdict(text, parsing.VIEW_CHECK)
-    except VerdictError as exc:
+        reply, verdict = _call_and_parse_reviewer(
+            runtime,
+            ref,
+            character,
+            payload,
+            chat=chat,
+            decision=decision,
+            reselect=reselect,
+            turn_audit=turn_audit,
+            purpose=f"评审四视图（第 {attempt} 次）",
+        )
+    except parsing.ProtocolError as exc:
+        text = str(exc)
+        covered = [one.variant for one in picked]
         record_event(
             project,
             character.id,
             "views_review_unparsable",
-            str(exc),
-            {"attempt": attempt, "variants": covered, "reply": text[:2000]},
+            text,
+            {"attempt": attempt, "variants": covered},
             level="error",
         )
         project.commit()
         raise
+    text = reply.content.strip()
+    covered = [one.variant for one in picked]
 
     record_event(
         project,
@@ -384,10 +432,11 @@ def review_render(
         note=note.strip() or "请按当前设定检查",
         constraints=constraint_lines(character),
     )
+    agent = get_agent(REVIEWER)
     assembled = context.assemble(
-        get_agent(REVIEWER),
+        agent,
         [context.Ask(content=request)],
-        addendum=conv.addendum(ref, REVIEWER),
+        addendum=conv.action_addendum(ref, agent, "character", "render"),
         artifact_path=relative if spec is not None else None,
         artifact_text=spec,
         project_memories=conv.enabled_memories(project, ref, character.id),
@@ -402,19 +451,30 @@ def review_render(
             role=str(last.get("role", "user")),
         ),
     ]
-    reply = _call_reviewer(
-        runtime,
-        ref,
-        character,
-        payload,
-        chat=chat,
-        decision=decision,
-        reselect=reselect,
-        turn_audit=turn_audit,
-        purpose="评审效果图",
-    )
+    try:
+        reply, verdict = _call_and_parse_reviewer(
+            runtime,
+            ref,
+            character,
+            payload,
+            chat=chat,
+            decision=decision,
+            reselect=reselect,
+            turn_audit=turn_audit,
+            purpose="评审效果图",
+        )
+    except parsing.ProtocolError as exc:
+        record_event(
+            project,
+            character.id,
+            "render_review_unparsable",
+            str(exc),
+            {"generation_id": row.id},
+            level="error",
+        )
+        project.commit()
+        raise
     text = reply.content.strip()
-    verdict = parsing.parse_verdict(text, parsing.VIEW_CHECK)
     record_event(
         project,
         character.id,

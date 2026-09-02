@@ -766,6 +766,9 @@ class ConversationDetailOut(Schema):
     """真则这场会话已经落过盘。立项页拿它分两段：假则还在对焦风格，真了才轮到定项目名。"""
     choices: list[ChoiceGroupOut] = Field(default_factory=list)
     """最近一轮要用户拍板的选项，前端摆在输入框上方。"""
+    action: str = ""
+    target_agent: str | None = None
+    reason: str = ""
     briefing: str = ""
     """摆在消息最前面的开场提示：项目现状与接下来该说什么。平台现算，不入库、不进上下文，
     只项目会话有。"""
@@ -796,6 +799,9 @@ class TurnOut(Schema):
     handoffs: list[HandoffOut] = Field(default_factory=list)
     naming: list[NamingOptionOut] = Field(default_factory=list)
     choices: list[ChoiceGroupOut] = Field(default_factory=list)
+    action: str = ""
+    target_agent: str | None = None
+    reason: str = ""
 
 
 class CommitIn(Schema):

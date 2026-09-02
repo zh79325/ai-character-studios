@@ -15,41 +15,48 @@ from atelier.agents.definitions import (
     get_agent,
     load_registry,
 )
+from atelier.agents.parsing import ACTION_END, ACTION_START
 from atelier.assets import characters as character_assets
 from atelier.db.project_models import Character, Conversation
 from atelier.errors import Conflict
 
 DIRECTOR = "studio_director"
 MAX_HANDOFFS = 2
-ROUTE_ACTIONS = ("delegate", "status", "clarify")
-HANDOFF_STATUSES = ("continue", "complete", "blocked", "handoff")
-
-ROUTE_PROTOCOL = """[路由开始]
-action: delegate | status | clarify
-agent: <标准 Agent code；非 delegate 留空>
-reason: <一句话理由>
-[路由结束]"""
-
-HANDOFF_PROTOCOL = """[交接开始]
-status: continue | complete | blocked | handoff
-agent: <handoff 时填写标准 Agent code，其他状态留空>
-reason: <一句话说明>
-[交接结束]"""
 
 
-@dataclass(frozen=True, slots=True)
-class RouteDecision:
-    action: str
-    agent_code: str = ""
-    reason: str = ""
-    source: str = "director"
+def allowed_handoff_codes(actor_code: str, target_kind: str, stage_code: str) -> tuple[str, ...]:
+    """当前 Agent 可以在 Action 中填写的 target_agent 枚举。"""
+    available = sorted(allowed_agent_codes(target_kind, stage_code))
+    if actor_code == DIRECTOR:
+        return tuple(code for code in available if code != DIRECTOR)
+    return tuple(code for code in (DIRECTOR, *available) if code != actor_code)
 
 
-@dataclass(frozen=True, slots=True)
-class HandoffResult:
-    status: str
-    agent_code: str = ""
-    reason: str = ""
+def action_protocol(allowed_agents: tuple[str, ...]) -> str:
+    """生成统一 Action 约束；调用方传入当前 Agent 的动态交接白名单。"""
+    choices = "、".join(allowed_agents) or "无"
+    return f"""## Action 输出契约（平台强制）
+
+每轮回答末尾必须且只能输出一个 Action 块，块后不得再写任何内容：
+
+{ACTION_START}
+{{
+  \"action\": \"ask_user\",
+  \"target_agent\": null,
+  \"reason\": \"需要用户确认角色主配色\",
+  \"payload\": {{}}
+}}
+{ACTION_END}
+
+边界中间只允许合法 JSON，不得使用 Markdown 围栏、注释、尾逗号或额外文本。
+
+- `action` 只能是 `ask_user`、`handoff`、`done`、`blocked`。
+- `ask_user`：等待用户输入或拍板；`handoff`：立即交给另一 Agent。
+- `done`：当前工作完成且无待确认动作；`blocked`：缺前置条件或执行失败。
+- 本轮 `target_agent` 可选枚举：{choices}。只有 `handoff` 能填写枚举值，其他动作必须为 `null`。
+- `reason` 必须是非空单句；`payload` 必须是 JSON object，没有业务数据时写 `{{}}`。
+- 所有机器可读产物只能放入 `payload`，不得再输出旧标记协议。
+- 没有待确认、交接或阻塞时，也必须明确输出 `done`。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +176,23 @@ def validate_recipient(agent_code: str, target_kind: str, stage_code: str) -> Ag
     if agent.agent_code not in allowed_agent_codes(target_kind, stage_code):
         raise Conflict(f"Agent {agent_code} 不能处理 {target_kind} 的 {stage_code} 阶段")
     return agent
+
+
+def validate_action_target(
+    actor_code: str,
+    target_agent: str,
+    target_kind: str,
+    stage_code: str,
+) -> AgentDefinition:
+    """后端再次校验 Action 交接目标，禁止自交接和越过阶段白名单。"""
+    if target_agent == actor_code:
+        raise Conflict(f"Agent {actor_code} 不能把任务交接给自己")
+    allowed = allowed_handoff_codes(actor_code, target_kind, stage_code)
+    if target_agent not in allowed:
+        raise Conflict(
+            f"Agent {actor_code} 不能在 {target_kind} 的 {stage_code} 阶段交接给 {target_agent}"
+        )
+    return validate_recipient(target_agent, target_kind, stage_code)
 
 
 def explicit_recipient(text: str) -> tuple[AgentDefinition | None, str]:

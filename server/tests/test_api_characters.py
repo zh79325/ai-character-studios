@@ -18,59 +18,78 @@ from atelier.agents import render, review, views, vision
 from atelier.assets import characters, projects
 from atelier.assets.projects import ProjectRef
 from atelier.providers import image_gen, text_chat
-from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_image_model, bind_text_model
 from tests.test_characters import PARTIAL_BIBLE
 from tests.test_render import CARD, ScriptedDraw
 from tests.test_views import white_png
 
 WRITER = "spec_writer"
 
-SPEC_REPLY = """给你一版设定。
+SPEC_REPLY = action_reply(
+    "给你一版设定。",
+    action="ask_user",
+    reason="设定草稿需要用户确认",
+    payload={
+        "drafts": [
+            {
+                "target_path": "docs/角色定稿.md",
+                "content": "# 赤瞳\n双尾、红瞳、三指利爪，栖息在废弃电厂。\n",
+            }
+        ]
+    },
+)
 
-[草稿开始: docs/角色定稿.md]
-# 赤瞳
-双尾、红瞳、三指利爪，栖息在废弃电厂。
-[草稿结束]
-"""
-
-APPROVE_REPLY = """SPEC-CHECK: APPROVE
-
-### 缺失维度
-无
-
-### 硬性约束清单
-- 尾巴 = 2 条，彼此分离
-- 眼睛 = 红色发光
-"""
-
-REJECT_REPLY = """SPEC-CHECK: REJECT
-
-### 缺失维度
-- 环境设定
-
-### 硬性约束清单
-- 尾巴 = 2 条
-"""
-
-VIEW_APPROVE = """VIEW-CHECK: APPROVE
-
-### 检查清单
-- 背景纯净度：纯白
-- 附属结构数量：2，符合
-- 视角准确性：四个角度都对
-
-### 修正建议
-- 无
-"""
-
-VIEW_REJECT = """VIEW-CHECK: REJECT
-
-### 检查清单
-- 附属结构分离度：粘连
-
-### 修正建议
-- 背面那张往 prompt 加 two clearly separated tails
-"""
+APPROVE_REPLY = action_reply(
+    "### 缺失维度\n无",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "APPROVE",
+            "sections": {"缺失维度": []},
+            "constraints": [
+                {"item": "尾巴", "value": "2 条，彼此分离"},
+                {"item": "眼睛", "value": "红色发光"},
+            ],
+        }
+    },
+)
+REJECT_REPLY = action_reply(
+    "### 缺失维度\n- 环境设定",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "REJECT",
+            "sections": {"缺失维度": ["环境设定"]},
+            "constraints": [{"item": "尾巴", "value": "2 条"}],
+        }
+    },
+)
+VIEW_APPROVE = action_reply(
+    "### 检查清单\n- 背景纯净度：纯白",
+    reason="视觉审校完成",
+    payload={
+        "verdict": {
+            "token": "VIEW-CHECK",
+            "decision": "APPROVE",
+            "sections": {"检查清单": ["背景纯净度：纯白", "附属结构数量：2，符合"]},
+            "constraints": [],
+        }
+    },
+)
+VIEW_REJECT = action_reply(
+    "### 检查清单\n- 附属结构分离度：粘连",
+    reason="视觉审校完成",
+    payload={
+        "verdict": {
+            "token": "VIEW-CHECK",
+            "decision": "REJECT",
+            "sections": {"检查清单": ["附属结构分离度：粘连"]},
+            "constraints": [],
+        }
+    },
+)
 
 
 @pytest.fixture
@@ -614,7 +633,8 @@ def test_卡片可以先看不生图(
     assert body["code"] == "ASSET-DEMO-001"
     assert body["size"] == "2048x2048"
     assert body["constraints"] == ["双尾数量=2"]
-    assert body["card"].startswith("ASSET-DEMO-001")
+    assert body["card"].startswith("素材规格已生成。")
+    assert '"code": "ASSET-DEMO-001"' in body["card"]
     assert draw.calls == []
 
 

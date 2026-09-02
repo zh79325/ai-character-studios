@@ -607,6 +607,8 @@ export interface AgentHandoff {
   created_at: string | null
 }
 
+export type ActionType = 'ask_user' | 'handoff' | 'done' | 'blocked'
+
 export interface ConversationDetail {
   conversation: Conversation
   director_agent_code: string
@@ -625,6 +627,10 @@ export interface ConversationDetail {
   settled: boolean
   /** 最近一轮要用户拍板的选项，摆在输入框上方。 */
   choices: ChoiceGroup[]
+  /** 最近一轮统一 Action；旧协议历史消息为空。 */
+  action: ActionType | ''
+  target_agent: string | null
+  reason: string
   /** 开场提示：项目现在是什么样、接下来该说什么。后端现算，只项目会话有。 */
   briefing: string
   /** 真则这只是一句开场号召（项目还是白纸），居中铺大字，不当对话气泡。 */
@@ -648,6 +654,9 @@ export interface Turn {
   handoffs: AgentHandoff[]
   naming: NamingOption[]
   choices: ChoiceGroup[]
+  action: ActionType
+  target_agent: string | null
+  reason: string
 }
 
 export interface Archived {

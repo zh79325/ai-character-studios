@@ -14,43 +14,50 @@ from atelier.assets import characters, projects
 from atelier.assets.projects import ProjectRef
 from atelier.db import task_events
 from atelier.errors import Conflict
-from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_image_model, bind_text_model
 from tests.test_characters import make, spec_on_disk
 from tests.test_views import ScriptedDraw, gray_png, stage_render
 
-APPROVE = """VIEW-CHECK: APPROVE
-
-### 硬性约束逐条
-- 尾巴数量 = 2 → 实际：两条分开的尾巴 → 符合
-
-### 检查清单
-- 四个格位、角色一致性、背景和建模轮廓均符合
-
-### 修正建议
-- 无
-"""
-
-CONCERNS = """VIEW-CHECK: CONCERNS
-
-### 检查清单
-- 右上角度略偏
-
-### 修正建议
-- 右上保持 30°
-"""
-
-REJECT = """VIEW-CHECK: REJECT
-
-### 检查清单
-- 左下背面附属结构粘连
-
-### 修正建议
-- 左下背面重画，整张四宫格重新生成
-"""
-
-BABBLE = """这张图整体不错。
-VIEW-CHECK: APPROVE
-"""
+APPROVE = action_reply(
+    "### 硬性约束逐条\n- 尾巴数量 = 2 → 实际：两条分开的尾巴 → 符合",
+    reason="视觉审校完成",
+    payload={
+        "verdict": {
+            "token": "VIEW-CHECK",
+            "decision": "APPROVE",
+            "sections": {"检查清单": ["四个格位、角色一致性、背景和建模轮廓均符合"]},
+            "constraints": [],
+        }
+    },
+)
+CONCERNS = action_reply(
+    "### 检查清单\n- 右上角度略偏",
+    reason="视觉审校完成",
+    payload={
+        "verdict": {
+            "token": "VIEW-CHECK",
+            "decision": "CONCERNS",
+            "sections": {"检查清单": ["右上角度略偏"], "修正建议": ["右上保持 30°"]},
+            "constraints": [],
+        }
+    },
+)
+REJECT = action_reply(
+    "### 检查清单\n- 左下背面附属结构粘连",
+    reason="视觉审校完成",
+    payload={
+        "verdict": {
+            "token": "VIEW-CHECK",
+            "decision": "REJECT",
+            "sections": {
+                "检查清单": ["左下背面附属结构粘连"],
+                "修正建议": ["左下背面重画，整张四宫格重新生成"],
+            },
+            "constraints": [],
+        }
+    },
+)
+BABBLE = "这张图整体不错。\nVIEW-CHECK: APPROVE"
 
 
 @pytest.fixture

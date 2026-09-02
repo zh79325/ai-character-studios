@@ -24,27 +24,43 @@ from atelier.db import task_events
 from atelier.errors import Conflict
 from atelier.providers import image_gen
 from atelier.providers.base import Candidate
-from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_image_model, bind_text_model
 from tests.test_characters import make, spec_on_disk
 
-CARD = """ASSET-DEMO-001 — 赤瞳 渲染图
-类别：character
-尺寸：2048x2048
-格式：png
-文件名：character_赤瞳_渲染图.png
-视觉描述：一只双尾兽站在废弃电厂前。
-art bible 锚点：§1 冷光金属
-硬性约束：双尾数量=2
-四视图背景色：#FFFFFF（白色）
-prompt：standing pose, red eyes, TWO distinct tails, cinematic light, 8k
-negative_prompt：background clutter, watermark
-"""
+CARD_PAYLOAD = {
+    "asset_specs": [
+        {
+            "code": "ASSET-DEMO-001",
+            "name": "赤瞳 渲染图",
+            "category": "character",
+            "size": "2048x2048",
+            "format": "png",
+            "file_name": "character_赤瞳_渲染图.png",
+            "description": "一只双尾兽站在废弃电厂前。",
+            "anchors": "§1 冷光金属",
+            "constraints": ["双尾数量=2"],
+            "view_background_color": "#FFFFFF（白色）",
+            "prompt": "standing pose, red eyes, TWO distinct tails, cinematic light, 8k",
+            "negative_prompt": "background clutter, watermark",
+        }
+    ]
+}
+CARD = action_reply("素材规格已生成。", reason="素材规格已完成", payload=CARD_PAYLOAD)
 
-THIN_CARD = """ASSET-DEMO-002 — 赤瞳 渲染图
-类别：character
-文件名：character_赤瞳_渲染图.png
-prompt：standing pose
-"""
+THIN_CARD = action_reply(
+    "素材规格待补充。",
+    reason="素材规格已生成",
+    payload={
+        "asset_specs": [
+            {
+                **CARD_PAYLOAD["asset_specs"][0],
+                "code": "ASSET-DEMO-002",
+                "size": "",
+                "negative_prompt": "",
+            }
+        ]
+    },
+)
 
 
 def png(width: int = 64, height: int = 64) -> bytes:
@@ -216,9 +232,8 @@ def test_一张卡片都没有时自动要求按格式重试(
 
     assert spec.code == "ASSET-DEMO-001"
     assert len(chat.calls) == 2
-    assert "不要解释、讨论或征求确认" in chat.calls[-1][-1]["content"]
+    assert "Action JSON 契约" in chat.calls[-1][-1]["content"]
     events = [one.event for one in task_events.history(project_db, confirmed.id)]
-    assert "asset_spec_unparseable" in events
     assert "asset_spec_drafted" in events
 
 
@@ -230,12 +245,12 @@ def test_连续没有卡片才报错(
     candidates: None,
     confirmed: characters.Character,
 ) -> None:
-    chat.replies.extend(["先聊聊？"] * (render.MAX_SPEC_RETRIES + 1))
+    chat.replies.extend(["先聊聊？", "还是先聊聊？"])
 
-    with pytest.raises(Conflict, match="连续 3 次没输出可解析的卡片"):
+    with pytest.raises(Conflict, match="已自动纠正一次仍无法解析"):
         render.make_spec(project_db, session, project, confirmed, chat=chat)
 
-    assert len(chat.calls) == render.MAX_SPEC_RETRIES + 1
+    assert len(chat.calls) == 2
 
 
 def test_改某一项只发那一项回去(
@@ -397,7 +412,7 @@ def test_回报按约定的格式进时间线(
 
     events = task_events.history(project_db, confirmed.id)
     reported = [one for one in events if one.event == "render_generated"]
-    assert reported[-1].message.startswith("IMAGE-RESULT: OK")
+    assert reported[-1].message.startswith("图片生成OK")
     assert result.file_path in reported[-1].message
 
 

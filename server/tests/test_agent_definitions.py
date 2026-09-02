@@ -107,12 +107,12 @@ def test_写设定的那个岗位就叫角色设计师() -> None:
     assert agent.system_prompt.startswith("你是这个项目的角色设计师（Character Designer）")
 
 
-def test_角色设计的分歧必须走待选项抽屉() -> None:
-    """角色页与立项页共用 ChoicePicker，提示词必须要求写出后端能解析的协议块。"""
+def test_角色设计的分歧必须走统一Action选择项() -> None:
+    """角色页与立项页共用 ChoicePicker，提示词必须要求写出统一 Action payload。"""
     prompt = get_agent("spec_writer").system_prompt
-    assert "[待选项]" in prompt
-    assert "需要拍板的一律输出" in prompt
-    assert "选项之间用 `|` 分隔" in prompt
+    assert "统一 Action JSON 块" in prompt
+    assert "payload.choices" in prompt
+    assert "需要拍板的一律写入" in prompt
 
 
 def test_parse_ok(tmp_path: Path) -> None:

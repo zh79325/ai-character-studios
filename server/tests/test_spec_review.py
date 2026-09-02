@@ -19,47 +19,71 @@ from atelier.assets.projects import ProjectRef
 from atelier.db import task_events
 from atelier.db.project_models import Character, Conversation
 from atelier.errors import Conflict
-from tests.conftest import ScriptedChat, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_text_model
 from tests.test_characters import ready
 
-APPROVE_REPLY = """SPEC-CHECK: APPROVE
+APPROVE_REPLY = action_reply(
+    "### 缺失维度\n无\n\n### 硬性约束清单\n- 尾巴 = 2 条，彼此分离\n- 眼睛 = 红色发光",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "APPROVE",
+            "sections": {"缺失维度": [], "硬性约束清单": []},
+            "constraints": [
+                {"item": "尾巴", "value": "2 条，彼此分离"},
+                {"item": "眼睛", "value": "红色发光"},
+            ],
+        }
+    },
+)
 
-### 缺失维度
-无
+REJECT_REPLY = action_reply(
+    "### 缺失维度\n- 环境设定\n\n### 模糊表述\n- 原文「深色鳞片」→ 应写明：具体色值",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "REJECT",
+            "sections": {
+                "缺失维度": ["环境设定"],
+                "模糊表述": ["原文「深色鳞片」→ 应写明：具体色值"],
+                "硬性约束清单": [],
+            },
+            "constraints": [{"item": "尾巴", "value": "2 条"}],
+        }
+    },
+)
 
-### 硬性约束清单
-- 尾巴 = 2 条，彼此分离
-- 眼睛 = 红色发光
-"""
+CONCERNS_REPLY = action_reply(
+    "### 模糊表述\n- 原文「发光的眼睛」→ 应写明：发光强度",
+    reason="设定审校完成",
+    payload={
+        "verdict": {
+            "token": "SPEC-CHECK",
+            "decision": "CONCERNS",
+            "sections": {
+                "模糊表述": ["原文「发光的眼睛」→ 应写明：发光强度"],
+                "硬性约束清单": [],
+            },
+            "constraints": [{"item": "眼睛", "value": "红色发光"}],
+        }
+    },
+)
 
-REJECT_REPLY = """SPEC-CHECK: REJECT
-
-### 缺失维度
-- 环境设定
-
-### 模糊表述
-- 原文「深色鳞片」→ 应写明：具体色值
-
-### 硬性约束清单
-- 尾巴 = 2 条
-"""
-
-CONCERNS_REPLY = """SPEC-CHECK: CONCERNS
-
-### 模糊表述
-- 原文「发光的眼睛」→ 应写明：发光强度
-
-### 硬性约束清单
-- 眼睛 = 红色发光
-"""
-
-DRAFT_REPLY = """改好了，补上了环境设定。
-
-[草稿开始: docs/角色定稿.md]
-# 赤瞳
-双尾、红瞳、三指利爪，栖息在废弃电厂。
-[草稿结束]
-"""
+DRAFT_REPLY = action_reply(
+    "改好了，补上了环境设定。",
+    action="ask_user",
+    reason="设定草稿需要用户确认",
+    payload={
+        "drafts": [
+            {
+                "target_path": "docs/角色定稿.md",
+                "content": "# 赤瞳\n双尾、红瞳、三指利爪，栖息在废弃电厂。\n",
+            }
+        ]
+    },
+)
 
 
 @pytest.fixture

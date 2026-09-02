@@ -19,7 +19,7 @@ from atelier.assets.projects import ProjectRef
 from atelier.db.project_models import Character, Conversation
 from atelier.providers.base import Candidate
 from atelier.providers.text_chat import ChatReply
-from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_image_model, bind_text_model
 from tests.test_render import CARD, ScriptedDraw
 
 DESIGNER = "game_designer"
@@ -87,12 +87,13 @@ def send(
 def test_关掉审计时一个文件也不产生(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
-    """默认关闭：不建目录、不写文件，也不改变这一轮的结果。"""
+    """显式关闭后不建目录、不写文件，也不改变这一轮的结果。"""
+    enable_audit(project, enabled=False)
     conversation = start_project_talk(project_db)
 
     result = send(project_db, session, project, conversation, "开聊", ScriptedChat("好的。"))
 
-    assert result.content == "好的。"
+    assert result.content.startswith("好的。\n\n<-------- ACTION-START------->")
     assert not audit_dir(project.dir).exists()
 
 
@@ -181,7 +182,7 @@ def test_自动生图轮把prompt_smith请求响应写进角色审计(
     assert f"- Agent：{painter.SMITH}" in smith_text
     assert smith_text.count("生成效果图卡片") == 2
     assert "先讨论一下？" in smith_text
-    assert "不要解释、讨论或征求确认" in smith_text
+    assert "这是唯一一次自动纠正机会" in smith_text
     assert "ASSET-DEMO-001" in smith_text
     assert f"- Agent：{painter.PAINTER}" in image_text
     assert "- 决策来源：director" in image_text
@@ -227,7 +228,14 @@ def test_请求先落盘再调模型_回答之后才追加(
         seen["at_call"] = audit_files(project.dir)[0].read_text(encoding="utf-8")
         assert messages
         return ChatReply(
-            content="想好了。", prompt_tokens=10, completion_tokens=20, total_tokens=30
+            content=action_reply(
+                "想好了。",
+                action="ask_user",
+                reason="等待用户继续输入",
+            ),
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
         )
 
     send(project_db, session, project, conversation, "开聊", chat)
@@ -255,10 +263,15 @@ def test_自动续写逐次记在同一轮审计文件(
 ) -> None:
     enable_audit(project)
     conversation = start_project_talk(project_db)
+    continuation = action_reply(
+        "与后半段",
+        action="ask_user",
+        reason="等待用户继续输入",
+    )
     replies = iter(
         [
             ChatReply(content="回答前半段", finish_reason="length"),
-            ChatReply(content="与后半段", finish_reason="stop"),
+            ChatReply(content=continuation, finish_reason="stop"),
         ]
     )
 
@@ -267,7 +280,7 @@ def test_自动续写逐次记在同一轮审计文件(
 
     result = send(project_db, session, project, conversation, "给出完整回答", chat)
 
-    assert result.content == "回答前半段与后半段"
+    assert result.content == f"回答前半段{continuation}"
     text = audit_files(project.dir)[0].read_text(encoding="utf-8")
     marker = "## 调用 2：自动续写 1"
     assert text.index("## 调用 1：主回答") < text.index(marker)
@@ -295,9 +308,8 @@ def test_请求按消息逐条分节而不是一坨JSON(
     assert "#### 1.1 system" in request
     assert "#### 1.2 user" in request
     assert request.index("#### 1.1 system") < request.index("#### 1.2 user")
-    # 纯文本正文不再包成 JSON：看不到 role 字段，也看不到 \n 转义
+    # 纯文本正文不再包成 JSON：看不到 role 字段
     assert '"role"' not in request
-    assert "\\n" not in request
 
 
 def test_同一轮的折叠调用与主回答按顺序进同一个文件(
@@ -386,7 +398,13 @@ def test_审计不写凭证与图片正文(
 
     def chat(_candidate: Candidate, messages: Any, **_kwargs: Any) -> ChatReply:
         assert messages
-        return ChatReply(content="看到了。")
+        return ChatReply(
+            content=action_reply(
+                "看到了。",
+                action="ask_user",
+                reason="等待用户继续输入",
+            )
+        )
 
     send(project_db, session, project, conversation, f"看这张图 {image}", chat)
     sent = audit_files(project.dir)[0].read_text(encoding="utf-8")

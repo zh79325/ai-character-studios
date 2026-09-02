@@ -37,7 +37,7 @@ from atelier.errors import Conflict, Interrupted, NotFound
 from atelier.providers import image_gen
 from atelier.providers.base import NoCandidateError, ProviderError
 from atelier.providers.text_chat import ChatReply
-from tests.conftest import ScriptedChat, bind_image_model, bind_text_model
+from tests.conftest import ScriptedChat, action_reply, bind_image_model, bind_text_model
 from tests.test_characters import make as make_real_character
 from tests.test_characters import spec_on_disk
 from tests.test_render import CARD, ScriptedDraw
@@ -46,22 +46,28 @@ from tests.test_vision import APPROVE
 DESIGNER = "game_designer"
 WRITER = "spec_writer"
 
-DRAFT_REPLY = """明白了，先给一版。
-
-[对焦进度]
-已定：题材是赛博朋克
-待定：面数预算
-下一步：确认目标平台
-
-[草稿开始: art-bible.md]
-# 视觉规范
-冷光下的湿滑金属。
-[草稿结束]
-
-[项目记忆]
-preference: 喜欢冷色调
-taboo: 不要蒸汽朋克齿轮
-"""
+DRAFT_REPLY = action_reply(
+    "明白了，先给一版。",
+    action="ask_user",
+    reason="草稿需要用户确认",
+    payload={
+        "progress": {
+            "decisions": ["题材是赛博朋克"],
+            "open_questions": ["面数预算"],
+            "next_step": "确认目标平台",
+        },
+        "drafts": [
+            {
+                "target_path": "art-bible.md",
+                "content": "# 视觉规范\n冷光下的湿滑金属。\n",
+            }
+        ],
+        "memories": [
+            {"scope": "project", "kind": "preference", "content": "喜欢冷色调"},
+            {"scope": "project", "kind": "taboo", "content": "不要蒸汽朋克齿轮"},
+        ],
+    },
+)
 
 
 class SequencedReplies:
@@ -232,8 +238,23 @@ def test_输出截断会在同一轮自动续写并在完成后统一解析(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
-    first = "先确定：\n\n[待选项]\n- 项: 毛色 / 选项: 金"
-    second = "黄 | 灰色 / 多选: 否 / 推荐: 金黄\n"
+    whole = action_reply(
+        "先确定：",
+        action="ask_user",
+        reason="需要确认毛色",
+        payload={
+            "choices": [
+                {
+                    "item": "毛色",
+                    "options": ["金黄", "灰色"],
+                    "recommended": ["金黄"],
+                    "multiple": False,
+                }
+            ]
+        },
+    )
+    split_at = whole.index("金黄") + 1
+    first, second = whole[:split_at], whole[split_at:]
     chat = SequencedReplies(
         ChatReply(
             content=first,
@@ -255,7 +276,7 @@ def test_输出截断会在同一轮自动续写并在完成后统一解析(
 
     result = send(project_db, session, project, conversation, "设计角色", chat, stream=True)
 
-    assert result.content == (first + second).strip()
+    assert result.content == whole.strip()
     assert result.prompt_tokens == 25
     assert result.completion_tokens == 28
     assert [choice.item for choice in result.choices] == ["毛色"]
@@ -269,7 +290,7 @@ def test_输出截断会在同一轮自动续写并在完成后统一解析(
         ("user", engine.DONE),
         ("assistant", engine.DONE),
     ]
-    assert rows[1].content == (first + second).strip()
+    assert rows[1].content == whole.strip()
     assert rows[1].token_count == 28
 
 
@@ -277,6 +298,11 @@ def test_推理耗尽预算但正文为空时自动重试并直接回答(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
+    final = action_reply(
+        "这是直接回答。",
+        action="ask_user",
+        reason="等待用户继续输入",
+    )
     chat = SequencedReplies(
         ChatReply(
             content="",
@@ -287,7 +313,7 @@ def test_推理耗尽预算但正文为空时自动重试并直接回答(
             reasoning="很长的内部推理",
         ),
         ChatReply(
-            content="这是直接回答。",
+            content=final,
             prompt_tokens=3100,
             completion_tokens=20,
             total_tokens=3120,
@@ -297,7 +323,7 @@ def test_推理耗尽预算但正文为空时自动重试并直接回答(
 
     result = send(project_db, session, project, conversation, "设计角色", chat)
 
-    assert result.content == "这是直接回答。"
+    assert result.content == final
     assert result.prompt_tokens == 6101
     assert result.completion_tokens == 8212
     assert len(chat.calls) == 2
@@ -309,7 +335,7 @@ def test_推理耗尽预算但正文为空时自动重试并直接回答(
     )
     rows = engine.messages_of(project_db, conversation.id)
     assert rows[-1].status == engine.DONE
-    assert rows[-1].content == "这是直接回答。"
+    assert rows[-1].content == final
 
 
 def test_角色设计使用更大的初始输出预算并继续递增(
@@ -323,14 +349,19 @@ def test_角色设计使用更大的初始输出预算并继续递增(
         target_kind="character",
         target_ref=character.id,
     )
+    final = action_reply(
+        "与后半段",
+        action="ask_user",
+        reason="等待用户继续输入",
+    )
     chat = SequencedReplies(
         ChatReply(content="角色方案前半段", finish_reason="length"),
-        ChatReply(content="与后半段", finish_reason="stop"),
+        ChatReply(content=final, finish_reason="stop"),
     )
 
     result = send(project_db, session, project, conversation, "设计角色", chat)
 
-    assert result.content == "角色方案前半段与后半段"
+    assert result.content == f"角色方案前半段{final}"
     assert chat.max_tokens == [16384, 32768]
 
 
@@ -369,10 +400,14 @@ def test_协议自动纠正一次仍失败会退出专业agent焦点(
     )
     malformed = """我需要转交。
 
-[交接开始]
-status: unknown
-reason: 无法继续
-[交接结束]
+<-------- ACTION-START------->
+{
+  "action": "unknown",
+  "target_agent": "studio_director",
+  "reason": "无法继续",
+  "payload": {}
+}
+<-------- ACTION-END------->
 """
     chat = SequencedReplies(
         ChatReply(content=malformed),
@@ -430,8 +465,28 @@ def test_进度结论累加而开放问题整体替换(
     """拍板过的结论不该因为某轮忘了复述就消失；开放问题的最新一份才是准的。"""
     conversation = start_project_talk(project_db)
     chat = ScriptedChat(
-        "[对焦进度]\n已定：题材定了\n待定：面数预算\n",
-        "[对焦进度]\n已定：第三人称\n待定：目标平台\n",
+        action_reply(
+            action="ask_user",
+            reason="需要确认面数预算",
+            payload={
+                "progress": {
+                    "decisions": ["题材定了"],
+                    "open_questions": ["面数预算"],
+                    "next_step": "确认面数预算",
+                }
+            },
+        ),
+        action_reply(
+            action="ask_user",
+            reason="需要确认目标平台",
+            payload={
+                "progress": {
+                    "decisions": ["第三人称"],
+                    "open_questions": ["目标平台"],
+                    "next_step": "确认目标平台",
+                }
+            },
+        ),
     )
 
     send(project_db, session, project, conversation, "第一轮", chat)
@@ -474,10 +529,12 @@ def test_跑的时候库里就摆着一条正在想(
 
     assert seen == [("user", engine.DONE), ("assistant", engine.THINKING)]
     rows = engine.messages_of(project_db, conversation.id)
-    assert [(m.role, m.status, m.content) for m in rows] == [
-        ("user", engine.DONE, "开聊"),
-        ("assistant", engine.DONE, "好"),
+    assert [(m.role, m.status) for m in rows] == [
+        ("user", engine.DONE),
+        ("assistant", engine.DONE),
     ]
+    assert rows[0].content == "开聊"
+    assert rows[1].content.startswith("好\n\n<-------- ACTION-START------->")
 
 
 def test_中断把正在想那条标成取消并停下推理(
@@ -568,11 +625,21 @@ def test_丢弃草稿后还能接着聊(
     ]
 
 
-CHOICE_REPLY = """先给几处要你定的。
-
-[待选项]
-- 项: 面数预算 / 选项: 8k | 15k | 30k / 推荐: 15k
-"""
+CHOICE_REPLY = action_reply(
+    "先给几处要你定的。",
+    action="ask_user",
+    reason="需要确认面数预算",
+    payload={
+        "choices": [
+            {
+                "item": "面数预算",
+                "options": ["8k", "15k", "30k"],
+                "recommended": ["15k"],
+                "multiple": False,
+            }
+        ]
+    },
+)
 
 
 def test_待选项只认最后一条消息(
@@ -590,11 +657,20 @@ def test_待选项只认最后一条消息(
     assert engine.choices_of(project_db, conversation.id) == ()
 
 
-NAMING_REPLY = """风格大致清楚了，名字我先报几个。
-
-[项目命名建议]
-- 名称: 都市神怪录 / 代号: urban_monkey_king / 理由: 识别度高
-"""
+NAMING_REPLY = action_reply(
+    "风格大致清楚了，名字我先报几个。",
+    action="ask_user",
+    reason="需要确认项目名称",
+    payload={
+        "naming": [
+            {
+                "name": "都市神怪录",
+                "code": "urban_monkey_king",
+                "reason": "识别度高",
+            }
+        ]
+    },
+)
 
 
 def test_风格没落盘之前不把命名建议往外发(
@@ -861,7 +937,12 @@ def test_角色会话的草稿归到角色目录(
     conversation = engine.start(
         project_db, agent_code=WRITER, target_kind="character", target_ref="c-赤瞳"
     )
-    reply = "[草稿开始: 角色定稿.md]\n# 赤瞳\n[草稿结束]\n"
+    reply = action_reply(
+        "设定草稿已完成。",
+        action="ask_user",
+        reason="草稿需要用户确认",
+        payload={"drafts": [{"target_path": "角色定稿.md", "content": "# 赤瞳\n"}]},
+    )
 
     send(project_db, session, project, conversation, "写设定", ScriptedChat(reply))
 
@@ -889,7 +970,7 @@ def test_立项会话看得见项目配置现状(
     assert "项目配置现状" in system
     assert "review_mode" in system
     # 平台自己的账不摆进去，免得 Agent 以为这两个键也归它改
-    assert '"code"' not in system
+    assert '"code": "demo"' not in system
 
 
 def test_角色会话不看项目配置(project_db: Session, project: ProjectRef, session: Session) -> None:
@@ -1035,7 +1116,13 @@ def test_同一条记忆重复出现只存一条(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
-    chat = ScriptedChat(DRAFT_REPLY, "[项目记忆]\npreference: 喜欢冷色调 \n")
+    repeated_memory = action_reply(
+        "记忆已更新。",
+        action="ask_user",
+        reason="等待用户继续输入",
+        payload={"memories": [{"scope": "project", "kind": "preference", "content": "喜欢冷色调"}]},
+    )
+    chat = ScriptedChat(DRAFT_REPLY, repeated_memory)
     send(project_db, session, project, conversation, "第一轮", chat)
     send(project_db, session, project, conversation, "第二轮", chat)
 
@@ -1062,9 +1149,23 @@ def test_只沉淀挑中的那几份(
     project_db: Session, project: ProjectRef, session: Session, candidate: None
 ) -> None:
     conversation = start_project_talk(project_db)
-    reply = (
-        DRAFT_REPLY
-        + '\n[草稿开始: project.json]\n{"style": {"art_style": "赛博朋克"}}\n[草稿结束]\n'
+    reply = action_reply(
+        "两份草稿已完成。",
+        action="ask_user",
+        reason="草稿需要用户确认",
+        payload={
+            "drafts": [
+                {"target_path": "art-bible.md", "content": "# 视觉规范\n冷光下的湿滑金属。\n"},
+                {
+                    "target_path": "project.json",
+                    "content": '{"style": {"art_style": "赛博朋克"}}',
+                },
+            ],
+            "memories": [
+                {"scope": "project", "kind": "preference", "content": "喜欢冷色调"},
+                {"scope": "project", "kind": "taboo", "content": "不要蒸汽朋克齿轮"},
+            ],
+        },
     )
     send(project_db, session, project, conversation, "拟一版", ScriptedChat(reply))
     drafts = {d.target_path: d.id for d in engine.drafts_of(project_db, conversation.id)}
@@ -1120,7 +1221,12 @@ def test_角色沉淀设定后回填spec_path但不动状态(
     conversation = engine.start(
         project_db, agent_code=WRITER, target_kind="character", target_ref=character.id
     )
-    reply = "[草稿开始: 角色定稿.md]\n# 赤瞳\n[草稿结束]\n"
+    reply = action_reply(
+        "设定草稿已完成。",
+        action="ask_user",
+        reason="草稿需要用户确认",
+        payload={"drafts": [{"target_path": "角色定稿.md", "content": "# 赤瞳\n"}]},
+    )
     send(project_db, session, project, conversation, "写设定", ScriptedChat(reply))
 
     engine.commit(project_db, project, conversation)
@@ -1430,7 +1536,8 @@ def test_视觉审校作为真实会话Agent落消息与独立绑定(
     assert result.agent_code == vision.REVIEWER
     assert message.agent_code == vision.REVIEWER
     assert message.status == engine.DONE
-    assert "VIEW-CHECK: APPROVE" in message.content
+    assert '"token": "VIEW-CHECK"' in message.content
+    assert '"decision": "APPROVE"' in message.content
     assert project_db.get(
         ConversationAgentBinding, f"{conversation.id}:{vision.REVIEWER}"
     ).bound_provider_label.startswith("reviewer/")

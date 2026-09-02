@@ -3,17 +3,21 @@ import { describe, expect, it } from 'vitest'
 import { visibleText } from './message'
 
 describe('visibleText', () => {
-  it('剥掉草稿块，只留下正文', () => {
+  it('剥掉完整 Action 块，只留下正文', () => {
     const text = [
       '这版我按都市调子写的。',
-      '[草稿开始: art-bible.md]',
-      '# 美术圣经',
-      '色彩：银红小面积高亮',
-      '[草稿结束]',
-      '看看合不合。',
+      '',
+      '<-------- ACTION-START------->',
+      '{',
+      '  "action": "ask_user",',
+      '  "target_agent": null,',
+      '  "reason": "需要确认风格",',
+      '  "payload": {}',
+      '}',
+      '<-------- ACTION-END------->',
     ].join('\n')
 
-    expect(visibleText(text)).toBe('这版我按都市调子写的。\n看看合不合。')
+    expect(visibleText(text)).toBe('这版我按都市调子写的。')
   })
 
   it('待选项、命名建议、进度这几块都不进气泡', () => {
@@ -30,8 +34,9 @@ describe('visibleText', () => {
     expect(visibleText(text)).toBe('定了三项，剩下的等你拍。')
   })
 
-  it('生成到一半的半截块也不露出来', () => {
-    expect(visibleText('先给一版。\n[草稿开始: art-bible.md]\n# 美术圣')).toBe('先给一版。')
+  it('流式生成到一半的 Action 也不露出来', () => {
+    expect(visibleText('先给一版。\n<-------- ACTION-START------->\n{"action":')).toBe('先给一版。')
+    expect(visibleText('先给一版。\n<-------- ACT')).toBe('先给一版。')
   })
 
   it('块包在引用里也认得出来', () => {

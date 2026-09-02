@@ -28,15 +28,25 @@ allow_tools: []
 
 ### 输出格式
 
-调用结果按此结构回报：
+执行完成后，末尾严格输出平台注入的统一 Action JSON 块。成功使用 `done`，失败使用 `blocked`；结果只放在 `payload.result`：
 
+```json
+{
+  "result": {
+    "status": "success",
+    "artifacts": [
+      {
+        "path": "tmp/角色名_渲染图_v1_时间戳.png",
+        "size": "2048x2048",
+        "params_snapshot": {}
+      }
+    ],
+    "error": null
+  }
+}
 ```
-IMAGE-RESULT: OK | FAILED
-文件：<tmp/ 下的相对路径>
-尺寸：<宽>x<高>
-参数快照：<模型 / seed / steps / guidance / 其他>
-失败原因：<仅 FAILED 时填>
-```
+
+失败时 `status` 写 `failed`、`artifacts` 写 `[]`、`error` 写明原因。
 
 ### 绝不可做
 
